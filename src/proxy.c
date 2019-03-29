@@ -47,14 +47,14 @@
 
 struct redisClusterConnection;
 
-typedef struct _redisClusterProxyThread {
+typedef struct _proxyThread {
     int thread_id;
     pthread_t thread;
     aeEventLoop *loop;
     list *clients;
     struct redisClusterConnection *cluster_connection;
     pthread_mutex_t new_client_mutex;
-} redisClusterProxyThread;
+} proxyThread;
 
 typedef struct {
     client *client;
@@ -67,7 +67,7 @@ typedef struct {
     clusterNode *node;
     redisCommandDef *command;
     size_t written;
-} redisClusterProxyRequest;
+} clientRequest;
 
 typedef struct redisClusterConnection {
     list *requests_to_send;
@@ -80,8 +80,8 @@ redisClusterProxyConfig config;
 
 /* Forward declarations. */
 
-static redisClusterProxyThread *createProxyThread(int index);
-static void freeRedisClusterProxyThread(redisClusterProxyThread *thread);
+static proxyThread *createProxyThread(int index);
+static void freeProxyThread(proxyThread *thread);
 static void *execProxyThread(void *ptr);
 static client *createClient(int fd, char *ip);
 static void freeClient(client *c);
@@ -89,8 +89,8 @@ void readQuery(aeEventLoop *el, int fd, void *privdata, int mask);
 static int writeToClient(client *c);
 static void writeToCluster(aeEventLoop *el, int fd, void *privdata, int mask);
 static void readClusterReply(aeEventLoop *el, int fd, void *privdata, int mask);
-static clusterNode *getRequestNode(redisClusterProxyRequest *req, sds *err);
-static void freeRequest(redisClusterProxyRequest *req);
+static clusterNode *getRequestNode(clientRequest *req, sds *err);
+static void freeRequest(clientRequest *req);
 
 /* Dict Helpers */
 
@@ -254,7 +254,7 @@ static void initProxy(void) {
     }
     proxy.main_loop = aeCreateEventLoop(config.maxclients);
     proxy.threads = zmalloc(config.num_threads *
-                            sizeof(redisClusterProxyThread *));
+                            sizeof(proxyThread *));
     if (proxy.threads == NULL) {
         fprintf(stderr, "FATAL: failed to allocate memory for threads.\n");
         exit(1);
@@ -285,8 +285,8 @@ static void releaseProxy(void) {
     }
     if (proxy.threads != NULL) {
         for (i = 0; i < config.num_threads; i++) {
-            redisClusterProxyThread *thread =  proxy.threads[i];
-            if (thread) freeRedisClusterProxyThread(thread);
+            proxyThread *thread =  proxy.threads[i];
+            if (thread) freeProxyThread(thread);
             proxy.threads[i] = NULL;
         }
         zfree(proxy.threads);
@@ -305,7 +305,7 @@ void writeHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
 }
 
 static void writeRepliesToClients(struct aeEventLoop *el) {
-    redisClusterProxyThread *thread = el->privdata;
+    proxyThread *thread = el->privdata;
     assert(thread != NULL);
     if (thread->clients == NULL) return;
     listIter li;
@@ -329,7 +329,7 @@ static void writeRepliesToClients(struct aeEventLoop *el) {
 }
 
 void sendRequestsToCluster(struct aeEventLoop *eventLoop) {
-    redisClusterProxyThread *thread = eventLoop->privdata;
+    proxyThread *thread = eventLoop->privdata;
     assert(thread != NULL);
     redisClusterConnection *conn = thread->cluster_connection;
     if (conn == NULL || conn->requests_to_send == NULL ||
@@ -338,7 +338,7 @@ void sendRequestsToCluster(struct aeEventLoop *eventLoop) {
     listNode *ln;
     listRewind(conn->requests_to_send, &li);
     while ((ln = listNext(&li)) != NULL) {
-        redisClusterProxyRequest *req = ln->value;
+        clientRequest *req = ln->value;
     }
 }
 
@@ -383,7 +383,7 @@ static void freeClusterConnection(redisClusterConnection *conn) {
     if (conn->requests_pending != NULL) {
         listRewind(conn->requests_pending, &li);
         while ((ln = listNext(&li)) != NULL) {
-            redisClusterProxyRequest *req = ln->value;
+            clientRequest *req = ln->value;
             freeRequest(req);
         }
         listRelease(conn->requests_pending);
@@ -391,7 +391,7 @@ static void freeClusterConnection(redisClusterConnection *conn) {
     if (conn->requests_to_send != NULL) {
         listRewind(conn->requests_to_send, &li);
         while ((ln = listNext(&li)) != NULL) {
-            redisClusterProxyRequest *req = ln->value;
+            clientRequest *req = ln->value;
             freeRequest(req);
         }
         listRelease(conn->requests_to_send);
@@ -399,23 +399,23 @@ static void freeClusterConnection(redisClusterConnection *conn) {
     zfree(conn);
 }
 
-static redisClusterProxyThread *createProxyThread(int index) {
-    redisClusterProxyThread *thread = zmalloc(sizeof(*thread));
+static proxyThread *createProxyThread(int index) {
+    proxyThread *thread = zmalloc(sizeof(*thread));
     if (thread == NULL) return NULL;
     thread->thread_id = index;
     thread->clients = listCreate();
     if (thread->clients == NULL) {
-        freeRedisClusterProxyThread(thread);
+        freeProxyThread(thread);
         return NULL;
     }
     thread->cluster_connection = createClusterConnection();
     if (thread->cluster_connection == NULL) {
-        freeRedisClusterProxyThread(thread);
+        freeProxyThread(thread);
         return NULL;
     }
     thread->loop = aeCreateEventLoop(config.maxclients);
     if (thread->loop == NULL) {
-        freeRedisClusterProxyThread(thread);
+        freeProxyThread(thread);
         return NULL;
     }
     thread->loop->privdata = thread;
@@ -424,7 +424,7 @@ static redisClusterProxyThread *createProxyThread(int index) {
     return thread;
 }
 
-static void freeRedisClusterProxyThread(redisClusterProxyThread *thread) {
+static void freeProxyThread(proxyThread *thread) {
     if (thread->loop != NULL) aeDeleteEventLoop(thread->loop);
     if (thread->cluster_connection != NULL)
         freeClusterConnection(thread->cluster_connection);
@@ -461,7 +461,7 @@ static client *createClient(int fd, char *ip) {
     size_t numclients = 0;
     atomicGetIncr(proxy.numclients, numclients, 1);
     c->thread_id = (numclients % config.num_threads);
-    redisClusterProxyThread *thread = proxy.threads[c->thread_id];
+    proxyThread *thread = proxy.threads[c->thread_id];
     assert(thread != NULL);
     aeEventLoop *el = thread->loop;
     assert(el != NULL);
@@ -521,7 +521,7 @@ static int writeToClient(client *c) {
         sdsclear(c->obuf);
         c->written = 0;
         if (c->has_write_handler) {
-            redisClusterProxyThread *thread = proxy.threads[c->thread_id];
+            proxyThread *thread = proxy.threads[c->thread_id];
             assert(thread != NULL);
             aeEventLoop *el = thread->loop;
             assert(el != NULL);
@@ -534,8 +534,8 @@ static int writeToClient(client *c) {
 
 static void writeToCluster(aeEventLoop *el, int fd, void *privdata, int mask) {
     UNUSED(mask);
-    redisClusterProxyRequest *req = privdata;
-    redisClusterProxyThread *thread = el->privdata;
+    clientRequest *req = privdata;
+    proxyThread *thread = el->privdata;
     redisClusterConnection *conn = thread->cluster_connection;
     size_t buflen = sdslen(req->buffer);
     int nwritten = 0;
@@ -591,7 +591,7 @@ static int listen(void) {
     return fd_idx;
 }
 
-static int parseRequest(redisClusterProxyRequest *req) {
+static int parseRequest(clientRequest *req) {
     int is_multibulk = 0, lf_len = 2, qry_offset = 0, ok = 1, i;
     int buflen = sdslen(req->buffer);
     char *p = req->buffer + qry_offset, *nl = NULL;
@@ -684,7 +684,7 @@ cleanup:
     return ok;
 }
 
-static sds getRequestCommand(redisClusterProxyRequest *req) {
+static sds getRequestCommand(clientRequest *req) {
     if (req->argc == 0) return NULL;
     assert(req->buffer != NULL);
     int start = req->offsets[0], len = req->lengths[0],
@@ -696,7 +696,7 @@ static sds getRequestCommand(redisClusterProxyRequest *req) {
     return cmd;
 }
 
-static clusterNode *getRequestNode(redisClusterProxyRequest *req, sds *err) {
+static clusterNode *getRequestNode(clientRequest *req, sds *err) {
     clusterNode *node = NULL;
     if (req->argc == 1) {
         node = getFirstMappedNode(proxy.cluster);
@@ -732,15 +732,15 @@ static clusterNode *getRequestNode(redisClusterProxyRequest *req, sds *err) {
     return node;
 }
 
-static void freeRequest(redisClusterProxyRequest *req) {
+static void freeRequest(clientRequest *req) {
     if (req->buffer != NULL) sdsfree(req->buffer);
     if (req->offsets != NULL) zfree(req->offsets);
     if (req->lengths != NULL) zfree(req->lengths);
     zfree(req);
 }
 
-static redisClusterProxyRequest *createRequest(client *c) {
-    redisClusterProxyRequest *req = zcalloc(sizeof(*req));
+static clientRequest *createRequest(client *c) {
+    clientRequest *req = zcalloc(sizeof(*req));
     if (req == NULL) {
         proxyLogErr("ERROR: Failed to allocate request!\n");
         return NULL;
@@ -789,7 +789,7 @@ void readQuery(aeEventLoop *el, int fd, void *privdata, int mask){
     /* TODO: better implement unlinkClient */
     sdsIncrLen(c->ibuf, nread);
     /*TODO: support max query buffer length */
-    redisClusterProxyRequest *req = createRequest(c);
+    clientRequest *req = createRequest(c);
     if (req == NULL) {
         proxyLogErr("Failed to create request\n");
         unlinkClient(c);
@@ -831,7 +831,7 @@ void readQuery(aeEventLoop *el, int fd, void *privdata, int mask){
         proxyLogDebug("%s\n", errmsg);
         goto invalid_request;
     }
-    redisClusterProxyThread *thread = el->privdata;
+    proxyThread *thread = el->privdata;
     assert(thread != NULL);
     redisClusterConnection *conn = thread->cluster_connection;
     assert(conn != NULL);
@@ -893,8 +893,8 @@ static void readClusterReply(aeEventLoop *el, int fd,
                              void *privdata, int mask)
 {
     UNUSED(mask);
-    redisClusterProxyRequest *req = privdata;
-    redisClusterProxyThread *thread = el->privdata;
+    clientRequest *req = privdata;
+    proxyThread *thread = el->privdata;
     redisClusterConnection *conn = thread->cluster_connection;
     redisContext *ctx = req->node->context;
     char *errmsg = NULL;
@@ -951,7 +951,7 @@ static void readClusterReply(aeEventLoop *el, int fd,
 }
 
 static void *execProxyThread(void *ptr) {
-    redisClusterProxyThread *thread = (redisClusterProxyThread *) ptr;
+    proxyThread *thread = (proxyThread *) ptr;
     /* proxyLogDebug("Starting thread %d...\n", thread->thread_id); */
     aeMain(thread->loop);
     return NULL;

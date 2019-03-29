@@ -32,7 +32,7 @@
 
 #define getClientLoop(c) (proxy.threads[c->thread_id]->loop)
 
-struct _redisClusterProxyThread;
+struct _proxyThread;
 
 typedef struct {
     redisCluster *cluster;
@@ -41,7 +41,7 @@ typedef struct {
     int fd_count;
     int tcp_backlog;
     char neterr[ANET_ERR_LEN];
-    struct _redisClusterProxyThread **threads;
+    struct _proxyThread **threads;
     uint64_t numclients;
     dict *commands;
     pthread_mutex_t numclients_mutex;
