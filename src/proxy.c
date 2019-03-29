@@ -936,8 +936,9 @@ void readQuery(aeEventLoop *el, int fd, void *privdata, int mask){
     assert(thread != NULL);
     redisClusterConnection *conn = thread->cluster_connection;
     assert(conn != NULL);
-    if (node->context == NULL) {
-        if (!clusterNodeConnectAtomic(req->node)) {
+    redisContext *ctx = getClusterNodeConnection(node, c->thread_id);
+    if (ctx == NULL) {
+        if ((ctx = clusterNodeConnect(node, c->thread_id)) == NULL) {
             addReplyError(c, "Could not connect to node");
             errmsg = sdsnew("Failed to connect to node ");
             errmsg = sdscatprintf(errmsg, "%s:%d", node->ip, node->port);
@@ -945,7 +946,7 @@ void readQuery(aeEventLoop *el, int fd, void *privdata, int mask){
             goto invalid_request;
         }
     }
-    if (aeCreateFileEvent(el, node->context->fd, AE_WRITABLE,
+    if (aeCreateFileEvent(el, ctx->fd, AE_WRITABLE,
                           writeToCluster, req) == AE_ERR) {
         addReplyError(c, "Failed to write to cluster\n");
         proxyLogErr("Failed to create write handler for request\n");
@@ -1003,7 +1004,7 @@ static void readClusterReply(aeEventLoop *el, int fd,
     clientRequest *req = privdata;
     proxyThread *thread = el->privdata;
     redisClusterConnection *conn = thread->cluster_connection;
-    redisContext *ctx = req->node->context;
+    redisContext *ctx = getClusterNodeConnection(req->node, thread->thread_id);
     char *errmsg = NULL;
     void *_reply = NULL;
     redisReply *reply = NULL;
@@ -1012,7 +1013,7 @@ static void readClusterReply(aeEventLoop *el, int fd,
         int err = ctx->err;
         if (err & (REDIS_ERR_IO | REDIS_ERR_EOF)) {
             /* Try to reconnect to the node */
-            if (!clusterNodeConnectAtomic(req->node))
+            if (!(ctx = clusterNodeConnect(req->node, thread->thread_id)))
                 errmsg = "Cluster node disconnected";
             else {
                 req->written = 0;
@@ -1098,7 +1099,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Invalid address '%s'\n", config.cluster_address);
         return 1;
     }
-    proxy.cluster = createCluster();
+    proxy.cluster = createCluster(config.num_threads + 1);
     if (proxy.cluster == NULL) {
         fprintf(stderr, "Failed to allocate memory!\n");
         return 1;

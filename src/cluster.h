@@ -26,8 +26,11 @@
 
 #define CLUSTER_SLOTS 16384
 
+struct redisCluster;
+
 typedef struct clusterNode {
-    redisContext *context;
+    redisContext **context;
+    struct redisCluster *cluster;
     sds ip;
     int port;
     sds name;
@@ -49,14 +52,16 @@ typedef struct clusterNode {
 typedef struct redisCluster {
     list *nodes;
     rax  *slots_map;
+    int numthreads;
 } redisCluster;
 
-redisCluster *createCluster(void);
+redisCluster *createCluster(int numthreads);
 void freeCluster(redisCluster *cluster);
 int fetchClusterConfiguration(redisCluster *cluster, char *ip, int port,
                               char *hostsocket);
-int clusterNodeConnect(clusterNode *node);
-int clusterNodeConnectAtomic(clusterNode *node);
+redisContext *getClusterNodeConnection(clusterNode *node, int thread_id);
+redisContext *clusterNodeConnect(clusterNode *node, int thread_id);
+redisContext *clusterNodeConnectAtomic(clusterNode *node, int thread_id);
 #endif /* __REDIS_CLUSTER_PROXY_CLUSTER_H__ */
 clusterNode *searchNodeBySlot(redisCluster *cluster, int slot);
 clusterNode *getNodeByKey(redisCluster *cluster, char *key, int keylen);

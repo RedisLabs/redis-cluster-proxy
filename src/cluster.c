@@ -83,9 +83,10 @@ static int clusterCheckRedisReply(clusterNode *n, redisReply *r, char **err) {
     return 1;
 }
 
-redisCluster *createCluster(void) {
+redisCluster *createCluster(int numthreads) {
     redisCluster *cluster = zcalloc(sizeof(*cluster));
     if (!cluster) return NULL;
+    cluster->numthreads = numthreads;
     cluster->nodes = listCreate();
     if (cluster->nodes == NULL) {
         zfree(cluster);
@@ -103,7 +104,13 @@ redisCluster *createCluster(void) {
 static void freeClusterNode(clusterNode *node) {
     if (node == NULL) return;
     int i;
-    if (node->context) redisFree(node->context);
+    if (node->context) {
+        for (i = 0; i < node->cluster->numthreads; i++) {
+            redisContext *ctx = node->context[i];
+            if (ctx != NULL) redisFree(ctx);
+        }
+        zfree(node->context);
+    }
     if (node->ip) sdsfree(node->ip);
     if (node->name) sdsfree(node->name);
     if (node->replicate) sdsfree(node->replicate);
@@ -137,10 +144,11 @@ void freeCluster(redisCluster *cluster) {
     zfree(cluster);
 }
 
-static clusterNode *createClusterNode(char *ip, int port) {
+static clusterNode *createClusterNode(char *ip, int port, redisCluster *c) {
     clusterNode *node = zcalloc(sizeof(*node));
     if (!node) return NULL;
-    node->context = NULL;
+    node->cluster = c;
+    node->context = zcalloc(c->numthreads * sizeof(redisContext *));
     node->ip = sdsnew(ip);
     node->port = port;
     node->name = NULL;
@@ -162,41 +170,51 @@ static clusterNode *createClusterNode(char *ip, int port) {
     return node;
 }
 
-int clusterNodeConnect(clusterNode *node) {
-    if (node->context) redisFree(node->context);
+redisContext *getClusterNodeConnection(clusterNode *node, int thread_id) {
+    if (thread_id < 0) thread_id = node->cluster->numthreads - thread_id;
+    if (thread_id >= node->cluster->numthreads) return NULL;
+    return node->context[thread_id];
+}
+
+redisContext *clusterNodeConnect(clusterNode *node, int thread_id) {
+    redisContext *ctx = getClusterNodeConnection(node, thread_id);
+    if (ctx) redisFree(ctx);
     proxyLogDebug("Connecting to node %s:%d\n", node->ip, node->port);
-    node->context = redisConnect(node->ip, node->port);
-    if (node->context->err) {
+    ctx = redisConnect(node->ip, node->port);
+    if (ctx->err) {
         proxyLogErr("Could not connect to Redis at ");
         proxyLogErr("%s:%d: %s\n", node->ip, node->port,
-                    node->context->errstr);
-        redisFree(node->context);
-        node->context = NULL;
-        return 0;
+                    ctx->errstr);
+        redisFree(ctx);
+        node->context[thread_id] = NULL;
+        return NULL;
     }
     /* Set aggressive KEEP_ALIVE socket option in the Redis context socket
      * in order to prevent timeouts caused by the execution of long
      * commands. At the same time this improves the detection of real
      * errors. */
-    anetKeepAlive(NULL, node->context->fd, CLUSTER_NODE_KEEPALIVE_INTERVAL);
+    anetKeepAlive(NULL, ctx->fd, CLUSTER_NODE_KEEPALIVE_INTERVAL);
     if (config.auth) {
-        redisReply *reply = redisCommand(node->context,"AUTH %s",config.auth);
+        redisReply *reply = redisCommand(ctx, "AUTH %s", config.auth);
         int ok = clusterCheckRedisReply(node, reply, NULL);
         if (reply != NULL) freeReplyObject(reply);
         if (!ok) {
             proxyLogErr("Failed to authenticate to %s:%d\n", node->ip,
                         node->port);
-            return 0;
+            redisFree(ctx);
+            node->context[thread_id] = NULL;
+            return NULL;
         }
     }
-    return 1;
+    node->context[thread_id] = ctx;
+    return ctx;
 }
 
-int clusterNodeConnectAtomic(clusterNode *node) {
+redisContext *clusterNodeConnectAtomic(clusterNode *node, int thread_id) {
     pthread_mutex_lock(&(node->connection_mutex));
-    int connected = clusterNodeConnect(node);
+    redisContext *ctx = clusterNodeConnect(node, thread_id);
     pthread_mutex_unlock(&(node->connection_mutex));
-    return connected;
+    return ctx;
 }
 
 /* Map to slot into the cluster's radix tree map after converting the slot
@@ -225,7 +243,7 @@ int fetchClusterConfiguration(redisCluster *cluster, char *ip, int port,
         else fprintf(stderr,"%s: %s\n", hostsocket, ctx->errstr);
         return 0;
     }
-    clusterNode *firstNode = createClusterNode(ip, port);
+    clusterNode *firstNode = createClusterNode(ip, port, cluster);
     if (!firstNode) {success = 0; goto cleanup;}
     reply = redisCommand(ctx, "CLUSTER NODES");
     success = (reply != NULL);
@@ -291,7 +309,7 @@ int fetchClusterConfiguration(redisCluster *cluster, char *ip, int port,
                 node->port = port;
             }
         } else {
-            node = createClusterNode(ip, port);
+            node = createClusterNode(ip, port, cluster);
         }
         if (node == NULL) {
             success = 0;
