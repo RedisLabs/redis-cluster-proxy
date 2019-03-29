@@ -1,0 +1,8 @@
+redis-cluster-proxy
+tmp/
+*.o
+*.swp
+.make-*
+.prerequisites
+*.dSYM
+Makefile.dep
