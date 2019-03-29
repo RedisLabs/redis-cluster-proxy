@@ -39,21 +39,34 @@
 #define QUERY_OFFSETS_MIN_SIZE  10
 #define UNSUPPORTED_QUERY_ERR   "This query is currently unsupported by "\
                                 "Redis Cluster Proxy"
+#define EL_INSTALL_HANDLER_FAIL 9999
 
-#define MAX_ACCEPTS         1000
-#define NET_IP_STR_LEN      46
+#define MAX_ACCEPTS             1000
+#define NET_IP_STR_LEN          46
+
+#define THREAD_IO_READ    0
+#define THREAD_IO_WRITE   1
+
+#define THREAD_MSG_NEW_CLIENT   'c'
 
 #define UNUSED(V) ((void) V)
 
 struct redisClusterConnection;
 
+typedef struct _threadMessage {
+    char type;
+    void *data;
+} threadMessage;
+
 typedef struct _proxyThread {
     int thread_id;
+    int io[2];
     pthread_t thread;
     aeEventLoop *loop;
     list *clients;
+    list *pending_messages;
     struct redisClusterConnection *cluster_connection;
-    pthread_mutex_t new_client_mutex;
+    pthread_mutex_t new_message_mutex;
 } proxyThread;
 
 typedef struct {
@@ -264,7 +277,7 @@ static void initProxy(void) {
         proxyLogDebug("Creating thread %d...\n", i);
         proxy.threads[i] = createProxyThread(i);
         if (proxy.threads[i] == NULL) {
-            fprintf(stderr, "FATAL: failed to allocate thread %d.\n", i);
+            fprintf(stderr, "FATAL: failed to create thread %d.\n", i);
             exit(1);
         }
         pthread_t *t = &(proxy.threads[i]->thread);
@@ -272,7 +285,7 @@ static void initProxy(void) {
             fprintf(stderr, "FATAL: Failed to start thread %d.\n", i);
             exit(1);
         }
-        pthread_mutex_init(&(proxy.threads[i]->new_client_mutex), NULL);
+        pthread_mutex_init(&(proxy.threads[i]->new_message_mutex), NULL);
     }
     pthread_mutex_init(&(proxy.numclients_mutex), NULL);
 }
@@ -292,7 +305,8 @@ static void releaseProxy(void) {
         zfree(proxy.threads);
     }
     freeCluster(proxy.cluster);
-    dictRelease(proxy.commands);
+    if (proxy.commands)
+        dictRelease(proxy.commands);
 }
 
 void writeHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
@@ -311,7 +325,6 @@ static void writeRepliesToClients(struct aeEventLoop *el) {
     listIter li;
     listNode *ln;
     listRewind(thread->clients, &li);
-    pthread_mutex_lock(&thread->new_client_mutex);
     while ((ln = listNext(&li)) != NULL) {
         client *c = ln->value;
         if (!writeToClient(c)) continue;
@@ -325,7 +338,6 @@ static void writeRepliesToClients(struct aeEventLoop *el) {
             }
         }
     }
-    pthread_mutex_unlock(&thread->new_client_mutex);
 }
 
 void sendRequestsToCluster(struct aeEventLoop *eventLoop) {
@@ -399,29 +411,128 @@ static void freeClusterConnection(redisClusterConnection *conn) {
     zfree(conn);
 }
 
+static int processThreadMessage(proxyThread *thread, threadMessage *msg) {
+    if (msg->type == THREAD_MSG_NEW_CLIENT) {
+        client *c = msg->data;
+        aeEventLoop *el = thread->loop;
+        assert(el != NULL);
+        listAddNodeTail(thread->clients, c);
+        proxyLogDebug("Client added to thread %d\n", c->thread_id);
+        atomicIncr(proxy.numclients, 1);
+        errno = 0;
+        if (aeCreateFileEvent(el, c->fd, AE_READABLE, readQuery, c) == AE_ERR) {
+            proxyLogErr("ERROR: Failed to create read query handler for client "
+                        "%s\n", c->ip);
+            errno = EL_INSTALL_HANDLER_FAIL;
+            freeClient(c);
+            return 0;
+        }
+        c->status = CLIENT_STATUS_LINKED;
+    }
+    return 1;
+}
+
+static int processThreadMessages(proxyThread *thread) {
+    listIter li;
+    listNode *ln;
+    int processed = 0;
+    pthread_mutex_lock(&(thread->new_message_mutex));
+    listRewind(thread->pending_messages, &li);
+    while ((ln = listNext(&li)) != NULL) {
+        threadMessage *msg = ln->value;
+        if (!processThreadMessage(thread, msg)) {
+            if (errno != EL_INSTALL_HANDLER_FAIL) continue;
+        }
+        listDelNode(thread->pending_messages, ln);
+        processed++;
+    }
+    pthread_mutex_unlock(&(thread->new_message_mutex));
+    return processed;
+}
+
+static void readThreadPipe(aeEventLoop *el, int fd, void *privdata, int mask) {
+    UNUSED(el);
+    UNUSED(mask);
+    proxyThread *thread = privdata;
+    int msgcount = 0, processed = 0, nread = 0;
+    char buf[2048];
+    nread = read(fd, buf + nread, sizeof(buf));
+    if (nread == -1) {
+        if (errno == EAGAIN) {
+            return;
+        } else {
+            proxyLogDebug("Error reading from thread pipe: %s\n",
+                          strerror(errno));
+            return;
+        }
+    }
+    msgcount += nread;
+    if (msgcount == 0) return;
+    processed = processThreadMessages(thread);
+}
+
 static proxyThread *createProxyThread(int index) {
     proxyThread *thread = zmalloc(sizeof(*thread));
     if (thread == NULL) return NULL;
+    if (pipe(thread->io) == -1) {
+        proxyLogErr("ERROR: failed to open pipe for thread!\n");
+        zfree(thread);
+        return NULL;
+    }
     thread->thread_id = index;
     thread->clients = listCreate();
     if (thread->clients == NULL) {
         freeProxyThread(thread);
         return NULL;
     }
+    thread->pending_messages = listCreate();
+    if (thread->pending_messages == NULL) {
+        freeProxyThread(thread);
+        return NULL;
+    }
+    listSetFreeMethod(thread->pending_messages, zfree);
     thread->cluster_connection = createClusterConnection();
     if (thread->cluster_connection == NULL) {
         freeProxyThread(thread);
         return NULL;
     }
-    thread->loop = aeCreateEventLoop(config.maxclients);
+    thread->loop = aeCreateEventLoop(config.maxclients + 2);
     if (thread->loop == NULL) {
         freeProxyThread(thread);
         return NULL;
     }
     thread->loop->privdata = thread;
     aeSetBeforeSleepProc(thread->loop, beforeThreadSleep);
-    aeCreateTimeEvent(thread->loop, 1, proxyThreadCron, NULL,NULL);
+    /*aeCreateTimeEvent(thread->loop, 1, proxyThreadCron, NULL,NULL);*/
+    if (aeCreateFileEvent(thread->loop, thread->io[THREAD_IO_READ],
+                          AE_READABLE, readThreadPipe, thread) == AE_ERR) {
+        freeProxyThread(thread);
+        return NULL;
+    }
     return thread;
+}
+
+static threadMessage *createThreadMessage(char type, void *data) {
+    threadMessage *msg = zmalloc(sizeof(*msg));
+    if (msg == NULL) return NULL;
+    msg->type = type;
+    msg->data = data;
+    return msg;
+}
+
+static int awakeThread(proxyThread *thread, char msgtype, void *data) {
+    threadMessage *msg = createThreadMessage(msgtype, data);
+    if (msg == NULL) return 0;
+    pthread_mutex_lock(&(thread->new_message_mutex));
+    listAddNodeTail(thread->pending_messages, msg);
+    pthread_mutex_unlock(&(thread->new_message_mutex));
+    int fd = thread->io[THREAD_IO_WRITE];
+    int nwritten = write(fd, &msgtype, sizeof(msgtype));
+    if (nwritten == -1) {
+        /* TODO: try again later */
+        return 0;
+    }
+    return 1;
 }
 
 static void freeProxyThread(proxyThread *thread) {
@@ -439,6 +550,11 @@ static void freeProxyThread(proxyThread *thread) {
         listRelease(thread->clients);
         thread->clients = NULL;
     }
+    if (thread->pending_messages != NULL) {
+        listRelease(thread->pending_messages);
+    }
+    if (thread->io[0]) close(thread->io[0]);
+    if (thread->io[1]) close(thread->io[1]);
     zfree(thread);
 }
 
@@ -460,23 +576,8 @@ static client *createClient(int fd, char *ip) {
         anetKeepAlive(NULL, fd, config.tcpkeepalive);
     size_t numclients = 0;
     atomicGetIncr(proxy.numclients, numclients, 1);
+    /* TODO: select thread with less clients */
     c->thread_id = (numclients % config.num_threads);
-    proxyThread *thread = proxy.threads[c->thread_id];
-    assert(thread != NULL);
-    aeEventLoop *el = thread->loop;
-    assert(el != NULL);
-    pthread_mutex_lock(&thread->new_client_mutex);
-    listAddNodeTail(thread->clients, c);
-    proxyLogDebug("Client added to thread %d\n", c->thread_id);
-    atomicIncr(proxy.numclients, 1);
-    if (aeCreateFileEvent(el, fd, AE_READABLE, readQuery, c) == AE_ERR) {
-        proxyLogErr("ERROR: Failed to create read query handler for client "
-                    "%s\n", ip);
-        freeClient(c);
-        return NULL;
-    }
-    c->status = CLIENT_STATUS_LINKED;
-    pthread_mutex_unlock(&thread->new_client_mutex);
     return c;
 }
 
@@ -501,7 +602,7 @@ static void freeClient(client *c) {
 }
 
 static int writeToClient(client *c) {
-    int success = 1, buflen = sdslen(c->obuf), nwritten  =0;
+    int success = 1, buflen = sdslen(c->obuf), nwritten = 0;
     while (c->written < (size_t) buflen) {
         nwritten = write(c->fd, c->obuf + c->written, buflen - c->written);
         if (nwritten <= 0) break;
@@ -865,6 +966,12 @@ static void acceptHandler(int fd, char *ip) {
     client *c = createClient(fd, ip);
     if (c == NULL) return;
     proxyLogDebug("Client connected from %s\n", ip);
+    proxyThread *thread = proxy.threads[c->thread_id];
+    assert(thread != NULL);
+    if (!awakeThread(thread, THREAD_MSG_NEW_CLIENT, c)) {
+        /* TODO: append client to a list of pending clients to be handled
+         * by a beforeSleep (which should call awakeThread again*/
+    }
 }
 
 void acceptTcpHandler(aeEventLoop *el, int fd, void *privdata, int mask)

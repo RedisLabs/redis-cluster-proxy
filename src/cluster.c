@@ -128,11 +128,12 @@ static void freeClusterNodes(redisCluster *cluster) {
         clusterNode *node = ln->value;
         freeClusterNode(node);
     }
+    listRelease(cluster->nodes);
 }
 
 void freeCluster(redisCluster *cluster) {
-    freeClusterNodes(cluster);
     raxFree(cluster->slots_map);
+    freeClusterNodes(cluster);
     zfree(cluster);
 }
 

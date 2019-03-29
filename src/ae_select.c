@@ -32,6 +32,8 @@
 #include <sys/select.h>
 #include <string.h>
 
+#define UNUSED(V) ((void) V)
+
 typedef struct aeApiState {
     fd_set rfds, wfds;
     /* We need to have a copy of the fd sets as it's not safe to reuse
@@ -51,6 +53,7 @@ static int aeApiCreate(aeEventLoop *eventLoop) {
 
 static int aeApiResize(aeEventLoop *eventLoop, int setsize) {
     /* Just ensure we have enough room in the fd_set type. */
+    UNUSED(eventLoop);
     if (setsize >= FD_SETSIZE) return -1;
     return 0;
 }
