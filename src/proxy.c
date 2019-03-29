@@ -871,6 +871,7 @@ void readQuery(aeEventLoop *el, int fd, void *privdata, int mask){
     client *c = (client *) privdata;
     int nread, readlen = (1024*16);
     size_t iblen = sdslen(c->ibuf);
+    sds command_name = NULL;
     c->ibuf = sdsMakeRoomFor(c->ibuf, readlen);
     nread = read(fd, c->ibuf + iblen, readlen);
     if (nread == -1) {
@@ -907,7 +908,7 @@ void readQuery(aeEventLoop *el, int fd, void *privdata, int mask){
         errmsg = sdsnew("Multi-command requests are not currenlty supported");
         goto invalid_request;
     }
-    sds command_name = getRequestCommand(req);
+    command_name = getRequestCommand(req);
     if (command_name == NULL) {
         proxyLogDebug("Missing command name\n");
         errmsg = sdsnew("Invalid request");
@@ -951,15 +952,18 @@ void readQuery(aeEventLoop *el, int fd, void *privdata, int mask){
         addReplyError(c, "Failed to write to cluster\n");
         proxyLogErr("Failed to create write handler for request\n");
         freeRequest(req);
+        if (command_name) sdsfree(command_name);
         return;
     }
     listAddNodeTail(conn->requests_to_send, req);
+    if (command_name) sdsfree(command_name);
     return;
 invalid_request:
     if (errmsg != NULL) {
         addReplyError(c, (char *) errmsg);
         sdsfree(errmsg);
     }
+    if (command_name) sdsfree(command_name);
     freeRequest(req);
 }
 

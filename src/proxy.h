@@ -19,6 +19,7 @@
 #define __REDIS_CLUSTER_PROXY_H__
 
 #include <pthread.h>
+#include <stdint.h>
 #include "ae.h"
 #include "anet.h"
 #include "cluster.h"
