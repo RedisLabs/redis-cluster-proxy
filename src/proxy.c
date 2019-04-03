@@ -37,9 +37,11 @@
 #define DEFAULT_THREADS         8
 #define DEFAULT_TCP_KEEPALIVE   300
 #define QUERY_OFFSETS_MIN_SIZE  10
-#define UNSUPPORTED_QUERY_ERR   "This query is currently unsupported by "\
-                                "Redis Cluster Proxy"
 #define EL_INSTALL_HANDLER_FAIL 9999
+#define REQ_STATUS_UNKNOWN      -1
+#define PARSE_STATUS_INCOMPLETE -1
+#define PARSE_STATUS_ERROR      0
+#define PARSE_STATUS_OK         1
 
 #define MAX_ACCEPTS             1000
 #define NET_IP_STR_LEN          46
@@ -58,7 +60,7 @@ typedef struct _threadMessage {
     void *data;
 } threadMessage;
 
-typedef struct _proxyThread {
+typedef struct proxyThread {
     int thread_id;
     int io[2];
     pthread_t thread;
@@ -69,17 +71,22 @@ typedef struct _proxyThread {
     pthread_mutex_t new_message_mutex;
 } proxyThread;
 
-typedef struct {
+typedef struct clientRequest{
     client *client;
     sds buffer;
+    int query_offset;
+    int is_multibulk;
     int argc;
     int num_commands;
+    long long pending_bulks;
+    int current_bulk_length;
     int *offsets;
     int *lengths;
     int offsets_size;
     clusterNode *node;
     redisCommandDef *command;
     size_t written;
+    int parsing_status;
 } clientRequest;
 
 typedef struct redisClusterConnection {
@@ -418,7 +425,6 @@ static int processThreadMessage(proxyThread *thread, threadMessage *msg) {
         assert(el != NULL);
         listAddNodeTail(thread->clients, c);
         proxyLogDebug("Client added to thread %d\n", c->thread_id);
-        atomicIncr(proxy.numclients, 1);
         errno = 0;
         if (aeCreateFileEvent(el, c->fd, AE_READABLE, readQuery, c) == AE_ERR) {
             proxyLogErr("ERROR: Failed to create read query handler for client "
@@ -568,7 +574,6 @@ static client *createClient(int fd, char *ip) {
     c->status = CLIENT_STATUS_NONE;
     c->fd = fd;
     c->ip = sdsnew(ip);
-    c->ibuf = sdsempty();
     c->obuf = sdsempty();
     anetNonBlock(NULL, fd);
     anetEnableTcpNoDelay(NULL, fd);
@@ -578,6 +583,7 @@ static client *createClient(int fd, char *ip) {
     atomicGetIncr(proxy.numclients, numclients, 1);
     /* TODO: select thread with less clients */
     c->thread_id = (numclients % config.num_threads);
+    c->id = numclients;
     return c;
 }
 
@@ -595,10 +601,16 @@ static void unlinkClient(client *c) {
 
 static void freeClient(client *c) {
     if (c->status != CLIENT_STATUS_UNLINKED) unlinkClient(c);
+    int thread_id = c->thread_id;
+    proxyThread *thread = proxy.threads[thread_id];
+    assert(thread != NULL);
+    listNode *ln = listSearchKey(thread->clients, c);
+    if (ln != NULL) listDelNode(thread->clients, ln);
     if (c->ip != NULL) sdsfree(c->ip);
-    if (c->ibuf != NULL) sdsfree(c->ibuf);
     if (c->obuf != NULL) sdsfree(c->obuf);
+    if (c->current_request) freeRequest(c->current_request);
     zfree(c);
+    atomicIncr(proxy.numclients, -1);
 }
 
 static int writeToClient(client *c) {
@@ -692,97 +704,162 @@ static int listen(void) {
     return fd_idx;
 }
 
+static int requestMakeRoomForArgs(clientRequest *req, int argc) {
+    if (argc >= req->offsets_size) {
+        int new_size = argc + QUERY_OFFSETS_MIN_SIZE;
+        size_t sz = new_size * sizeof(int);
+        req->offsets = zrealloc(req->offsets, sz);
+        req->lengths = zrealloc(req->lengths, sz);
+        if (req->offsets == NULL || req->lengths == NULL) {
+            proxyLogErr("Failed to reallocate request "
+                        "offsets\n");
+            return 0;
+        }
+        req->offsets_size = new_size;
+    }
+    return 1;
+}
+
 static int parseRequest(clientRequest *req) {
-    int is_multibulk = 0, lf_len = 2, qry_offset = 0, ok = 1, i;
+    int lf_len = 2, status = req->parsing_status, len, i;
+    if (status != PARSE_STATUS_INCOMPLETE) return status;
     int buflen = sdslen(req->buffer);
-    char *p = req->buffer + qry_offset, *nl = NULL;
+    char *p = req->buffer + req->query_offset, *nl = NULL;
     sds line = NULL;
-    if (*p == '*') is_multibulk = 1;
-    if (req->offsets != NULL) zfree(req->offsets);
-    if (req->lengths != NULL) zfree(req->lengths);
-    req->offsets = zmalloc(sizeof(int) * QUERY_OFFSETS_MIN_SIZE);
-    req->lengths = zmalloc(sizeof(int) * QUERY_OFFSETS_MIN_SIZE);
-    req->argc = 0;
-    req->offsets_size = QUERY_OFFSETS_MIN_SIZE;
-    if (is_multibulk) {
-        while (qry_offset < buflen) {
+    /* New request, so request type must be determinded. */
+    if (req->is_multibulk == REQ_STATUS_UNKNOWN) {
+        if (*p == '*') req->is_multibulk = 1;
+        else req->is_multibulk = 0;
+    }
+    if (req->is_multibulk) {
+        while (req->query_offset < buflen) {
             if (*p == '*') {
                 req->num_commands++;
+                req->query_offset++;
+                p++;
+                req->pending_bulks = REQ_STATUS_UNKNOWN;
+                req->current_bulk_length = REQ_STATUS_UNKNOWN;
             }
-            nl = strchr(++p, '\r');
-            if (nl == NULL) {
-                proxyLogErr("Failed to parse multibulk query: newline not "
-                            "found!\n");
-                /* TODO: reply err? */
-                ok = 0;
+            if (req->query_offset >= buflen) {
+                status = PARSE_STATUS_INCOMPLETE;
                 goto cleanup;
             }
-            qry_offset++;
-            int len = nl - p;
-            if (line != NULL) sdsfree(line);
-            line = sdsnewlen(p, len);
-            long long lc = atoll(line);
-            qry_offset += (len + 2);
-            if (qry_offset >= buflen) break; /* TODO: err? */
-            p = req->buffer + qry_offset;
-            for (i = 0; i < lc; i++) {
-                if (*p != '$') {
-                    proxyLogErr("Failed to parse multibulk query: '$' not "
-                                "found!\n");
-                    /* TODO: reply err? */
-                    ok = 0;
-                    goto cleanup;
-                }
-                nl = strchr(++p, '\r');
+            long long lc = req->pending_bulks;
+            if (lc == REQ_STATUS_UNKNOWN) {
+                nl = strchr(p, '\r');
                 if (nl == NULL) {
-                    proxyLogErr("Failed to parse multibulk query: newline not "
-                                "found!\n");
-                    /* TODO: reply err? */
-                    ok = 0;
+                    status = PARSE_STATUS_INCOMPLETE;
                     goto cleanup;
                 }
-                qry_offset++;
-                len = nl - p;
+                int len = nl - p;
                 if (line != NULL) sdsfree(line);
                 line = sdsnewlen(p, len);
-                int arglen = atoi(line);
-                qry_offset += (len + 2);
-                if (qry_offset >= buflen) break; /* TODO: err? */
-                p = req->buffer + qry_offset;
-                if (arglen > 0) {
-                    int idx = req->argc++;
-                    if (req->argc >= req->offsets_size) {
-                        int new_size = req->argc + QUERY_OFFSETS_MIN_SIZE;
-                        size_t sz = new_size * sizeof(int);
-                        req->offsets = zrealloc(req->offsets, sz);
-                        req->lengths = zrealloc(req->lengths, sz);
-                        if (req->offsets == NULL || req->lengths == NULL) {
-                            ok = 0;
-                            proxyLogErr("Failed to reallocate request "
-                                        "offsets\n");
-                            goto cleanup;
-                        }
-                        req->offsets_size = new_size;
+                lc = atoll(line);
+                if (lc < 0) lc = 0;
+                req->query_offset += (len + 2);
+                req->pending_bulks = lc;
+                if (req->query_offset >= buflen) {
+                    status = PARSE_STATUS_INCOMPLETE;
+                    goto cleanup;
+                }
+                p = req->buffer + req->query_offset;
+            }
+            for (i = 0; i < lc; i++) {
+                int arglen = req->current_bulk_length;
+                if (arglen == REQ_STATUS_UNKNOWN) {
+                    if (*p != '$') {
+                        proxyLogErr("Failed to parse multibulk query: '$' not "
+                                    "found!\n");
+                        status = PARSE_STATUS_ERROR;
+                        goto cleanup;
                     }
+                    if ((req->query_offset + 1) >= buflen) {
+                        status = PARSE_STATUS_INCOMPLETE;
+                        goto cleanup;
+                    }
+                    nl = strchr(++p, '\r');
+                    if (nl == NULL) {
+                        status = PARSE_STATUS_INCOMPLETE;
+                        goto cleanup;
+                    }
+                    len = nl - p;
+                    if (line != NULL) sdsfree(line);
+                    line = sdsnewlen(p, len);
+                    arglen = atoi(line);
+                    if (arglen < 0) arglen = 0;
+                    req->current_bulk_length = arglen;
+                    req->query_offset += (len + 3);
+                    if (req->query_offset >= buflen) {
+                        status = PARSE_STATUS_INCOMPLETE;
+                        goto cleanup;
+                    }
+                    p = req->buffer + req->query_offset;
+                }
+                if (arglen > 0) {
+                    int newargc = req->argc + 1;
+                    if (!requestMakeRoomForArgs(req, newargc)) {
+                        status = PARSE_STATUS_ERROR;
+                        goto cleanup;
+                    }
+                    nl = strchr(p, '\r');
+                    if (nl == NULL) {
+                        status = PARSE_STATUS_INCOMPLETE;
+                        goto cleanup;
+                    }
+                    int endarg = req->query_offset + arglen;
+                    if (endarg >= buflen || *(req->buffer+endarg) != '\r') {
+                        status = PARSE_STATUS_INCOMPLETE;
+                        goto cleanup;
+                    }
+                    int idx = req->argc++;
                     req->offsets[idx] = p - req->buffer;
                     req->lengths[idx] = arglen;
                     /*DELME*/sds tk = sdsnewlen(p, arglen);printf("ARGV[%d]: '%s'\n", idx, tk); sdsfree(tk);
-                    qry_offset += (arglen + 2);
-                    if (qry_offset >= buflen) break; /* TODO: err? */
-                    p = req->buffer + qry_offset;
+                    req->pending_bulks--;
+                    req->current_bulk_length = REQ_STATUS_UNKNOWN;
+                    req->query_offset = endarg + 2;
+                    p = req->buffer + req->query_offset;
                 }
             }
         }
-        /*addReplyError(req->client, UNSUPPORTED_QUERY_ERR);*/
     } else {
-    /*TODO: */
         nl = strchr(p, '\n');
+        if (nl == NULL) {
+            status = PARSE_STATUS_INCOMPLETE;
+            goto cleanup;
+        }
         lf_len = 1;
-        if (nl != p && *(nl - 1) == '\r') lf_len++;
+        if (nl != p && *(nl - 1) == '\r') {
+            lf_len++;
+            nl--;
+        }
+        int qrylen = nl - p;
+        int remaining = qrylen;
+        while (remaining > 0) {
+            int idx = req->argc++;
+            if (!requestMakeRoomForArgs(req, idx)) {
+                status = PARSE_STATUS_ERROR;
+                goto cleanup;
+            }
+            char *sep = strchr(p, ' ');
+            if (!sep) sep = nl;
+            req->offsets[idx] = p - req->buffer;
+            req->lengths[idx] = sep - p;
+            p = sep + 1;
+            remaining = nl - p;
+        }
+        status = PARSE_STATUS_OK;
     }
 cleanup:
+    if (req->query_offset > buflen) req->query_offset = buflen;
+    int remaining = buflen - req->query_offset;
+    if (status == PARSE_STATUS_INCOMPLETE) {
+        if (req->is_multibulk && req->pending_bulks <= 0 && remaining == 0)
+            status = PARSE_STATUS_OK;
+    }
+    req->parsing_status = status;
     if (line != NULL) sdsfree(line);
-    return ok;
+    return status;
 }
 
 static sds getRequestCommand(clientRequest *req) {
@@ -837,66 +914,44 @@ static void freeRequest(clientRequest *req) {
     if (req->buffer != NULL) sdsfree(req->buffer);
     if (req->offsets != NULL) zfree(req->offsets);
     if (req->lengths != NULL) zfree(req->lengths);
+    if (req->client->current_request == req)
+        req->client->current_request = NULL;
     zfree(req);
 }
 
 static clientRequest *createRequest(client *c) {
     clientRequest *req = zcalloc(sizeof(*req));
-    if (req == NULL) {
-        proxyLogErr("ERROR: Failed to allocate request!\n");
-        return NULL;
-    }
+    if (req == NULL) goto alloc_failure;
     req->client = c;
-    assert(c->ibuf != NULL);
-    req->buffer = sdsdup(c->ibuf);
-    if (req->buffer == NULL) {
-        proxyLogErr("ERROR: Failed to allocate request buffer!\n");
-        zfree(req);
-        return NULL;
-    }
-    sdsclear(c->ibuf);
-    if (!parseRequest(req)) {
-        proxyLogErr("Failed to parse request!\n");
-        /* TODO: reply error */
-        freeRequest(req);
-        return NULL;
-    }
+    req->buffer = sdsempty();
+    if (req->buffer ==  NULL) goto alloc_failure;
+    req->query_offset = 0;
+    req->is_multibulk = REQ_STATUS_UNKNOWN;
+    req->pending_bulks = REQ_STATUS_UNKNOWN;
+    req->current_bulk_length = REQ_STATUS_UNKNOWN;
+    req->parsing_status = REQ_STATUS_UNKNOWN;
+    size_t offsets_size = sizeof(int) * QUERY_OFFSETS_MIN_SIZE;
+    req->offsets = zmalloc(offsets_size);
+    req->lengths = zmalloc(sizeof(int) * QUERY_OFFSETS_MIN_SIZE);
+    if (!req->offsets || !req->lengths) goto alloc_failure;
+    req->argc = 0;
+    req->offsets_size = QUERY_OFFSETS_MIN_SIZE;
     req->command = NULL;
+    c->current_request = req;
     return req;
+alloc_failure:
+    proxyLogErr("ERROR: Failed to allocate request!\n");
+    if (!req) return NULL;
+    freeRequest(req);
+    return NULL;
 }
 
-void readQuery(aeEventLoop *el, int fd, void *privdata, int mask){
-    UNUSED(el);
-    UNUSED(mask);
-    client *c = (client *) privdata;
-    int nread, readlen = (1024*16);
-    size_t iblen = sdslen(c->ibuf);
+static int processRequest(aeEventLoop *el, clientRequest *req) {
+    int status = parseRequest(req);
+    if (status == PARSE_STATUS_ERROR) return 0;
+    else if (status == PARSE_STATUS_INCOMPLETE) return 1;
+    client *c = req->client;
     sds command_name = NULL;
-    c->ibuf = sdsMakeRoomFor(c->ibuf, readlen);
-    nread = read(fd, c->ibuf + iblen, readlen);
-    if (nread == -1) {
-        if (errno == EAGAIN) {
-            return;
-        } else {
-            proxyLogDebug("Error reading from client %s: %s\n", c->ip,
-                          strerror(errno));
-            unlinkClient(c);
-            return;
-        }
-    } else if (nread == 0) {
-        proxyLogDebug("Client %s closed connection\n", c->ip);
-        unlinkClient(c);
-        return;
-    }
-    /* TODO: better implement unlinkClient */
-    sdsIncrLen(c->ibuf, nread);
-    /*TODO: support max query buffer length */
-    clientRequest *req = createRequest(c);
-    if (req == NULL) {
-        proxyLogErr("Failed to create request\n");
-        unlinkClient(c);
-        return;
-    }
     sds errmsg = NULL;
     if (req->argc == 0) {
         proxyLogDebug("Request with zero arguments\n");
@@ -905,7 +960,7 @@ void readQuery(aeEventLoop *el, int fd, void *privdata, int mask){
     }
     /* Multi command requests are currently unsupported. */
     if (req->num_commands > 1) {
-        errmsg = sdsnew("Multi-command requests are not currenlty supported");
+        errmsg = sdsnew("Multi-command requests are not currently supported");
         goto invalid_request;
     }
     command_name = getRequestCommand(req);
@@ -953,18 +1008,57 @@ void readQuery(aeEventLoop *el, int fd, void *privdata, int mask){
         proxyLogErr("Failed to create write handler for request\n");
         freeRequest(req);
         if (command_name) sdsfree(command_name);
-        return;
+        return 0;
     }
     listAddNodeTail(conn->requests_to_send, req);
     if (command_name) sdsfree(command_name);
-    return;
+    return 1;
 invalid_request:
+    if (command_name) sdsfree(command_name);
+    freeRequest(req);
     if (errmsg != NULL) {
         addReplyError(c, (char *) errmsg);
         sdsfree(errmsg);
+        return 1;
     }
-    if (command_name) sdsfree(command_name);
-    freeRequest(req);
+    return 0;
+}
+
+void readQuery(aeEventLoop *el, int fd, void *privdata, int mask){
+    UNUSED(el);
+    UNUSED(mask);
+    client *c = (client *) privdata;
+    int nread, readlen = (1024*16);
+    clientRequest *req = c->current_request;
+    if (req == NULL) {
+        req = createRequest(c);
+        if (req == NULL) {
+            proxyLogErr("Failed to create request\n");
+            freeClient(c);
+            return;
+        }
+    }
+    size_t iblen = sdslen(req->buffer);
+    req->buffer = sdsMakeRoomFor(req->buffer, readlen);
+    nread = read(fd, req->buffer + iblen, readlen);
+    if (nread == -1) {
+        if (errno == EAGAIN) {
+            return;
+        } else {
+            proxyLogDebug("Error reading from client %s: %s\n", c->ip,
+                          strerror(errno));
+            unlinkClient(c);
+            return;
+        }
+    } else if (nread == 0) {
+        proxyLogDebug("Client %s closed connection\n", c->ip);
+        freeClient(c);
+        return;
+    }
+    /* TODO: better implement unlinkClient */
+    sdsIncrLen(req->buffer, nread);
+    /*TODO: support max query buffer length */
+    if (!processRequest(el, req)) freeClient(c);
 }
 
 static void acceptHandler(int fd, char *ip) {
