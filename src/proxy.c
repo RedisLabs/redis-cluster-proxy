@@ -156,6 +156,57 @@ void dictListDestructor(void *privdata, void *val)
     listRelease((list*)val);
 }
 
+/* Hiredis helpers */
+
+/*int processItem(redisReader *r);*/
+
+/* This function does the same things as redisReaderGetReply, but
+ * it does not trim the reader's buffer, in order to let the proxy's
+ * read handler to get the full reply's buffer. Consuming and trimming
+ * ther reader's buffer is up to the proxy. */
+
+static int __hiredisReadReplyFromBuffer(redisReader *r, void **reply) {
+    /* Default target pointer to NULL. */
+    if (reply != NULL)
+        *reply = NULL;
+
+    /* Return early when this reader is in an erroneous state. */
+    if (r->err)
+        return REDIS_ERR;
+
+    /* When the buffer is empty, there will never be a reply. */
+    if (r->len == 0)
+        return REDIS_OK;
+
+    /* Set first item to process when the stack is empty. */
+    if (r->ridx == -1) {
+        r->rstack[0].type = -1;
+        r->rstack[0].elements = -1;
+        r->rstack[0].idx = -1;
+        r->rstack[0].obj = NULL;
+        r->rstack[0].parent = NULL;
+        r->rstack[0].privdata = r->privdata;
+        r->ridx = 0;
+    }
+
+    /* Process items in reply. */
+    while (r->ridx >= 0)
+        if (processItem(r) != REDIS_OK)
+            break;
+
+    /* Return ASAP when an error occurred. */
+    if (r->err)
+        return REDIS_ERR;
+
+    /* Emit a reply when there is one. */
+    if (r->ridx == -1) {
+        if (reply != NULL)
+            *reply = r->reply;
+        r->reply = NULL;
+    }
+    return REDIS_OK;
+}
+
 static int parseAddress(char *address, char **ip, int *port, char **hostsocket)
 {
     *ip = NULL;
@@ -1123,8 +1174,9 @@ static void readClusterReply(aeEventLoop *el, int fd,
             errmsg = "Failed to read reply";
         }
     } else {
-        success = (redisGetReply(ctx, &_reply) == REDIS_OK);
-        if (success && _reply == (void*)REDIS_REPLY_ERROR) success = 0;
+        success =
+            (__hiredisReadReplyFromBuffer(ctx->reader, &_reply) == REDIS_OK);
+        /*if (success && _reply == (void*)REDIS_REPLY_ERROR) success = 0;*/
         if (!success) {
             proxyLogErr("Error: %s\n", ctx->errstr);
             errmsg = "Failed to get reply";
@@ -1146,8 +1198,8 @@ static void readClusterReply(aeEventLoop *el, int fd,
         char *obuf = ctx->reader->buf;
         size_t len = ctx->reader->len;
         addReplyRaw(req->client, obuf, len);
+
         /* Consume reader buffer */
-        // TODO: atomic
         sdsrange(ctx->reader->buf, ctx->reader->pos, -1);
         ctx->reader->pos = 0;
         ctx->reader->len = sdslen(ctx->reader->buf);

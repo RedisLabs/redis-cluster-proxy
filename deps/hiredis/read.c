@@ -484,7 +484,7 @@ static int processAggregateItem(redisReader *r) {
     return REDIS_ERR;
 }
 
-static int processItem(redisReader *r) {
+int processItem(redisReader *r) {
     redisReadTask *cur = &(r->rstack[r->ridx]);
     char *p;
 
