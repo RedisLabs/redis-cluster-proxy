@@ -30,6 +30,8 @@ typedef struct {
     int daemonize;
     int loglevel;
     int use_colors;
+    int dump_queries;
+    int dump_buffer;
     char *auth;
 } redisClusterProxyConfig;
 

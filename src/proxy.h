@@ -58,7 +58,8 @@ typedef struct {
     size_t written;
     int status;
     int has_write_handler;
-    struct clientRequest *current_request;
+    struct clientRequest *current_request; /* Currently reading */
+    list *requests_to_process; /* Requests not completely parsed */
 } client;
 
 #endif /* __REDIS_CLUSTER_PROXY_H__ */
