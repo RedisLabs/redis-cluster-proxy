@@ -64,5 +64,6 @@ redisContext *clusterNodeConnect(clusterNode *node, int thread_id);
 redisContext *clusterNodeConnectAtomic(clusterNode *node, int thread_id);
 #endif /* __REDIS_CLUSTER_PROXY_CLUSTER_H__ */
 clusterNode *searchNodeBySlot(redisCluster *cluster, int slot);
-clusterNode *getNodeByKey(redisCluster *cluster, char *key, int keylen);
+clusterNode *getNodeByKey(redisCluster *cluster, char *key, int keylen,
+                          int *getslot);
 clusterNode *getFirstMappedNode(redisCluster *cluster);

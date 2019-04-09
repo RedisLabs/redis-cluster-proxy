@@ -407,10 +407,13 @@ clusterNode *searchNodeBySlot(redisCluster *cluster, int slot) {
     return node;
 }
 
-clusterNode *getNodeByKey(redisCluster *cluster, char *key, int keylen) {
+clusterNode *getNodeByKey(redisCluster *cluster, char *key, int keylen,
+                          int *getslot)
+{
     clusterNode *node = NULL;
     int slot = clusterKeyHashSlot(key, keylen);
     node = searchNodeBySlot(cluster, slot);
+    if (node && getslot != NULL) *getslot = slot;
     return node;
 }
 
