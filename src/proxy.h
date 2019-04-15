@@ -20,9 +20,11 @@
 
 #include <pthread.h>
 #include <stdint.h>
+#include <hiredis.h>
 #include "ae.h"
 #include "anet.h"
 #include "cluster.h"
+#include "commands.h"
 #include "sds.h"
 #include "dict.h"
 
@@ -33,8 +35,32 @@
 
 #define getClientLoop(c) (proxy.threads[c->thread_id]->loop)
 
+struct client;
 struct proxyThread;
-struct clientRequest;
+
+typedef struct clientRequest{
+    struct client *client;
+    uint64_t id;
+    sds buffer;
+    int query_offset;
+    int is_multibulk;
+    int argc;
+    int num_commands;
+    long long pending_bulks;
+    int current_bulk_length;
+    int *offsets;
+    int *lengths;
+    int offsets_size;
+    int slot;
+    clusterNode *node;
+    struct redisCommandDef *command;
+    size_t written;
+    int parsing_status;
+    int has_write_handler;
+    int has_read_handler;
+    struct clientRequest *prev_request; /* Previous pipelined request */
+    struct clientRequest *next_request; /* Next pipelined request */
+} clientRequest;
 
 typedef struct {
     redisCluster *cluster;
@@ -49,7 +75,7 @@ typedef struct {
     pthread_mutex_t numclients_mutex;
 } redisClusterProxy;
 
-typedef struct {
+typedef struct client {
     uint64_t id;
     int fd;
     sds ip;
@@ -58,8 +84,14 @@ typedef struct {
     size_t written;
     int status;
     int has_write_handler;
+    uint64_t next_request_id;
     struct clientRequest *current_request; /* Currently reading */
+    uint64_t min_reply_id;
+    rax *unordered_requests;
     list *requests_to_process; /* Requests not completely parsed */
 } client;
+
+void freeRequest(clientRequest *req, int delete_from_lists);
+void freeRequestList(list *request_list);
 
 #endif /* __REDIS_CLUSTER_PROXY_H__ */

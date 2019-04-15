@@ -15,17 +15,14 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef __REDIS_CLUSTER_PROXY_PROTOCOL_H__
-#define __REDIS_CLUSTER_PROXY_PROTOCOL_H__
+#ifndef __REDIS_CLUSTER_PROXY_REPLY_ORDER_H__
+#define __REDIS_CLUSTER_PROXY_REPLY_ORDER_H__
 
 #include <stdint.h>
+#include "sds.h"
 #include "proxy.h"
 
-void addReplyStringLen(client *c, const char *str, int len, uint64_t req_id);
-void addReplyString(client *c, const char *str, uint64_t req_id);
-void addReplyInt(client *c, int64_t integer, uint64_t req_id);
-void addReplyErrorLen(client *c, const char *err, int len, uint64_t req_id);
-void addReplyError(client *c, const char *err, uint64_t req_id);
-void addReplyRaw(client *c, const char *buf, size_t len, uint64_t req_id);
+void addUnorderedReply(client *c, sds reply, uint64_t req_id);
+int appendUnorderedRepliesToBuffer(client *c);
 
-#endif /* __REDIS_CLUSTER_PROXY_PROTOCOL_H__ */
+#endif /* __REDIS_CLUSTER_PROXY_REPLY_ORDER_H__ */

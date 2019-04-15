@@ -18,6 +18,8 @@
 #ifndef __REDIS_CLUSTER_PROXY_CONFIG_H__
 #define __REDIS_CLUSTER_PROXY_CONFIG_H__
 
+#include "redis_config.h"
+
 typedef struct {
     int port;
     char *cluster_address;

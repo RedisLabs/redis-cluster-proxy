@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <assert.h>
 #include <hiredis.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -26,6 +27,7 @@
 #include "zmalloc.h"
 #include "logger.h"
 #include "config.h"
+#include "proxy.h"
 
 #define CLUSTER_NODE_KEEPALIVE_INTERVAL 15
 #define CLUSTER_PRINT_REPLY_ERROR(n, err) \
@@ -64,6 +66,33 @@ static unsigned int clusterKeyHashSlot(char *key, int keylen) {
      * what is in the middle between { and }. */
     return crc16(key+s+1,e-s-1) & 0x3FFF;
 }
+
+static redisClusterConnection *createClusterConnection(void) {
+    redisClusterConnection *conn = zmalloc(sizeof(*conn));
+    if (conn == NULL) return NULL;
+    conn->context = NULL;
+    conn->requests_pending = listCreate();
+    if (conn->requests_pending == NULL) {
+        zfree(conn);
+        return NULL;
+    }
+    conn->requests_to_send = listCreate();
+    if (conn->requests_to_send == NULL) {
+        listRelease(conn->requests_pending);
+        zfree(conn);
+        return NULL;
+    }
+    return conn;
+}
+
+static void freeClusterConnection(redisClusterConnection *conn) {
+    freeRequestList(conn->requests_pending);
+    freeRequestList(conn->requests_to_send);
+    redisContext *ctx = conn->context;
+    if (ctx != NULL) redisFree(ctx);
+    zfree(conn);
+}
+
 
 /* Check whether reply is NULL or its type is REDIS_REPLY_ERROR. In the
  * latest case, if the 'err' arg is not NULL, it gets allocated with a copy
@@ -104,12 +133,13 @@ redisCluster *createCluster(int numthreads) {
 static void freeClusterNode(clusterNode *node) {
     if (node == NULL) return;
     int i;
-    if (node->context) {
+    if (node->connections) {
         for (i = 0; i < node->cluster->numthreads; i++) {
-            redisContext *ctx = node->context[i];
-            if (ctx != NULL) redisFree(ctx);
+            redisClusterConnection *conn = node->connections[i];
+            if (conn == NULL) continue;
+            freeClusterConnection(conn);
         }
-        zfree(node->context);
+        zfree(node->connections);
     }
     if (node->ip) sdsfree(node->ip);
     if (node->name) sdsfree(node->name);
@@ -148,7 +178,6 @@ static clusterNode *createClusterNode(char *ip, int port, redisCluster *c) {
     clusterNode *node = zcalloc(sizeof(*node));
     if (!node) return NULL;
     node->cluster = c;
-    node->context = zcalloc(c->numthreads * sizeof(redisContext *));
     node->ip = sdsnew(ip);
     node->port = port;
     node->name = NULL;
@@ -161,23 +190,33 @@ static clusterNode *createClusterNode(char *ip, int port, redisCluster *c) {
     node->importing = NULL;
     node->migrating_count = 0;
     node->importing_count = 0;
-    if (pthread_mutex_init(&(node->connection_mutex), NULL) != 0) {
-        proxyLogErr("Failed to init connection_mutex on node %s:%d\n",
-                     node->ip, node->port);
+    node->connections =
+        zcalloc(c->numthreads * sizeof(redisClusterConnection *));
+    if (node->connections == NULL) {
         freeClusterNode(node);
         return NULL;
+    }
+    int i = 0;
+    for(; i < c->numthreads; i++) {
+        node->connections[i] = createClusterConnection();
+        if (node->connections[i] == NULL) {
+            freeClusterNode(node);
+            return NULL;
+        }
     }
     return node;
 }
 
-redisContext *getClusterNodeConnection(clusterNode *node, int thread_id) {
+redisContext *getClusterNodeContext(clusterNode *node, int thread_id) {
     if (thread_id < 0) thread_id = node->cluster->numthreads - thread_id;
     if (thread_id >= node->cluster->numthreads) return NULL;
-    return node->context[thread_id];
+    redisClusterConnection *conn = node->connections[thread_id];
+    assert(conn != NULL);
+    return conn->context;
 }
 
 redisContext *clusterNodeConnect(clusterNode *node, int thread_id) {
-    redisContext *ctx = getClusterNodeConnection(node, thread_id);
+    redisContext *ctx = getClusterNodeContext(node, thread_id);
     if (ctx) redisFree(ctx);
     proxyLogDebug("Connecting to node %s:%d\n", node->ip, node->port);
     ctx = redisConnect(node->ip, node->port);
@@ -186,7 +225,7 @@ redisContext *clusterNodeConnect(clusterNode *node, int thread_id) {
         proxyLogErr("%s:%d: %s\n", node->ip, node->port,
                     ctx->errstr);
         redisFree(ctx);
-        node->context[thread_id] = NULL;
+        node->connections[thread_id]->context = NULL;
         return NULL;
     }
     /* Set aggressive KEEP_ALIVE socket option in the Redis context socket
@@ -202,11 +241,11 @@ redisContext *clusterNodeConnect(clusterNode *node, int thread_id) {
             proxyLogErr("Failed to authenticate to %s:%d\n", node->ip,
                         node->port);
             redisFree(ctx);
-            node->context[thread_id] = NULL;
+            node->connections[thread_id]->context = NULL;
             return NULL;
         }
     }
-    node->context[thread_id] = ctx;
+    node->connections[thread_id]->context = ctx;
     return ctx;
 }
 

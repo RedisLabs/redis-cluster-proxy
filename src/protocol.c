@@ -16,43 +16,57 @@
  */
 
 #include <string.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include "protocol.h"
+#include "logger.h"
+#include "reply_order.h"
 #include "sds.h"
 
-void addReplyStringLen(client *c, const char *str, int len) {
+void addReplyStringLen(client *c, const char *str, int len, uint64_t req_id) {
     sds r = sdsnew("+");
     r = sdscatlen(r, str, len);
     r = sdscat(r, "\r\n");
-    c->obuf = sdscat(c->obuf, r);
+    addReplyRaw(c, (const char*) r, sdslen(r), req_id);
     sdsfree(r);
 }
 
-void addReplyString(client *c, const char *str) {
-    addReplyStringLen(c, str, strlen(str));
+void addReplyString(client *c, const char *str, uint64_t req_id) {
+    addReplyStringLen(c, str, strlen(str), req_id);
 }
 
-void addReplyInt(client *c, int64_t integer) {
+void addReplyInt(client *c, int64_t integer, uint64_t req_id) {
     sds r = sdsnew(":");
     r = sdscatfmt(r, "%U\r\n", integer);
     c->obuf = sdscat(c->obuf, r);
+    addReplyRaw(c, (const char*) r, sdslen(r), req_id);
     sdsfree(r);
 }
 
-void addReplyErrorLen(client *c, const char *err, int len) {
+void addReplyErrorLen(client *c, const char *err, int len, uint64_t req_id) {
     sds r = sdsnew("-ERR");
     if (len) {
         r = sdscat(r, " ");
         r = sdscatlen(r, err, len);
     }
     r = sdscat(r, "\r\n");
-    c->obuf = sdscat(c->obuf, r);
+    addReplyRaw(c, (const char*) r, sdslen(r), req_id);
     sdsfree(r);
 }
 
-void addReplyError(client *c, const char *err) {
-    addReplyErrorLen(c, err, strlen(err));
+void addReplyError(client *c, const char *err, uint64_t req_id) {
+    addReplyErrorLen(c, err, strlen(err), req_id);
 }
 
-void addReplyRaw(client *c, const char *buf, size_t len) {
+void addReplyRaw(client *c, const char *buf, size_t len, uint64_t req_id) {
+    /* If the smallest request ID written is smaller than reply's request ID,
+     *  replies are not ordered, so add the reply to the unordered_requests rax
+     * using the request ID as the key. */
+    if (req_id > c->min_reply_id) {
+        addUnorderedReply(c, sdsnewlen(buf, len), req_id);
+        return;
+    }
     c->obuf = sdscatlen(c->obuf, buf, len);
+    c->min_reply_id = req_id + 1;
+    appendUnorderedRepliesToBuffer(c);
 }

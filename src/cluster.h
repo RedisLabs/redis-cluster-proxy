@@ -21,15 +21,21 @@
 #include "sds.h"
 #include "adlist.h"
 #include "rax.h"
-#include <hiredis.h>
 #include <pthread.h>
+#include <hiredis.h>
 
 #define CLUSTER_SLOTS 16384
 
 struct redisCluster;
 
+typedef struct redisClusterConnection {
+    redisContext *context;
+    list *requests_to_send;
+    list *requests_pending;
+} redisClusterConnection;
+
 typedef struct clusterNode {
-    redisContext **context;
+    redisClusterConnection **connections;
     struct redisCluster *cluster;
     sds ip;
     int port;
@@ -59,7 +65,7 @@ redisCluster *createCluster(int numthreads);
 void freeCluster(redisCluster *cluster);
 int fetchClusterConfiguration(redisCluster *cluster, char *ip, int port,
                               char *hostsocket);
-redisContext *getClusterNodeConnection(clusterNode *node, int thread_id);
+redisContext *getClusterNodeContext(clusterNode *node, int thread_id);
 redisContext *clusterNodeConnect(clusterNode *node, int thread_id);
 redisContext *clusterNodeConnectAtomic(clusterNode *node, int thread_id);
 clusterNode *searchNodeBySlot(redisCluster *cluster, int slot);
