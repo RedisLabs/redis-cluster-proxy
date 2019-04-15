@@ -599,7 +599,7 @@ static client *createClient(int fd, char *ip) {
     c->thread_id = (numclients % config.num_threads);
     c->id = numclients;
     c->next_request_id = 0;
-    c->min_reply_id = UINT64_MAX;
+    c->min_reply_id = 0;
     return c;
 }
 
@@ -687,11 +687,6 @@ static int writeToClient(client *c) {
     if (c->written == (size_t) buflen) {
         sdsclear(c->obuf);
         c->written = 0;
-        /* When all replies have been written, so reset client's min_reply_id
-         * to max. */
-        if (raxSize(c->unordered_requests) == 0) {
-            c->min_reply_id = UINT64_MAX;
-        }
         if (c->has_write_handler) {
             proxyThread *thread = proxy.threads[c->thread_id];
             assert(thread != NULL);
