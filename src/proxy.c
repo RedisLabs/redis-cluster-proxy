@@ -20,7 +20,6 @@
 #include "logger.h"
 #include "zmalloc.h"
 #include "protocol.h"
-#include "atomicvar.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -598,9 +597,8 @@ static client *createClient(int fd, char *ip) {
     anetEnableTcpNoDelay(NULL, fd);
     if (config.tcpkeepalive)
         anetKeepAlive(NULL, fd, config.tcpkeepalive);
-    size_t numclients = 0;
-    atomicGetIncr(proxy.numclients, numclients, 1);
     /* TODO: select thread with less clients */
+    uint64_t numclients = proxy.numclients++;
     c->thread_id = (numclients % config.num_threads);
     c->id = proxy.threads[c->thread_id]->next_client_id++;
     if (proxy.threads[c->thread_id]->next_client_id == UINT64_MAX)
@@ -690,7 +688,7 @@ static void freeClient(client *c) {
     if (c->unordered_replies)
         raxFreeWithCallback(c->unordered_replies, (void (*)(void*))sdsfree);
     zfree(c);
-    atomicIncr(proxy.numclients, -1);
+    proxy.numclients--;
 }
 
 static int writeToClient(client *c) {
