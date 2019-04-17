@@ -70,7 +70,7 @@ typedef struct {
     int tcp_backlog;
     char neterr[ANET_ERR_LEN];
     struct proxyThread **threads;
-    uint64_t numclients;
+    _Atomic uint64_t numclients;
     rax *commands;
     pthread_mutex_t numclients_mutex;
 } redisClusterProxy;
