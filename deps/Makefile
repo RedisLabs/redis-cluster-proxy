@@ -34,7 +34,6 @@ endif
 
 distclean:
 	-(cd hiredis && $(MAKE) clean) > /dev/null || true
-	-(cd jemalloc && [ -f Makefile ] && $(MAKE) distclean) > /dev/null || true
 	-(rm -f .make-*)
 
 .PHONY: distclean
@@ -44,13 +43,3 @@ hiredis: .make-prerequisites
 	cd hiredis && $(MAKE) static
 
 .PHONY: hiredis
-
-JEMALLOC_CFLAGS= -std=gnu99 -Wall -pipe -g3 -O3 -funroll-loops $(CFLAGS)
-JEMALLOC_LDFLAGS= $(LDFLAGS)
-
-jemalloc: .make-prerequisites
-	@printf '%b %b\n' $(MAKECOLOR)MAKE$(ENDCOLOR) $(BINCOLOR)$@$(ENDCOLOR)
-	cd jemalloc && ./configure --with-version=5.1.0-0-g0 --with-lg-quantum=3 --with-jemalloc-prefix=je_ --enable-cc-silence CFLAGS="$(JEMALLOC_CFLAGS)" LDFLAGS="$(JEMALLOC_LDFLAGS)"
-	cd jemalloc && $(MAKE) CFLAGS="$(JEMALLOC_CFLAGS)" LDFLAGS="$(JEMALLOC_LDFLAGS)" lib/libjemalloc.a
-
-.PHONY: jemalloc
