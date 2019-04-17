@@ -20,15 +20,7 @@ PREFIX?=/usr/local
 INSTALL_BIN=$(PREFIX)/bin
 INSTALL=install
 
-# Default allocator defaults to Jemalloc if it's not an ARM
 MALLOC=libc
-ifneq ($(uname_M),armv6l)
-ifneq ($(uname_M),armv7l)
-ifeq ($(uname_S),Linux)
-	MALLOC=jemalloc
-endif
-endif
-endif
 
 # To get ARM stack traces if Redis crashes we need a special C flag.
 ifneq (,$(filter aarch64 armv,$(uname_M)))
@@ -46,14 +38,6 @@ endif
 
 ifeq ($(USE_TCMALLOC_MINIMAL),yes)
 	MALLOC=tcmalloc_minimal
-endif
-
-ifeq ($(USE_JEMALLOC),yes)
-	MALLOC=jemalloc
-endif
-
-ifeq ($(USE_JEMALLOC),no)
-	MALLOC=libc
 endif
 
 # Override default settings if possible
@@ -129,12 +113,6 @@ ifeq ($(MALLOC),tcmalloc_minimal)
 	FINAL_LIBS+= -ltcmalloc_minimal
 endif
 
-ifeq ($(MALLOC),jemalloc)
-	DEPENDENCY_TARGETS+= jemalloc
-	FINAL_CFLAGS+= -DUSE_JEMALLOC -I../deps/jemalloc/include
-	FINAL_LIBS := ../deps/jemalloc/lib/libjemalloc.a $(FINAL_LIBS)
-endif
-
 REDIS_CLUSTER_PROXY_CC=$(CC) $(FINAL_CFLAGS)
 REDIS_CLUSTER_PROXY_LD=$(CC) $(FINAL_LDFLAGS)
 REDIS_CLUSTER_PROXY_INSTALL=$(INSTALL)
@@ -194,9 +172,6 @@ all: $(REDIS_CLUSTER_PROXY_NAME)
 
 .PHONY: all
 
-# Because the jemalloc.h header is generated as a part of the jemalloc build,
-# building it should complete before building any other object. Instead of
-# depending on a single artifact, build all dependencies first.
 %.o: %.c .make-prerequisites
 	$(REDIS_CLUSTER_PROXY_CC) -c $<
 
