@@ -26,7 +26,7 @@
 #include "cluster.h"
 #include "commands.h"
 #include "sds.h"
-#include "dict.h"
+#include "rax.h"
 
 #define REDIS_CLUSTER_PROXY_VERSION "0.0.1"
 #define CLIENT_STATUS_NONE          0
@@ -71,7 +71,7 @@ typedef struct {
     char neterr[ANET_ERR_LEN];
     struct proxyThread **threads;
     uint64_t numclients;
-    dict *commands;
+    rax *commands;
     pthread_mutex_t numclients_mutex;
 } redisClusterProxy;
 

@@ -108,50 +108,6 @@ static clientRequest *getFirstQueuedRequest(list *queue);
 static int enqueueRequest(clientRequest *req, int queue_type);
 static void dequeueRequest(clientRequest *req, int queue_type);
 
-/* Dict Helpers */
-
-static uint64_t dictSdsHash(const void *key);
-static int dictSdsKeyCompare(void *privdata, const void *key1,
-    const void *key2);
-static void dictSdsDestructor(void *privdata, void *val);
-static void dictListDestructor(void *privdata, void *val);
-
-static dictType redisCommandsDictType = {
-    dictSdsHash,               /* hash function */
-    NULL,                      /* key dup */
-    NULL,                      /* val dup */
-    dictSdsKeyCompare,         /* key compare */
-    dictSdsDestructor,         /* key destructor */
-    NULL                       /* val destructor */
-};
-
-static uint64_t dictSdsHash(const void *key) {
-    return dictGenHashFunction((unsigned char*)key, sdslen((char*)key));
-}
-
-static int dictSdsKeyCompare(void *privdata, const void *key1, const void *key2)
-{
-    int l1,l2;
-    DICT_NOTUSED(privdata);
-
-    l1 = sdslen((sds)key1);
-    l2 = sdslen((sds)key2);
-    if (l1 != l2) return 0;
-    return memcmp(key1, key2, l1) == 0;
-}
-
-static void dictSdsDestructor(void *privdata, void *val)
-{
-    DICT_NOTUSED(privdata);
-    sdsfree(val);
-}
-
-void dictListDestructor(void *privdata, void *val)
-{
-    DICT_NOTUSED(privdata);
-    listRelease((list*)val);
-}
-
 /* Hiredis helpers */
 
 int processItem(redisReader *r);
@@ -201,6 +157,18 @@ static int __hiredisReadReplyFromBuffer(redisReader *r, void **reply) {
         r->reply = NULL;
     }
     return REDIS_OK;
+}
+
+/* Proxy functions */
+
+redisCommandDef *getRedisCommand(sds name) {
+    redisCommandDef *cmd = NULL;
+    raxIterator iter;
+    raxStart(&iter, proxy.commands);
+    if (raxSeek(&iter, "=", (unsigned char*) name, sdslen(name)))
+        if (raxNext(&iter)) cmd = (redisCommandDef *) iter.data;
+    raxStop(&iter);
+    return cmd;
 }
 
 static int parseAddress(char *address, char **ip, int *port, char **hostsocket)
@@ -323,11 +291,12 @@ static void initProxy(void) {
     int i;
     proxy.numclients = 0;
     /* Populate commands table. */
-    proxy.commands = dictCreate(&redisCommandsDictType, NULL);
+    proxy.commands = raxNew();
     int command_count = sizeof(redisCommandTable) / sizeof(redisCommandDef);
     for (i = 0; i < command_count; i++) {
         redisCommandDef *cmd = redisCommandTable + i;
-        dictAdd(proxy.commands, sdsnew(cmd->name), cmd);
+        raxInsert(proxy.commands, (unsigned char*) cmd->name,
+                  strlen(cmd->name), cmd, NULL);
     }
     proxy.main_loop = aeCreateEventLoop(config.maxclients);
     proxy.threads = zmalloc(config.num_threads *
@@ -370,7 +339,7 @@ static void releaseProxy(void) {
     }
     freeCluster(proxy.cluster);
     if (proxy.commands)
-        dictRelease(proxy.commands);
+        raxFree(proxy.commands);
 }
 
 void writeHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
@@ -1276,7 +1245,7 @@ static int processRequest(clientRequest *req) {
         errmsg = sdsnew("Invalid request");
         goto invalid_request;
     }
-    redisCommandDef *cmd = dictFetchValue(proxy.commands, command_name);
+    redisCommandDef *cmd = getRedisCommand(command_name);
     /* Unsupported commands:
      * - Commands not defined in redisCommandTable
      * - Commands explictly having unsupported to 1
