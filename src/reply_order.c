@@ -43,6 +43,8 @@ int appendUnorderedRepliesToBuffer(client *c) {
             c->obuf = sdscat(c->obuf, reply);
             c->min_reply_id++;
             count++;
+            raxRemove(c->unordered_requests, iter.key, iter.key_len, NULL);
+            sdsfree(reply);
         } else break;
     }
     raxStop(&iter);
