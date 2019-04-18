@@ -88,7 +88,9 @@ typedef struct client {
     struct clientRequest *current_request; /* Currently reading */
     uint64_t min_reply_id;
     rax *unordered_requests;
-    list *requests_to_process; /* Requests not completely parsed */
+    list *requests_to_process;       /* Requests not completely parsed */
+    int requests_with_write_handler; /* Number of request that are still
+                                      * being writing to cluster */
 } client;
 
 void freeRequest(clientRequest *req, int delete_from_lists);

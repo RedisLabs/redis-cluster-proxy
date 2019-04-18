@@ -61,10 +61,12 @@
 #define dequeueRequestToSend(req) (dequeueRequest(req, QUEUE_TYPE_SENDING))
 #define enqueuePendingRequest(req) (enqueueRequest(req, QUEUE_TYPE_PENDING))
 #define dequeuePendingRequest(req) (dequeueRequest(req, QUEUE_TYPE_PENDING))
-#define getFirstRequestToSend(node, t) \
-    (getFirstQueuedRequest(getClusterConnection(node, t)->requests_to_send))
-#define getFirstRequestPending(node, t) \
-    (getFirstQueuedRequest(getClusterConnection(node, t)->requests_pending))
+#define getFirstRequestToSend(node, t, isempty) \
+    (getFirstQueuedRequest(getClusterConnection(node, t)->requests_to_send,\
+     isempty))
+#define getFirstRequestPending(node, t, isempty) \
+    (getFirstQueuedRequest(getClusterConnection(node, t)->requests_pending,\
+     isempty))
 
 typedef struct _threadMessage {
     char type;
@@ -104,7 +106,7 @@ static clientRequest *handleNextRequestToCluster(clusterNode *node,
 static clientRequest *handleNextPendingRequest(clusterNode *node,
                                                int thread_id);
 static int prepareRequestForReadingReply(clientRequest *req);
-static clientRequest *getFirstQueuedRequest(list *queue);
+static clientRequest *getFirstQueuedRequest(list *queue, int *is_empty);
 static int enqueueRequest(clientRequest *req, int queue_type);
 static void dequeueRequest(clientRequest *req, int queue_type);
 
@@ -569,6 +571,7 @@ static client *createClient(int fd, char *ip) {
     c->id = numclients;
     c->next_request_id = 0;
     c->min_reply_id = 0;
+    c->requests_with_write_handler = 0;
     return c;
 }
 
@@ -597,15 +600,26 @@ static void freeAllClientRequests(client *c) {
         listRewind(conn->requests_to_send, &nli);
         while ((nln = listNext(&nli))) {
             clientRequest *req = nln->value;
+            if (req == NULL) {
+                listDelNode(conn->requests_to_send, ln);
+                continue;
+            }
             if (req->client != c) continue;
+            if (c->status == CLIENT_STATUS_UNLINKED && req->has_write_handler)
+                continue;
             listDelNode(conn->requests_to_send, nln);
             freeRequest(req, 0);
         }
         listRewind(conn->requests_pending, &nli);
         while ((nln = listNext(&nli))) {
             clientRequest *req = nln->value;
+            if (req == NULL) continue;
             if (req->client != c) continue;
-            listDelNode(conn->requests_pending, nln);
+            /* We cannot delete the request's list node from the queue, since
+             * this would break the processing order of the replies, so we
+             * we create a NULL placeholder (a 'ghost request') by simply
+             * setting the list node's value to NULL. */
+            nln->value = NULL;
             freeRequest(req, 0);
         }
     }
@@ -613,6 +627,12 @@ static void freeAllClientRequests(client *c) {
 
 static void freeClient(client *c) {
     if (c->status != CLIENT_STATUS_UNLINKED) unlinkClient(c);
+    /* If the client still has requests handled by write handlers, it's not
+     * possibile to free it soon, as those requests would be truncated and
+     * they could break all other following requests in a multiplexing
+     * context. */
+    if (c->requests_with_write_handler > 0) return;
+    proxyLogDebug("Free client %llu\n", c->id);
     int thread_id = c->thread_id;
     proxyThread *thread = proxy.threads[thread_id];
     assert(thread != NULL);
@@ -674,7 +694,7 @@ static void writeToClusterHandler(aeEventLoop *el, int fd, void *privdata,
     UNUSED(mask);
     clusterNode *node = privdata;
     proxyThread *thread = el->privdata;
-    clientRequest *req = getFirstRequestToSend(node, thread->thread_id);
+    clientRequest *req = getFirstRequestToSend(node, thread->thread_id, NULL);
     if (req == NULL) return;
     writeToCluster(el, fd, req);
 }
@@ -702,26 +722,43 @@ static int writeToCluster(aeEventLoop *el, int fd, clientRequest *req) {
     /* The whole query has been written, so create the read handler and
      * move the request from requests_to_send to requests_pending. */
     if (req->written == buflen) {
+        client *c = req->client;
+        clusterNode *node = req->node;
+        int thread_id = c->thread_id;
         proxyLogDebug("Request %llu:%llu written to node %s:%d, adding it to "
-                      "pending requests\n", req->client->id, req->id,
-                      req->node->ip, req->node->port);
+                      "pending requests\n", c->id, req->id,
+                      node->ip, node->port);
         aeDeleteFileEvent(el, fd, AE_WRITABLE);
         req->has_write_handler = 0;
-        if (!enqueuePendingRequest(req)) {
+        c->requests_with_write_handler--;
+        dequeueRequestToSend(req);
+        if (c->status == CLIENT_STATUS_UNLINKED) {
+            /* Client has been disconnected, so we'll enqueue a NULL pointer
+             * (a 'ghost rquest') to pending requests, so that the reply will
+             * be just skipped during reply buffer processing. Without using
+             * this NULL placeholder, the reply buffer processing order would
+             * be broken. After enqueuing the ghost request, we can finally
+             * free and the request itself and try to free the client
+             * completely. */
+            list *pending_queue =
+                getClusterConnection(node, thread_id)->requests_pending;
+            listAddNodeTail(pending_queue, NULL);
+            freeRequest(req, 1);
+            freeClient(c);
+        } else if (!enqueuePendingRequest(req)) {
             proxyLogDebug("Could not enqueue pending request %llu:%llu\n",
                           req->client->id, req->id);
             addReplyError(req->client, "Could not enqueue request", req->id);
             freeRequest(req, 1);
             return 0;
         }
-        dequeueRequestToSend(req);
         proxyLogDebug("Still have %d request(s) to send\n",
-                      listLength(getClusterConnection(req->node,
-                                 req->client->thread_id)->requests_to_send));
+                      listLength(getClusterConnection(node,
+                                 thread_id)->requests_to_send));
         /* Try to install the read handler immediately */
-        handleNextPendingRequest(req->node, req->client->thread_id);
+        handleNextPendingRequest(node, thread_id);
         /* Try to send the next available request to send, if one. */
-        handleNextRequestToCluster(req->node, req->client->thread_id);
+        handleNextRequestToCluster(node, thread_id);
     }
     return success;
 }
@@ -991,6 +1028,11 @@ static clusterNode *getRequestNode(clientRequest *req, sds *err) {
 
 void freeRequest(clientRequest *req, int delete_from_lists) {
     proxyLogDebug("Free Request %llu:%llu\n", req->client->id, req->id);
+    if (req->has_write_handler) {
+        proxyLogDebug("Request %llu:%llu is still writting, cannot free "
+                      "it now...\n", req->client->id, req->id);
+        return;
+    }
     if (req->buffer != NULL) sdsfree(req->buffer);
     if (req->offsets != NULL) zfree(req->offsets);
     if (req->lengths != NULL) zfree(req->lengths);
@@ -1007,7 +1049,7 @@ void freeRequest(clientRequest *req, int delete_from_lists) {
     if (req->next_request != NULL && req->next_request->prev_request == req)
         req->next_request->prev_request = NULL;
     if (req->prev_request != NULL && req->prev_request->next_request == req) {
-        /*TODO: this should be handle atomically */
+        /*TODO: this should be handled atomically */
         req->prev_request->next_request = req->next_request;
     }
     if (delete_from_lists && req->node != NULL) {
@@ -1019,7 +1061,12 @@ void freeRequest(clientRequest *req, int delete_from_lists) {
         ln = listSearchKey(conn->requests_pending, req);
         if (ln) listDelNode(conn->requests_pending, ln);
         ln = listSearchKey(req->client->requests_to_process, req);
-        if (ln) listDelNode(req->client->requests_to_process, ln);
+        /* We cannot delete the request's list node from the requests_pending
+         * queue, since this would break the reply processing order. So we just
+         * set its value to NULL. The resulting NULL placeholder (we can call
+         * it a 'ghost request') will be simply skipped during reply buffer
+         * processing. */
+        if (ln) ln->value = NULL;
     }
     zfree(req);
 }
@@ -1036,9 +1083,19 @@ void freeRequestList(list *request_list) {
     listRelease(request_list);
 }
 
-static clientRequest *getFirstQueuedRequest(list *queue) {
+/* Return the first queued request from thr specified queue. It can return
+ * NULL if the queue is empty or if the first list node is just a NULL
+ * placeholder (a 'ghost request') used in place of a request created by a
+ * freed client (ie. a disconnected client). The is_empty pointer can be
+ * used to check if the queue is actually empty or if the first node is a
+ * NULL placeholder for a ghost request. */
+static clientRequest *getFirstQueuedRequest(list *queue, int *is_empty) {
+    if (is_empty != NULL) *is_empty = 0;
     listNode *ln = listFirst(queue);
-    if (ln == NULL) return NULL;
+    if (ln == NULL) {
+        if (is_empty != NULL) *is_empty = 1;
+        return NULL;
+    }
     return (clientRequest *) ln->value;
 }
 
@@ -1116,11 +1173,14 @@ static int prepareRequestForReadingReply(clientRequest *req) {
     if (req->has_read_handler) return 1;
     assert(req->node != NULL);
     aeEventLoop *el = getClientLoop(req->client);
-    int thread_id = req->client->thread_id;
+    int thread_id = req->client->thread_id, success;
     redisContext *ctx = getClusterNodeContext(req->node, thread_id);
     /* Connection to cluster node must be established in order to read the
      * reply */
-    if (ctx == NULL) return 0;
+    if (ctx == NULL) {
+        success = 0;
+        goto cleanup_and_return;
+    }
     ///*TODO: check it*/if (aeGetFileEvents(el, ctx->fd) & AE_READABLE) {req->has_read_handler = 1; return 1;}
     if (aeCreateFileEvent(el, ctx->fd, AE_READABLE, readClusterReply,
         req->node) != AE_ERR)
@@ -1129,23 +1189,59 @@ static int prepareRequestForReadingReply(clientRequest *req) {
         proxyLogDebug("Read reply handler installed into request %llu:%llu "
                       "for node %s:%d\n", req->client->id, req->id,
                       req->node->ip, req->node->port);
-        return 1;
+        success = 1;
     } else {
         proxyLogDebug("Failed to create handler for request %llu:%llu!\n",
                       req->client->id, req->id);
+        /* TODO: handle failure reason, ie OOM */
+        success = 0;
+    }
+cleanup_and_return:
+    if (!success) {
         addReplyError(req->client, "Failed to read reply", req->id);
         freeRequest(req, 1);
-        return 0;
     }
+    return success;
+}
+
+static clientRequest *getFirstValidRequestPending(clusterNode *node,
+                                                  int thread_id)
+{
+    int empty_queue = 0;
+    clientRequest *req = getFirstRequestPending(node, thread_id, &empty_queue);
+    if (req == NULL) {
+        /* Request can be NULL because the pending queue is empty or because
+         * it could be a 'ghost request' (that is a NULL placeholder for a
+         * request made by a freed client, ie. a disconnected client). In this
+         * case, we cycle the queue until we found the first valid request to
+         * be prepared for reading. If all the requests in the queue are NULL,
+         * just empty the queue and return NULL. */
+        if (!empty_queue) {
+            redisClusterConnection *conn =
+                getClusterConnection(node, thread_id);
+            listIter li;
+            listNode *ln;
+            listRewind(conn->requests_pending, &li);
+            while ((ln = listNext(&li))) {
+                req = ln->value;
+                if (req != NULL) break;
+            }
+            if (req == NULL) {
+                listEmpty(conn->requests_pending);
+                return NULL;
+            }
+        } else return NULL;
+    }
+    return req;
 }
 
 static clientRequest *handleNextPendingRequest(clusterNode *node,
                                                int thread_id)
 {
-    clientRequest *req = getFirstRequestPending(node, thread_id);
+    clientRequest *req = getFirstValidRequestPending(node, thread_id);
     if (req == NULL) return NULL;
     while (!prepareRequestForReadingReply(req)) {
-        req = getFirstRequestPending(node, thread_id);
+        req = getFirstValidRequestPending(node, thread_id);
         if (req == NULL) break;
     }
     return req;
@@ -1191,6 +1287,7 @@ static int sendRequestToCluster(clientRequest *req, char **errmsg)
             return 0;
         }
         req->has_write_handler = 1;
+        req->client->requests_with_write_handler++;
         proxyLogDebug("Write handler installed into request %llu:%llu for "
                       "node %s:%d\n", req->client->id, req->id,
                       req->node->ip, req->node->port);
@@ -1206,12 +1303,12 @@ static int sendRequestToCluster(clientRequest *req, char **errmsg)
 static clientRequest *handleNextRequestToCluster(clusterNode *node,
                                                  int thread_id)
 {
-    clientRequest *req = getFirstRequestToSend(node, thread_id);
+    clientRequest *req = getFirstRequestToSend(node, thread_id, NULL);
     if (req == NULL) return NULL;
     char *err = NULL;
     while (!sendRequestToCluster(req, &err)) {
         if (err) proxyLogDebug(err);
-        req = getFirstRequestToSend(node, thread_id);
+        req = getFirstRequestToSend(node, thread_id, NULL);
         if (req == NULL) break;
     }
     return req;
@@ -1382,8 +1479,22 @@ static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
         /* Reply not yet available, just return */
         if (ok && reply == NULL) break;
         replies++;
-        clientRequest *req = getFirstRequestPending(node, thread_id);
-        assert(req != NULL);
+        clientRequest *req = getFirstRequestPending(node, thread_id, NULL);
+        /* If request is NULL, it's be a ghost request that is a NULL
+         * placeholder in place of a request created by a freed client
+         * (ie. a disconnected client). In this case, just dequeue the list
+         * node containing the NULL placeholder and directly skip to
+         * 'consume_buffer' in order to process the remaining reply buffer. */
+        if (req == NULL) {
+            list *queue =
+                getClusterConnection(node, thread_id)->requests_pending;
+            /* It should never happen that the request is NULL because of an
+             * empty queue while we still have reply buffer to process */
+            assert(listLength(queue) > 0);
+            listNode *ln = listFirst(queue);
+            listDelNode(queue, ln);
+            goto consume_buffer;
+        }
         proxyLogDebug("Reply read complete for request %llu:%llu, %s%s\n",
                       req->client->id, req->id, errmsg ? " ERR: " : "OK!",
                       errmsg ? errmsg : "");
@@ -1405,13 +1516,14 @@ static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
             }
             addReplyRaw(req->client, obuf, len, req->id);
 
-            /* Consume reader buffer */
-            sdsrange(ctx->reader->buf, ctx->reader->pos, -1);
-            ctx->reader->pos = 0;
-            ctx->reader->len = sdslen(ctx->reader->buf);
         }
+consume_buffer:
+        /* Consume reader buffer */
+        sdsrange(ctx->reader->buf, ctx->reader->pos, -1);
+        ctx->reader->pos = 0;
+        ctx->reader->len = sdslen(ctx->reader->buf);
         freeReplyObject(reply);
-        freeRequest(req, 1);
+        if (req) freeRequest(req, 1);
         if (!ok) break;
     }
     return replies;
@@ -1424,12 +1536,13 @@ static void readClusterReply(aeEventLoop *el, int fd,
     proxyThread *thread = el->privdata;
     int thread_id = thread->thread_id;
     clusterNode *node = privdata;
-    clientRequest *req = getFirstRequestPending(node, thread_id);
-    if (req == NULL) return;
+    clientRequest *req = getFirstRequestPending(node, thread_id, NULL);
     redisContext *ctx = getClusterNodeContext(node, thread_id);
+    list *queue =
+        getClusterConnection(node, thread_id)->requests_pending;
     char *errmsg = NULL;
-    proxyLogDebug("Reading reply from %s:%d (first request is %llu:%llu)...\n",
-                  req->node->ip, req->node->port, req->client->id, req->id);
+    proxyLogDebug("Reading reply from %s:%d...\n",
+                  node->ip, node->port);
     int success = (redisBufferRead(ctx) == REDIS_OK), retry = 0, replies = 0;
     if (!success) {
         int err = ctx->err;
@@ -1437,24 +1550,29 @@ static void readClusterReply(aeEventLoop *el, int fd,
             /* Try to reconnect to the node */
             if (!(ctx = clusterNodeConnect(node, thread_id)))
                 errmsg = "Cluster node disconnected"; /*TODO add node ip:port*/
-            else {
+            else if (req != NULL) {
                 req->written = 0;
                 retry = 1;
             }
         } else {
-            proxyLogErr("Error from node %s:%d: %s\n", req->node->ip,
-                        req->node->port, ctx->errstr);
+            proxyLogErr("Error from node %s:%d: %s\n", node->ip, node->port,
+                        ctx->errstr);
             errmsg = "Failed to read reply";
         }
         if (errmsg != NULL && !retry) {
-            dequeuePendingRequest(req);
-            addReplyError(req->client, errmsg, req->id);
-            freeRequest(req, 1);
+            /* An error occurred and it's not possibile to retry */
+            if (req != NULL) {
+                dequeuePendingRequest(req);
+                addReplyError(req->client, errmsg, req->id);
+                freeRequest(req, 1);
+            } else {
+                listNode *first = listFirst(queue);
+                if (first) listDelNode(queue, first);
+            }
+            /*TODO: Handle down cluster nodes */
             return;
         }
     } else replies = processClusterReplyBuffer(ctx, node, thread_id);
-    list *queue =
-        getClusterConnection(node, thread_id)->requests_pending;
     if (listLength(queue) == 0) {
         aeDeleteFileEvent(el, fd, AE_READABLE);
         proxyLogDebug("Deleting read handler for node %s:%d on thread %d\n",
@@ -1473,7 +1591,7 @@ static void readClusterReply(aeEventLoop *el, int fd,
             retry = 0;
         }
     }
-    if (!success && !retry) freeRequest(req, 1);
+    if (!success && !retry && req != NULL) freeRequest(req, 1);
     /*clientRequest *next_req = NULL;*/
     handleNextPendingRequest(node, thread_id);
 }
