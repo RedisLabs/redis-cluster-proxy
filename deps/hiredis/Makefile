@@ -152,7 +152,7 @@ check: hiredis-test
 	kill `cat /tmp/hiredis-test-redis.pid`
 
 .c.o:
-	$(CC) -std=c99 -pedantic -c $(REAL_CFLAGS) $<
+	$(CC) -std=c11 -pedantic -c $(REAL_CFLAGS) $<
 
 clean:
 	rm -rf $(DYLIBNAME) $(STLIBNAME) $(TESTS) $(PKGCONFNAME) examples/hiredis-example* *.o *.gcda *.gcno *.gcov
