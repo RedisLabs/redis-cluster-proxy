@@ -1027,6 +1027,7 @@ static clusterNode *getRequestNode(clientRequest *req, sds *err) {
 }
 
 void freeRequest(clientRequest *req, int delete_from_lists) {
+    if (req == NULL) return;
     proxyLogDebug("Free Request %llu:%llu\n", req->client->id, req->id);
     if (req->has_write_handler) {
         proxyLogDebug("Request %llu:%llu is still writting, cannot free "
