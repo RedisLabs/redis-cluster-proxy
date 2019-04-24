@@ -1292,7 +1292,7 @@ static clientRequest *handleNextPendingRequest(clusterNode *node,
  * write handler has been correctly installed.
  * Return 0 if the connection to the cluster node is missing and cannot be
  * established or if the write handler installation fails. */
-static int sendRequestToCluster(clientRequest *req, char **errmsg)
+static int sendRequestToCluster(clientRequest *req, sds *errmsg)
 {
     if (errmsg != NULL) *errmsg = NULL;
     if (req->has_write_handler) return 1;
@@ -1301,9 +1301,9 @@ static int sendRequestToCluster(clientRequest *req, char **errmsg)
     redisContext *ctx = getClusterNodeContext(req->node, thread_id);
     if (ctx == NULL) {
         if ((ctx = clusterNodeConnect(req->node, thread_id)) == NULL) {
-            addReplyError(req->client, "Could not connect to node", req->id);
-            sds err = sdsnew("Failed to connect to node ");
-            err = sdscatprintf(err, "%s:%d", req->node->ip, req->node->port);
+            sds err = sdsnew("Could not connect to node ");
+            err = sdscatfmt(err, "%s:%u", req->node->ip, req->node->port);
+            addReplyError(req->client, err, req->id);
             proxyLogDebug("%s\n", err);
             if (errmsg != NULL) {
                 /* Remember to free the string outside this function*/
@@ -1343,9 +1343,7 @@ static clientRequest *handleNextRequestToCluster(clusterNode *node,
 {
     clientRequest *req = getFirstRequestToSend(node, thread_id, NULL);
     if (req == NULL) return NULL;
-    char *err = NULL;
-    while (!sendRequestToCluster(req, &err)) {
-        if (err) proxyLogDebug(err);
+    while (!sendRequestToCluster(req, NULL)) {
         req = getFirstRequestToSend(node, thread_id, NULL);
         if (req == NULL) break;
     }
@@ -1578,7 +1576,7 @@ static void readClusterReply(aeEventLoop *el, int fd,
     redisContext *ctx = getClusterNodeContext(node, thread_id);
     list *queue =
         getClusterConnection(node, thread_id)->requests_pending;
-    char *errmsg = NULL;
+    sds errmsg = NULL;
     proxyLogDebug("Reading reply from %s:%d on thread %d...\n",
                   node->ip, node->port, thread_id);
     int success = (redisBufferRead(ctx) == REDIS_OK), retry = 0, replies = 0;
@@ -1589,7 +1587,7 @@ static void readClusterReply(aeEventLoop *el, int fd,
         if (err & (REDIS_ERR_IO | REDIS_ERR_EOF)) {
             /* Try to reconnect to the node */
             if (!(ctx = clusterNodeConnect(node, thread_id)))
-                errmsg = "Cluster node disconnected"; /*TODO add node ip:port*/
+                errmsg = sdsnew("Cluster node disconnected: ");
             else if (req != NULL) {
                 req->written = 0;
                 retry = 1;
@@ -1597,9 +1595,10 @@ static void readClusterReply(aeEventLoop *el, int fd,
         } else {
             proxyLogErr("Error from node %s:%d: %s\n", node->ip, node->port,
                         ctx->errstr);
-            errmsg = "Failed to read reply";
+            errmsg = sdsnew("Failed to read reply from ");
         }
         if (errmsg != NULL && !retry) {
+            errmsg = sdscatfmt(errmsg, "%s:%u", node->ip, node->port);
             /* An error occurred and it's not possibile to retry */
             if (req != NULL) {
                 dequeuePendingRequest(req);
@@ -1610,6 +1609,7 @@ static void readClusterReply(aeEventLoop *el, int fd,
                 if (first) listDelNode(queue, first);
             }
             /*TODO: Handle down cluster nodes */
+            sdsfree(errmsg);
             return;
         }
     } else replies = processClusterReplyBuffer(ctx, node, thread_id);
@@ -1629,7 +1629,9 @@ static void readClusterReply(aeEventLoop *el, int fd,
                 getClusterConnection(req->node, thread_id)->requests_to_send;
             listAddNodeHead(queue, req);
         } else {
-            errmsg = "Failed to read reply";
+            if (errmsg) sdsfree(errmsg);
+            errmsg = sdsnew("Failed to read reply from ");
+            errmsg = sdscatfmt(errmsg, "%s:%d", node->ip, node->port);
             retry = 0;
         }
     }
@@ -1639,6 +1641,7 @@ static void readClusterReply(aeEventLoop *el, int fd,
         freeRequest(req, 1);
     }
     /*clientRequest *next_req = NULL;*/
+    if (errmsg != NULL) sdsfree(errmsg);
     handleNextPendingRequest(node, thread_id);
 }
 
