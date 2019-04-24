@@ -33,6 +33,7 @@ const char *redisProxyLogLevels[5] = {
 void proxyLog(int level, const char* format, ...) {
     if (level < config.loglevel) return;
     FILE *out = (level >= LOGLEVEL_WARNING ? stderr : stdout);
+    fflush(out);
     if (config.use_colors) {
         int color = LOG_COLOR_DEFAULT;
         switch (level) {

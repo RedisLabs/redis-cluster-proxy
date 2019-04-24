@@ -221,9 +221,8 @@ redisContext *clusterNodeConnect(clusterNode *node, int thread_id) {
     proxyLogDebug("Connecting to node %s:%d\n", node->ip, node->port);
     ctx = redisConnect(node->ip, node->port);
     if (ctx->err) {
-        proxyLogErr("Could not connect to Redis at ");
-        proxyLogErr("%s:%d: %s\n", node->ip, node->port,
-                    ctx->errstr);
+        proxyLogErr("Could not connect to Redis at %s:%d: %s\n",
+                    node->ip, node->port, ctx->errstr);
         redisFree(ctx);
         node->connections[thread_id]->context = NULL;
         return NULL;

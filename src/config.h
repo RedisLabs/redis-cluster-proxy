@@ -34,6 +34,7 @@ typedef struct {
     int use_colors;
     int dump_queries;
     int dump_buffer;
+    int dump_queues;
     char *auth;
 } redisClusterProxyConfig;
 

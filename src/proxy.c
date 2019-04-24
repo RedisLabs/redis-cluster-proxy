@@ -80,6 +80,7 @@ typedef struct proxyThread {
     aeEventLoop *loop;
     list *clients;
     list *pending_messages;
+    uint64_t next_client_id;
     pthread_mutex_t new_message_mutex;
 } proxyThread;
 
@@ -163,6 +164,33 @@ static int __hiredisReadReplyFromBuffer(redisReader *r, void **reply) {
 
 /* Proxy functions */
 
+static void dumpQueue(clusterNode *node, int thread_id, int type) {
+    redisClusterConnection *conn = getClusterConnection(node, thread_id);
+    if (conn == NULL) return;
+    list *queue = NULL;
+    if (type == QUEUE_TYPE_PENDING) queue = conn->requests_pending;
+    else if (type == QUEUE_TYPE_SENDING) queue = conn->requests_to_send;
+    if (queue == NULL) return;
+    sds msg = sdsnew("Node ");
+    msg = sdscatprintf(msg, "%s:%d[thread %d] -> %s",
+                       node->ip, node->port, thread_id,
+                       (type == QUEUE_TYPE_PENDING ? "requests pending: [" :
+                                                     "requests to send: ["));
+    listIter li;
+    listNode *ln;
+    listRewind(queue, &li);
+    int i = 0;
+    while ((ln = listNext(&li))) {
+        if (i++ > 0) msg = sdscat(msg, ", ");
+        clientRequest *req = ln->value;
+        if (req == NULL) msg = sdscat(msg, "NULL");
+        else msg = sdscatprintf(msg, "%llu:%llu", req->client->id, req->id);
+    }
+    msg = sdscat(msg, "]\n");
+    proxyLogDebug(msg);
+    sdsfree(msg);
+}
+
 redisCommandDef *getRedisCommand(sds name) {
     redisCommandDef *cmd = NULL;
     raxIterator iter;
@@ -208,6 +236,8 @@ static void printHelp(void) {
                                     "'debug') \n"
             "  --dump-buffer        Dump query buffer (only for log-level "
                                     "'debug') \n"
+            "  --dump-queues        Dump request queues (only for log-level "
+                                    "'debug') \n"
             "  -h, --help         Print this help\n",
             DEFAULT_PORT, DEFAULT_MAX_CLIENTS, DEFAULT_THREADS,
             DEFAULT_TCP_KEEPALIVE, MAX_THREADS);
@@ -234,6 +264,8 @@ static int parseOptions(int argc, char **argv) {
             config.dump_queries = 1;
         else if (!strcmp("--dump-buffer", arg))
             config.dump_buffer = 1;
+        else if (!strcmp("--dump-queues", arg))
+            config.dump_queues = 1;
         else if (!strcmp("--threads", arg) && !lastarg) {
             config.num_threads = atoi(argv[++i]);
             if (config.num_threads > MAX_THREADS) {
@@ -286,6 +318,7 @@ static void initConfig(void) {
     config.use_colors = 0;
     config.dump_queries = 0;
     config.dump_buffer = 0;
+    config.dump_queues = 0;
     config.auth = NULL;
 }
 
@@ -467,6 +500,7 @@ static proxyThread *createProxyThread(int index) {
         return NULL;
     }
     thread->thread_id = index;
+    thread->next_client_id = 0;
     thread->clients = listCreate();
     if (thread->clients == NULL) {
         freeProxyThread(thread);
@@ -568,7 +602,9 @@ static client *createClient(int fd, char *ip) {
     atomicGetIncr(proxy.numclients, numclients, 1);
     /* TODO: select thread with less clients */
     c->thread_id = (numclients % config.num_threads);
-    c->id = numclients;
+    c->id = proxy.threads[c->thread_id]->next_client_id++;
+    if (proxy.threads[c->thread_id]->next_client_id == UINT64_MAX)
+        proxy.threads[c->thread_id]->next_client_id = 0;
     c->next_request_id = 0;
     c->min_reply_id = 0;
     c->requests_with_write_handler = 0;
@@ -601,7 +637,7 @@ static void freeAllClientRequests(client *c) {
         while ((nln = listNext(&nli))) {
             clientRequest *req = nln->value;
             if (req == NULL) {
-                listDelNode(conn->requests_to_send, ln);
+                /*listDelNode(conn->requests_to_send, nln);*/
                 continue;
             }
             if (req->client != c) continue;
@@ -622,6 +658,8 @@ static void freeAllClientRequests(client *c) {
             nln->value = NULL;
             freeRequest(req, 0);
         }
+        if (config.dump_queues)
+            dumpQueue(node, c->thread_id, QUEUE_TYPE_PENDING);
     }
 }
 
@@ -752,6 +790,7 @@ static int writeToCluster(aeEventLoop *el, int fd, clientRequest *req) {
             freeRequest(req, 1);
             return 0;
         }
+        if (config.dump_queues) dumpQueue(node, thread_id, QUEUE_TYPE_PENDING);
         proxyLogDebug("Still have %d request(s) to send\n",
                       listLength(getClusterConnection(node,
                                  thread_id)->requests_to_send));
@@ -1068,6 +1107,8 @@ void freeRequest(clientRequest *req, int delete_from_lists) {
          * it a 'ghost request') will be simply skipped during reply buffer
          * processing. */
         if (ln) ln->value = NULL;
+        if (config.dump_queues)
+            dumpQueue(req->node, req->client->thread_id, QUEUE_TYPE_PENDING);
     }
     zfree(req);
 }
@@ -1227,10 +1268,6 @@ static clientRequest *getFirstValidRequestPending(clusterNode *node,
                 req = ln->value;
                 if (req != NULL) break;
             }
-            if (req == NULL) {
-                listEmpty(conn->requests_pending);
-                return NULL;
-            }
         } else return NULL;
     }
     return req;
@@ -1267,7 +1304,7 @@ static int sendRequestToCluster(clientRequest *req, char **errmsg)
             addReplyError(req->client, "Could not connect to node", req->id);
             sds err = sdsnew("Failed to connect to node ");
             err = sdscatprintf(err, "%s:%d", req->node->ip, req->node->port);
-            proxyLogDebug("%s\n", *err);
+            proxyLogDebug("%s\n", err);
             if (errmsg != NULL) {
                 /* Remember to free the string outside this function*/
                 *errmsg = err;
@@ -1360,7 +1397,7 @@ static int processRequest(clientRequest *req) {
     if (node == NULL) {
         if (errmsg == NULL)
             errmsg = sdsnew("Failed to get node for query");
-        proxyLogDebug("%s\n", errmsg);
+        proxyLogDebug("%s %llu:%llu\n", errmsg, c->id, req->id);
         goto invalid_request;
     }
     if (!enqueueRequestToSend(req)) goto invalid_request;
@@ -1481,7 +1518,7 @@ static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
         if (ok && reply == NULL) break;
         replies++;
         clientRequest *req = getFirstRequestPending(node, thread_id, NULL);
-        /* If request is NULL, it's be a ghost request that is a NULL
+        /* If request is NULL, it's a ghost request that is a NULL
          * placeholder in place of a request created by a freed client
          * (ie. a disconnected client). In this case, just dequeue the list
          * node containing the NULL placeholder and directly skip to
@@ -1516,9 +1553,9 @@ static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
                 sdsfree(rstr);
             }
             addReplyRaw(req->client, obuf, len, req->id);
-
         }
 consume_buffer:
+        if (config.dump_queues) dumpQueue(node, thread_id, QUEUE_TYPE_PENDING);
         /* Consume reader buffer */
         sdsrange(ctx->reader->buf, ctx->reader->pos, -1);
         ctx->reader->pos = 0;
@@ -1542,10 +1579,12 @@ static void readClusterReply(aeEventLoop *el, int fd,
     list *queue =
         getClusterConnection(node, thread_id)->requests_pending;
     char *errmsg = NULL;
-    proxyLogDebug("Reading reply from %s:%d...\n",
-                  node->ip, node->port);
+    proxyLogDebug("Reading reply from %s:%d on thread %d...\n",
+                  node->ip, node->port, thread_id);
     int success = (redisBufferRead(ctx) == REDIS_OK), retry = 0, replies = 0;
     if (!success) {
+        proxyLogDebug("Failed redisBufferRead from %s:%d on thread %d\n",
+                      node->ip, node->port, thread_id);
         int err = ctx->err;
         if (err & (REDIS_ERR_IO | REDIS_ERR_EOF)) {
             /* Try to reconnect to the node */
@@ -1580,6 +1619,8 @@ static void readClusterReply(aeEventLoop *el, int fd,
                       node->ip, node->port, thread_id);
     }
     if (retry) {
+        proxyLogDebug("Retrying request to %d on thread %d\n",
+                      node->port, thread_id);
         if (aeCreateFileEvent(el, fd, AE_WRITABLE, writeToClusterHandler,
             req->node) != AE_ERR) {
             req->has_write_handler = 1;
@@ -1592,7 +1633,11 @@ static void readClusterReply(aeEventLoop *el, int fd,
             retry = 0;
         }
     }
-    if (!success && !retry && req != NULL) freeRequest(req, 1);
+    if (!success && !retry && req != NULL) {
+        if (errmsg != NULL) addReplyError(req->client, errmsg, req->id);
+        dequeuePendingRequest(req);
+        freeRequest(req, 1);
+    }
     /*clientRequest *next_req = NULL;*/
     handleNextPendingRequest(node, thread_id);
 }
