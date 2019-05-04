@@ -223,3 +223,6 @@ valgrind:
 helgrind:
 	$(MAKE) OPTIMIZATION="-O0" MALLOC="libc" CFLAGS="-D__ATOMIC_VAR_FORCE_SYNC_MACROS"
 
+test: $(REDIS_CLUSTER_PROXY_NAME)
+	@(cd ..; ./runtest)
+.PHONY: test

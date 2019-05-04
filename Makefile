@@ -7,3 +7,7 @@ install:
 	cd src && $(MAKE) $@
 
 .PHONY: install
+
+test:
+	cd src && $(MAKE) $@
+.PHONY: test

@@ -1,0 +1,18 @@
+#!/bin/bash
+
+if [ -z `which ruby` ]; then
+    echo "Ruby is required by tests, but is missing on this system, please install it..."
+    exit 1
+fi
+
+if [ -z `which gem` ]; then
+    echo "Rubygems is required by tests, but is missing on this system, please install it..."
+    exit 1
+fi
+
+if [ -z `which bundle` ]; then
+    echo "Installing Bundler"
+    gem install bundler
+fi
+
+./test/runtest.rb $@
