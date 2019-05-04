@@ -27,9 +27,9 @@ class RedisClusterProxy
 
     attr_reader :cluster, :entry_point, :pid, :logfile, :port
 
-    def initialize(cluster, port: 7777, **opts)
+    def initialize(cluster, port: nil, **opts)
         @cluster = cluster
-        @port = port
+        @port = port || find_available_port(17777)
         @cluster.start if !@cluster.instances
         @entry_point = @cluster.instances.first
         @options = opts

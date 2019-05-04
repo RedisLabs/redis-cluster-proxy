@@ -13,6 +13,8 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+require 'socket'
+
 def urand2hex(len)
     ur=File.read('/dev/urandom',len)
     s=''
@@ -59,4 +61,28 @@ def find_redis!
         paths[progname] = path
     }
     $redis_paths = paths
+end
+
+def is_port_available?(port, ip = '127.0.0.1')
+    begin
+        TCPSocket.new(ip, port)
+    rescue Errno::ECONNREFUSED
+        return true
+    end
+    return false
+end
+
+def find_available_ports(from, count = 1)
+    available = []
+    (from...(from + 1024)).each{|port|
+        break if available.length == count
+        if is_port_available?(port)
+            available << port
+        end
+    }
+    available
+end
+
+def find_available_port(from)
+    find_available_ports(from)[0]
 end

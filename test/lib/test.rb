@@ -37,7 +37,7 @@ class RedisProxyTestCase
 
     GenericSetup = proc{
         if !$main_cluster    
-            @cluster = RedisCluster.new start_port: 8000
+            @cluster = RedisCluster.new
             @cluster.restart
             $main_cluster = @cluster
         end

@@ -25,15 +25,18 @@ class RedisCluster
                 :masters
     attr_accessor :verbose
 
-    def initialize(masters_count: 3, replicas: 1, start_port: 7000,
+    def initialize(masters_count: 3, replicas: 1,
                    node_timeout: DefaultNodeTimeout, verbose: true)
         @masters_count = masters_count
         @replicas_count = replicas
-        @start_port = start_port
         @node_timeout = node_timeout
         @verbose = verbose
         @num_instances = @masters_count + (@replicas_count * @masters_count)
-        @ports = (0...@num_instances).map{|n| n + @start_port}
+        @ports = find_available_ports(18000, @num_instances)
+        if @ports.length < @num_instances
+            raise "Could not find available ports from 18000 for the cluster!"
+        end
+        @start_port = @ports[0]
         @tmppath = File.join(RedisProxyTestCase::TMPDIR,
                              "redis-cluster-test-#{urand2hex(6)}")
         @redis_paths = find_redis!
