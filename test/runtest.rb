@@ -21,7 +21,10 @@ require 'bundler/setup'
 $redis_proxy_test_dir = File.expand_path(File.dirname(__FILE__))
 load File.join($redis_proxy_test_dir, 'lib/test.rb')
 
-$tests = %w(basic basic_commands)
+$tests = ARGV
+if $tests.length == 0
+    $tests = %w(basic basic_commands pipeline)
+end
 
 def final_cleanup
     if $test_proxies
@@ -53,22 +56,28 @@ begin
 rescue Exception => e
     STDERR.puts e.to_s.red
     STDERR.puts e.backtrace.join("\n").yellow
+    RedisProxyTestCase::exceptions << e
 ensure
     final_cleanup
 end
 duration = Time.now.to_f - started
 
 puts "All tests executed in #{'%.1f' % duration}s".cyan
-if failures_count.zero?
-    puts "All #{succeeded_count} test(s) were performed without errors!".green
-    # Clean logs
-    Dir.glob(File.join(RedisProxyTestCase::LOGDIR, '*.log')).each{|logfile|
-        begin
-            FileUtils.rm logfile
-        rescue Exception => e
-        end
-    }
+if RedisProxyTestCase::exceptions.length == 0
+    if failures_count.zero?
+        puts ("All #{succeeded_count} test(s) were performed without "+
+             "errors!").green
+        # Clean logs
+        Dir.glob(File.join(RedisProxyTestCase::LOGDIR, '*.log')).each{|logfile|
+            begin
+                FileUtils.rm logfile
+            rescue Exception => e
+            end
+        }
+    else
+        puts "#{succeeded_count} test(s) succeeded without errors".green
+        puts "#{failures_count} test(s) failed!".red
+    end
 else
-    puts "#{succeeded_count} test(s) succeeded without errors".green
-    puts "#{failures_count} test(s) failed!".red
+    STDERR.puts "#{RedisProxyTestCase::exceptions.length} exception(s) occurred"
 end

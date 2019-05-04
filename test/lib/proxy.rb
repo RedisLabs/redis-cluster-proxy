@@ -80,7 +80,8 @@ class RedisClusterProxy
         entry_port = @entry_point[:port]
         cmd = "#{@cmdpath} -p #{@port}#{cmdopts} " + 
               "127.0.0.1:#{entry_port}"
-        log "Starting proxy to 127.0.0.1:#{entry_port}...", :gray
+        log "Starting proxy to 127.0.0.1:#{entry_port} on port #{@port}...",
+            :gray
         STDOUT.flush
         @pid = Process.spawn cmd, out: @logfile, err: @logfile
         $test_proxies ||= []

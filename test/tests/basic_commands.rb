@@ -13,27 +13,32 @@ $datalen.each{|len|
     test "SET #{$numkeys} keys (#{len} byte(s))" do
         spawn_clients($numclients){|client, idx|
             (0...$numkeys).each{|n|
+                log_test_update "key #{n + 1}/#{$numkeys}"
                 val = n.to_s * len
                 reply = client.set "k:#{n}", val
                 assert_not_redis_err(reply)
             }
+            log_same_line ''
         }
     end
 
     test "GET #{$numkeys} keys (#{len} byte(s))" do
         spawn_clients($numclients){|client, idx|
             (0...$numkeys).each{|n|
+                log_test_update "key #{n + 1}/#{$numkeys}"
                 val = n.to_s * len
                 reply = client.get "k:#{n}"
                 assert_not_redis_err(reply)
                 assert_equal(reply.to_s, val)
             }
+            log_same_line ''
         }
     end
 
-    test "RPUSH #{$numkeys} keys (#{len} byte(s))" do
+    test "RPUSH #{$numlists} keys (#{len} byte(s))" do
         spawn_clients(1){|client, idx|
             (0...$numlists).each{|n|
+                log_test_update "key #{n + 1}/#{$numlists}"
                 (0...10).each{|vn| 
                     val = vn.to_s * len
                     val = "#{n}:#{vn}"
@@ -41,12 +46,14 @@ $datalen.each{|len|
                     assert_not_redis_err(reply)
                 }
             }
+            log_same_line ''
         }
     end
 
-    test "LRANGE #{$numkeys} keys (#{len} byte(s))" do
+    test "LRANGE #{$numlists} keys (#{len} byte(s))" do
         spawn_clients($numclients){|client, idx|
             (0...$numlists).each{|n|
+                log_test_update "key #{n + 1}/#{$numlists}"
                 values = (0...10).map{|vn| 
                     val = vn.to_s * len
                     val = "#{n}:#{vn}"
@@ -55,12 +62,14 @@ $datalen.each{|len|
                 assert_not_redis_err(reply)
                 assert_equal(reply, values)
             }
+            log_same_line ''
         }
     end
 
-    test "SADD #{$numkeys} keys (#{len} byte(s))" do
+    test "SADD #{$numlists} keys (#{len} byte(s))" do
         spawn_clients(1){|client, idx|
             (0...$numlists).each{|n|
+                log_test_update "key #{n + 1}/#{$numlists}"
                 (0...10).each{|vn| 
                     val = vn.to_s * len
                     val = "#{n}:#{vn}"
@@ -68,12 +77,14 @@ $datalen.each{|len|
                     assert_not_redis_err(reply)
                 }
             }
+            log_same_line ''
         }
     end
 
-    test "SMEMBERS #{$numkeys} keys (#{len} byte(s))" do
+    test "SMEMBERS #{$numlists} keys (#{len} byte(s))" do
         spawn_clients($numclients){|client, idx|
             (0...$numlists).each{|n|
+                log_test_update "key #{n + 1}/#{$numlists}"
                 values = (0...10).map{|vn| 
                     val = vn.to_s * len
                     val = "#{n}:#{vn}"
@@ -82,6 +93,7 @@ $datalen.each{|len|
                 assert_not_redis_err(reply)
                 assert_equal(reply.sort, values.sort)
             }
+            log_same_line ''
         }
     end
 

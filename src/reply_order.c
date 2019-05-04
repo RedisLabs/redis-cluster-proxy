@@ -39,11 +39,11 @@ int appendUnorderedRepliesToBuffer(client *c) {
     while (raxNext(&iter)) {
         uint64_t req_id = ntohu64(*((uint64_t *)iter.key));
         if (req_id == c->min_reply_id) {
-            sds reply = (sds) iter.data;
+            sds reply = sdsdup((sds) iter.data);
             c->obuf = sdscat(c->obuf, reply);
             c->min_reply_id++;
             count++;
-            raxRemove(c->unordered_requests, iter.key, iter.key_len, NULL);
+           /* raxRemove(c->unordered_requests, iter.key, iter.key_len, NULL);*/
             sdsfree(reply);
         } else break;
     }

@@ -33,6 +33,8 @@ class RedisProxyTestCase
     LOGDIR = File.join(TMPDIR, 'log')
     FileUtils.mkdir_p(LOGDIR) if !File.exists?(LOGDIR)
 
+    @@exceptions = []
+
     GenericSetup = proc{
         if !$main_cluster    
             @cluster = RedisCluster.new start_port: 8000
@@ -68,7 +70,7 @@ class RedisProxyTestCase
     end
 
     def run
-        log "Testing #{@name}", :cyan
+        log "TESTING #{@name.gsub(/_+/, ' ').upcase}", :cyan
         @started = Time.now.to_f
         if @setup
             begin
@@ -78,7 +80,7 @@ class RedisProxyTestCase
                 log message.red
                 return false
             rescue Exception => e
-                log_exception(e)
+                on_exception(e)
                 return false
             end
         end
@@ -92,7 +94,7 @@ class RedisProxyTestCase
                 message ||= 'assertion failure'
                 log message.red
             rescue Exception => e
-                log_exception(e)
+                on_exception(e)
             end
         end
         @duration = Time.now.to_f - @started
@@ -190,6 +192,20 @@ class RedisProxyTestCase
     def assert_not_redis_err(reply, message = nil)
         message ||= "#{reply.to_s} is a redis error"
         assert(!reply.is_a?(Redis::CommandError), message)
+    end
+
+    def log_test_update(message, test = nil)
+        test ||= @current_test
+        log_same_line("[  ] #{test[:name]} #{message}")
+    end
+
+    def on_exception(e)
+        @@exceptions << e
+        log_exception(e)
+    end
+
+    def RedisProxyTestCase::exceptions
+        @@exceptions
     end
 
     class AssertionFailure < Exception
