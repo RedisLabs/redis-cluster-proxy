@@ -136,7 +136,7 @@ class RedisProxyTestCase
         message = "[#{status}] #{test[:name]}"
         puts message
         if test[:failure]
-            puts test[:failure].red
+            puts test[:failure].to_s.red
         end
         !failed
     end
@@ -149,20 +149,20 @@ class RedisProxyTestCase
     end
 
     def assert_equal(a, b, message = nil)
-        assert((a == b), message: message || "#{a.inspect} != #{b.inspect}")
+        assert((a == b), message || "#{a.inspect} != #{b.inspect}")
     end
 
     def assert_nil(o, message = nil)
-        assert(o.nil?, message: message || "#{o.inspect} is not 'nil'")
+        assert(o.nil?, message || "#{o.inspect} is not 'nil'")
     end
 
     def assert_not_nil(o, message = nil)
-        assert(!(o.nil?), message: message || "#{o.inspect} is 'nil'")
+        assert(!(o.nil?), message || "#{o.inspect} is 'nil'")
     end
 
     def assert_match(str, tomatch, message = nil)
         message ||= "Could not match #{tomatch.inspect} into #{str.inspect}"
-        assert(!str[tomatch].nil?, message: message)
+        assert(!str[tomatch].nil?, message)
     end
 
     def assert_redis_err(reply, message = nil)

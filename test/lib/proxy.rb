@@ -79,10 +79,10 @@ class RedisClusterProxy
         end
         entry_port = @entry_point[:port]
         cmd = "#{@cmdpath} -p #{@port}#{cmdopts} " + 
-              "127.0.0.1:#{entry_port} > \"#{@logfile}\" 2>&1"
+              "127.0.0.1:#{entry_port}"
         log "Starting proxy to 127.0.0.1:#{entry_port}...", :gray
         STDOUT.flush
-        @pid = Process.spawn cmd
+        @pid = Process.spawn cmd, out: @logfile, err: @logfile
         $test_proxies ||= []
         $test_proxies |= [self]
         loop do
@@ -92,13 +92,14 @@ class RedisClusterProxy
         end
         threads = (@options[:threads] || 8).to_i
         sleep(threads / 2)
-        log "Proxy started", :gray
+        log "Proxy started with PID #{@pid}", :gray
         @pid
     end
 
     def stop
         if @pid
-            log "Stopping proxy to 127.0.0.1:#{@entry_point[:port]}"
+            log "Stopping proxy to 127.0.0.1:#{@entry_point[:port]} " +
+                "with PID #{@pid}", :gray
             Process.kill('TERM', @pid) 
             $test_proxies ||= []
             $test_proxies -= [self]

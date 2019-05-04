@@ -14,3 +14,10 @@ test "GET a..z" do
         assert_equal(reply, char)
     }
 end
+
+test "DEL a..z" do
+    ('a'..'z').each{|char|
+        reply = @proxy.del("k:#{char}")
+        assert_not_redis_err(reply)
+    }
+end

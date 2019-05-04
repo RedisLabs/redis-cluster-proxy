@@ -53,6 +53,13 @@ duration = Time.now.to_f - started
 puts "All tests executed in #{'%.1f' % duration}s".cyan
 if failures_count.zero?
     puts "All #{succeeded_count} test(s) were performed without errors!".green
+    # Clean logs
+    Dir.glob(File.join(RedisProxyTestCase::LOGDIR, '*.log')).each{|logfile|
+        begin
+            FileUtils.rm logfile
+        rescue Exception => e
+        end
+    }
 else
     puts "#{succeeded_count} test(s) succeeded without errors".green
     puts "#{failures_count} test(s) failed!".red
