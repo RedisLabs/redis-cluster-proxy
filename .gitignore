@@ -6,3 +6,4 @@ tmp/
 .prerequisites
 *.dSYM
 Makefile.dep
+test/tmp/

@@ -1,0 +1,6 @@
+source 'https://rubygems.org' do
+
+    gem 'redis', '~>4.1.0'
+    gem 'hiredis', '~>0.6.3'
+
+end
