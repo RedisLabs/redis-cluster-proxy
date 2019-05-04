@@ -25,7 +25,7 @@ class RedisClusterProxy
 
     include RedisProxyTestLogger
 
-    attr_reader :cluster, :entry_point, :pid, :logfile
+    attr_reader :cluster, :entry_point, :pid, :logfile, :port
 
     def initialize(cluster, port: 7777, **opts)
         @cluster = cluster

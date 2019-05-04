@@ -33,7 +33,7 @@ class RedisCluster
         @node_timeout = node_timeout
         @verbose = verbose
         @num_instances = @masters_count + (@replicas_count * @masters_count)
-        @ports = (0..@num_instances).map{|n| n + @start_port}
+        @ports = (0...@num_instances).map{|n| n + @start_port}
         @tmppath = File.join(RedisProxyTestCase::TMPDIR,
                              "redis-cluster-test-#{urand2hex(6)}")
         @redis_paths = find_redis!

@@ -21,7 +21,24 @@ require 'bundler/setup'
 $redis_proxy_test_dir = File.expand_path(File.dirname(__FILE__))
 load File.join($redis_proxy_test_dir, 'lib/test.rb')
 
-$tests = %w(basic)
+$tests = %w(basic basic_commands)
+
+def final_cleanup
+    if $test_proxies
+        $test_proxies.each{|proxy|
+            proxy.stop
+        }
+    end
+    if $test_clusters
+        $test_clusters.each{|cluster|
+            cluster.destroy!
+        }
+    end
+end
+
+Signal.trap("TERM") do
+    final_cleanup
+end
 
 failures_count = 0
 succeeded_count = 0
@@ -37,16 +54,7 @@ rescue Exception => e
     STDERR.puts e.to_s.red
     STDERR.puts e.backtrace.join("\n").yellow
 ensure
-    if $test_proxies
-        $test_proxies.each{|proxy|
-            proxy.stop
-        }
-    end
-    if $test_clusters
-        $test_clusters.each{|cluster|
-            cluster.destroy!
-        }
-    end
+    final_cleanup
 end
 duration = Time.now.to_f - started
 

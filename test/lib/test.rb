@@ -40,7 +40,7 @@ class RedisProxyTestCase
             $main_cluster = @cluster
         end
         if !$main_proxy
-            @proxy = RedisClusterProxy.new(@cluster)
+            @proxy = RedisClusterProxy.new @cluster, log_level: 'debug'
             @proxy.start
             $main_proxy = @proxy
         end
@@ -139,6 +139,23 @@ class RedisProxyTestCase
             puts test[:failure].to_s.red
         end
         !failed
+    end
+
+    def spawn_clients(num, proxy: nil, &block)
+        proxy ||= (@proxy || $main_proxy)
+        if !proxy
+            log("WARN: missing 'proxy'", :yellow)
+            return
+        end
+        threads = []
+        (0...num).each{|tidx|
+            t = Thread.new{
+                r = Redis.new port: proxy.port
+                block.call(r, tidx)
+            }
+            threads << t
+        }
+        threads.each{|t| t.join}
     end
 
     def assert(expr, message = nil)
