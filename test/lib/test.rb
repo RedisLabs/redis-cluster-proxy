@@ -135,6 +135,7 @@ class RedisProxyTestCase
             status = 'OK'.green
             @succeeded_tests << test
         end
+        log_same_line('')
         message = "[#{status}] #{test[:name]}"
         puts message
         if test[:failure]

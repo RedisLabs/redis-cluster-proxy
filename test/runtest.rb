@@ -23,7 +23,7 @@ load File.join($redis_proxy_test_dir, 'lib/test.rb')
 
 $tests = ARGV
 if $tests.length == 0
-    $tests = %w(basic basic_commands pipeline)
+    $tests = %w(basic basic_commands pipeline client_disconnect)
 end
 
 def final_cleanup
