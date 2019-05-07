@@ -14,6 +14,9 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 require 'fileutils'
+require 'bundler/setup'
+require 'redis'
+require 'hiredis'
 
 $redis_proxy_test_libdir ||= File.expand_path(File.dirname(__FILE__))
 load File.join($redis_proxy_test_libdir, 'log.rb')
@@ -159,6 +162,14 @@ class RedisProxyTestCase
             threads << t
         }
         threads.each{|t| t.join}
+    end
+
+    def redis_command(client, command, *args)
+        begin
+            client.send command, *args
+        rescue Redis::CommandError => cmderr
+            cmderr
+        end
     end
 
     def assert(expr, message = nil)

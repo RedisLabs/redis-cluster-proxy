@@ -15,14 +15,18 @@
 
 require 'fileutils'
 
+$redis_proxy_test_libdir ||= File.expand_path(File.dirname(__FILE__))
+load File.join($redis_proxy_test_libdir, 'crc16.rb')
+
 class RedisCluster
 
     include RedisProxyTestLogger
 
+    RedisClusterHashSlots = 16384
     DefaultNodeTimeout = 200000000
 
-    attr_reader :port, :dirs, :instances, :nodes, :node_by_name, :node_by_port,
-                :masters
+    attr_reader :port, :dirs, :instances, :nodes, :node_by_id, :node_by_port,
+                :node_for_slot, :masters
     attr_accessor :verbose
 
     def initialize(masters_count: 3, replicas: 1,
@@ -116,49 +120,75 @@ class RedisCluster
         FileUtils.rm_r(@tmppath) if File.exists?(@tmppath)
     end
 
-    def start_instance(instance)
+    def start_instance(instance, quiet: false, fatal: true, timeout: 10)
         port = instance[:port]
       	script = %Q(cd #{instance[:path]} && #{@redis_server} ./redis.conf)
         print("Starting cluster node #{port}...".gray) if @verbose
         `#{script}`
+        if !$?.success?
+            raise "Failed to start node #{port}"
+        end
         now = Time.now.to_i
         while !is_instance_running?(port)
-            if (Time.now.to_i - now) > 10
-                STDERR.puts colorize("\nInstance #{port} could not be started!",
-				     :red)
-                destroy!
-                exit 1
+            if (Time.now.to_i - now) > timeout
+                err = "Instance #{port} could not be started!"
+                STDERR.puts "\n#{err}".red
+                if fatal
+                    destroy!
+                    raise err
+                else
+                    return
+                end
             end
-            print '.'
-            STDOUT.flush
+            if !quiet && @verbose
+                print '.'
+                STDOUT.flush
+            end
         end
-        puts "\n"
+        puts "\n" if !quiet && @verbose
     end
 
-    def stop_instance(instance, save: false)
+    def stop_instance(instance, save: false, quiet: false, timeout: 10,
+                      fatal: true)
         port = instance[:port]
         save_action = (save ? 'save' : 'nosave')
         cmd = "#{@redis_cli} -p #{port} shutdown #{save_action}"
         print("Stopping cluster node #{port}...".gray) if @verbose
         `#{cmd}`
         while is_instance_running?(port)
-            if (Time.now.to_i - now) > 10
-                STDERR.puts colorize("\nInstance #{port} could not be stopped!",
-				     :red)
-                destroy!
-                exit 1
+            if (Time.now.to_i - now) > timeout
+                err = "Instance #{port} could not be stopped!"
+                STDERR.puts "\n#{err}".red
+                if fatal
+                    destroy!
+                    raise err
+                end
             end
-            print '.'
-            STDOUT.flush
+            if !quiet && @verbose
+                print '.'
+                STDOUT.flush
+            end
         end
-        puts "\n"
+        puts "\n" if !quiet && @verbose
     end
 
-    def stop_random_instance
-        idx = (rand() * 1000000) % @instances.length
-        instance = @instances[idx]
-        stop_instance(instance)
-        instance
+    def stop_random_instance(only_masters: false, stop_replicas: false,
+                             quiet: false, fatal: true)
+        _nodes = (only_masters ? @masters : @nodes)
+        idx = (rand() * 1000000) % _nodes.length
+        node = _nodes[idx]
+        if stop_replicas && node[:replicate] == nil
+            node_replicas(node).each{|replica|
+                stop_instance(replica, quiet: quiet, fatal: fatal)
+            }
+        end
+        stop_instance(node, quiet: quiet, fatal: fatal)
+        node
+    end
+
+    def stop_random_master(stop_replicas: false, quiet: false)
+        stop_random_instance(only_masters: true, stop_replicas: false,
+                             quiet: quiet, fatal: false)
     end
 
     def is_instance_running?(instance)
@@ -207,8 +237,9 @@ class RedisCluster
     def update_cluster(instance = nil)
         instance ||= @instances.first
         @nodes = []
-        @node_by_name = {}
+        @node_by_id = {}
         @node_by_port = {}
+        @node_for_slot = []
         @masters = []
         friends = []
         @nodes << get_node_info(instance, friends)
@@ -216,10 +247,28 @@ class RedisCluster
             @nodes << get_node_info(friend)
         }
         @nodes.each{|node|
-            @node_by_name[node[:id]] = node
+            @node_by_id[node[:id]] = node
             @node_by_port[node[:port]] = node
-            @masters << node if node[:replicate]
+            @masters << node if !node[:replicate]
+            node[:slots].keys.each{|slot|
+                slot = slot.to_i if !slot.is_a?(Numeric)
+                @node_for_slot[slot] = node
+            }
         }
+    end
+
+    def node_replicas(node)
+        return [] if node[:replicate] || !node[:id]
+        replicas = node[:replicas]
+        return replicas if replicas
+        node[:replicas] = @nodes.select{|n|
+            n[:replicate] == node[:id]
+        }
+    end
+
+    def node_for_key(key)
+        slot = RedisCluster::slot_for_key(key)
+        @node_for_slot[slot]
     end
 
     def get_node_info(instance, friends = nil)
@@ -285,6 +334,10 @@ class RedisCluster
                 friends << info
             end
         }
+        instance = @instances.find{|inst|
+            inst[:port] != nil && inst[:port] == node[:port]
+        }
+        node[:path] = instance[:path] if instance
         node
     end
 
@@ -301,10 +354,22 @@ class RedisCluster
         "port #{port}\n" + 
         "cluster-enabled yes\n" + 
         "cluster-config-file \"nodes.conf\"\n" + 
+        "logfile ./redis.log\n" +
         "cluster-node-timeout #{@node_timeout}\n" +
-        "unixsocket \"#{File.join(path, 'redis.sock')}\"\n" + 
+        #"unixsocket \"#{File.join(path, 'redis.sock')}\"\n" +
         "daemonize yes\n" + 
         "dir \"#{path}\"\n"
+    end
+
+    def RedisCluster::slot_for_key(key)
+        s = key.index "{"
+        if s
+            e = key.index "}",s+1
+            if e && e != s+1
+                key = key[s+1..e-1]
+            end
+        end
+        RedisClusterCRC16.crc16(key) % RedisClusterHashSlots
     end
 
 end

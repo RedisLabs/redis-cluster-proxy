@@ -16,7 +16,7 @@ $datalen.each{|len|
         spawn_clients(1){|client, idx|
             (0...$numkeys).each{|n|
                 val = n.to_s * len
-                reply = client.set "k:#{n}", val
+                reply = redis_command client, :set, "k:#{n}", val
                 assert_not_redis_err(reply)
             }
         }
@@ -36,7 +36,7 @@ $datalen.each{|len|
                     client.disconnect!
 	            next	
                 end
-                reply = client.get(key)
+                reply = redis_command client, :get, key
                 assert_not_redis_err(reply)
                 assert_equal(reply, val)
             }

@@ -15,7 +15,7 @@ $datalen.each{|len|
             (0...$numkeys).each{|n|
                 log_test_update "key #{n + 1}/#{$numkeys}"
                 val = n.to_s * len
-                reply = client.set "k:#{n}", val
+                reply = redis_command client, :set, "k:#{n}", val
                 assert_not_redis_err(reply)
             }
             log_same_line ''
@@ -27,7 +27,7 @@ $datalen.each{|len|
             (0...$numkeys).each{|n|
                 log_test_update "key #{n + 1}/#{$numkeys}"
                 val = n.to_s * len
-                reply = client.get "k:#{n}"
+                reply = redis_command client, :get, "k:#{n}"
                 assert_not_redis_err(reply)
                 assert_equal(reply.to_s, val)
             }
@@ -42,7 +42,8 @@ $datalen.each{|len|
                 (0...10).each{|vn| 
                     val = vn.to_s * len
                     val = "#{n}:#{vn}"
-                    reply = client.rpush "mylist:#{n}:#{len}", val
+                    reply = redis_command client, :rpush,
+                                          "mylist:#{n}:#{len}", val
                     assert_not_redis_err(reply)
                 }
             }
@@ -58,7 +59,8 @@ $datalen.each{|len|
                     val = vn.to_s * len
                     val = "#{n}:#{vn}"
                 }
-                reply = client.lrange "mylist:#{n}:#{len}", 0, -1
+                reply = redis_command client, :lrange,
+                                      "mylist:#{n}:#{len}", 0, -1
                 assert_not_redis_err(reply)
                 assert_equal(reply, values)
             }
@@ -73,7 +75,8 @@ $datalen.each{|len|
                 (0...10).each{|vn| 
                     val = vn.to_s * len
                     val = "#{n}:#{vn}"
-                    reply = client.sadd "myset:#{n}:#{len}", val
+                    reply = redis_command client, :sadd,
+                                          "myset:#{n}:#{len}", val
                     assert_not_redis_err(reply)
                 }
             }
@@ -89,7 +92,7 @@ $datalen.each{|len|
                     val = vn.to_s * len
                     val = "#{n}:#{vn}"
                 }
-                reply = client.smembers "myset:#{n}:#{len}"
+                reply = redis_command client, :smembers, "myset:#{n}:#{len}"
                 assert_not_redis_err(reply)
                 assert_equal(reply.sort, values.sort)
             }
