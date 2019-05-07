@@ -58,8 +58,6 @@ typedef struct clientRequest{
     int parsing_status;
     int has_write_handler;
     int has_read_handler;
-    struct clientRequest *prev_request; /* Previous pipelined request */
-    struct clientRequest *next_request; /* Next pipelined request */
 } clientRequest;
 
 typedef struct {

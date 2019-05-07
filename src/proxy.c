@@ -866,12 +866,12 @@ static int parseRequest(clientRequest *req) {
                     /* Truncate current request buffer */
                     req->query_offset = p - req->buffer;
                     sds newbuf = sdsnewlen(p, buflen - req->query_offset);
-                    req->buffer = sdsnewlen(req->buffer, req->query_offset);
+                    sds reqbuf = sdsnewlen(req->buffer, req->query_offset);
+                    if (req->buffer) sdsfree(req->buffer);
+                    req->buffer = reqbuf;
                     req->num_commands = 1;
                     req->pending_bulks = 0;
                     clientRequest *new = createRequest(c);
-                    new->prev_request = req;
-                    req->next_request = new;
                     new->buffer = sdscat(new->buffer, newbuf);
                     sdsfree(newbuf);
                     c->current_request = new;
@@ -1085,12 +1085,6 @@ void freeRequest(clientRequest *req, int delete_from_lists) {
     if (ctx != NULL) {
         if (req->has_write_handler) aeDeleteFileEvent(el, ctx->fd, AE_WRITABLE);
         /*TODO: delete, handled by readClusterReply: if (req->has_read_handler) aeDeleteFileEvent(el, ctx->fd, AE_READABLE);*/
-    }
-    if (req->next_request != NULL && req->next_request->prev_request == req)
-        req->next_request->prev_request = NULL;
-    if (req->prev_request != NULL && req->prev_request->next_request == req) {
-        /*TODO: this should be handled atomically */
-        req->prev_request->next_request = req->next_request;
     }
     if (delete_from_lists && req->node != NULL) {
         redisClusterConnection *conn =
