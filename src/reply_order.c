@@ -21,13 +21,13 @@
 
 void addUnorderedReply(client *c, sds reply, uint64_t req_id) {
     uint64_t be_id = htonu64(req_id); /* Big-endian request ID */
-    raxInsert(c->unordered_requests, (unsigned char *) &be_id,
+    raxInsert(c->unordered_replies, (unsigned char *) &be_id,
               sizeof(be_id), reply, NULL);
 }
 
 int appendUnorderedRepliesToBuffer(client *c) {
     raxIterator iter;
-    raxStart(&iter, c->unordered_requests);
+    raxStart(&iter, c->unordered_replies);
     uint64_t min_id = htonu64(c->min_reply_id);
     if (!raxSeek(&iter, ">=", (unsigned char*) &min_id, sizeof(min_id))) {
         proxyLogDebug("Failed to seek client %llu unordered requests >= "
@@ -43,7 +43,7 @@ int appendUnorderedRepliesToBuffer(client *c) {
             c->obuf = sdscat(c->obuf, reply);
             c->min_reply_id++;
             count++;
-           /* raxRemove(c->unordered_requests, iter.key, iter.key_len, NULL);*/
+           /* raxRemove(c->unordered_replies, iter.key, iter.key_len, NULL);*/
             sdsfree(reply);
         } else break;
     }

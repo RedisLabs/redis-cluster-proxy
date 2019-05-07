@@ -584,8 +584,8 @@ static client *createClient(int fd, char *ip) {
         freeClient(c);
         return NULL;
     }
-    c->unordered_requests = raxNew();
-    if (c->unordered_requests == NULL) {
+    c->unordered_replies = raxNew();
+    if (c->unordered_replies == NULL) {
         freeClient(c);
         return NULL;
     }
@@ -687,8 +687,8 @@ static void freeClient(client *c) {
     }
     listRelease(c->requests_to_process);
     freeAllClientRequests(c);
-    if (c->unordered_requests)
-        raxFreeWithCallback(c->unordered_requests, (void (*)(void*))sdsfree);
+    if (c->unordered_replies)
+        raxFreeWithCallback(c->unordered_replies, (void (*)(void*))sdsfree);
     zfree(c);
     atomicIncr(proxy.numclients, -1);
 }

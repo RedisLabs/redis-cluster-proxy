@@ -60,7 +60,7 @@ void addReplyError(client *c, const char *err, uint64_t req_id) {
 
 void addReplyRaw(client *c, const char *buf, size_t len, uint64_t req_id) {
     /* If the smallest request ID written is smaller than reply's request ID,
-     *  replies are not ordered, so add the reply to the unordered_requests rax
+     *  replies are not ordered, so add the reply to the unordered_replies rax
      * using the request ID as the key. */
     if (req_id > c->min_reply_id) {
         addUnorderedReply(c, sdsnewlen(buf, len), req_id);

@@ -87,7 +87,7 @@ typedef struct client {
     uint64_t next_request_id;
     struct clientRequest *current_request; /* Currently reading */
     uint64_t min_reply_id;
-    rax *unordered_requests;
+    rax *unordered_replies;
     list *requests_to_process;       /* Requests not completely parsed */
     int requests_with_write_handler; /* Number of request that are still
                                       * being writing to cluster */
