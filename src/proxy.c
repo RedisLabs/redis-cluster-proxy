@@ -206,6 +206,7 @@ static int parseAddress(char *address, char **ip, int *port, char **hostsocket)
     *ip = NULL;
     *hostsocket = NULL;
     *port = 0;
+    int size = strlen(address);
     char *p = strchr(address, ':');
     if (!p) *hostsocket = address;
     else {
@@ -214,8 +215,8 @@ static int parseAddress(char *address, char **ip, int *port, char **hostsocket)
             *p = '\0';
             *ip = address;
         }
-        *port = atoi(++p);
-        if (!port) return 0;
+        if (p - address != size) *port = atoi(++p);
+        if (!*port) return 0;
     }
     return 1;
 }
