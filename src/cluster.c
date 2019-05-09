@@ -292,6 +292,7 @@ int fetchClusterConfiguration(redisCluster *cluster, char *ip, int port,
         if (hostsocket == NULL)
             fprintf(stderr,"%s:%d: %s\n", ip, port, ctx->errstr);
         else fprintf(stderr,"%s: %s\n", hostsocket, ctx->errstr);
+        redisFree(ctx);
         return 0;
     }
     clusterNode *firstNode = createClusterNode(ip, port, cluster);
