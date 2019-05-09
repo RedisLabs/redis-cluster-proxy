@@ -137,6 +137,7 @@ static void freeClusterNode(clusterNode *node) {
         for (i = 0; i < node->cluster->numthreads; i++) {
             redisClusterConnection *conn = node->connections[i];
             if (conn == NULL) continue;
+            onClusterNodeDisconnection(node, i);
             freeClusterConnection(conn);
         }
         zfree(node->connections);
@@ -217,7 +218,11 @@ redisContext *getClusterNodeContext(clusterNode *node, int thread_id) {
 
 redisContext *clusterNodeConnect(clusterNode *node, int thread_id) {
     redisContext *ctx = getClusterNodeContext(node, thread_id);
-    if (ctx) redisFree(ctx);
+    if (ctx) {
+        onClusterNodeDisconnection(node, thread_id);
+        redisFree(ctx);
+        ctx = NULL;
+    }
     proxyLogDebug("Connecting to node %s:%d\n", node->ip, node->port);
     ctx = redisConnect(node->ip, node->port);
     if (ctx->err) {
@@ -253,6 +258,14 @@ redisContext *clusterNodeConnectAtomic(clusterNode *node, int thread_id) {
     redisContext *ctx = clusterNodeConnect(node, thread_id);
     pthread_mutex_unlock(&(node->connection_mutex));
     return ctx;
+}
+
+void clusterNodeDisconnect(clusterNode *node, int thread_id) {
+    redisContext *ctx = getClusterNodeContext(node, thread_id);
+    if (ctx == NULL) return;
+    onClusterNodeDisconnection(node, thread_id);
+    redisFree(ctx);
+    node->connections[thread_id]->context = NULL;
 }
 
 /* Map to slot into the cluster's radix tree map after converting the slot

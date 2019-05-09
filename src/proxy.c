@@ -424,13 +424,13 @@ void beforeThreadSleep(struct aeEventLoop *eventLoop) {
 }
 
 
-/* Only used to let threads' event loops process new file events. */
+/*
 static int proxyThreadCron(aeEventLoop *eventLoop, long long id, void *data) {
     UNUSED(eventLoop);
     UNUSED(id);
     UNUSED(data);
     return 1;
-}
+} */
 
 static int processThreadMessage(proxyThread *thread, threadMessage *msg) {
     if (msg->type == THREAD_MSG_NEW_CLIENT) {
@@ -800,6 +800,61 @@ static int writeToCluster(aeEventLoop *el, int fd, clientRequest *req) {
         handleNextRequestToCluster(node, thread_id);
     }
     return success;
+}
+
+/* This should be called every time a node connection is closed (ie. because
+ * the connection has been closed by the proxy itself or because the node
+ * instance went down.
+ * This functions does the following:
+ *   - Delete event loop's file events related to the node's socket
+ *   - Check for requests that were still writing to the node's socket and
+ *     dequeue and free them (after repying with an error to their client).
+ *   - Check for requests that were still waiting to read replies from the
+ *     node's socket, dequeue and free them (after repying with an error to
+ *     their client). */
+void onClusterNodeDisconnection(clusterNode *node, int thread_id) {
+    redisClusterConnection *connection = getClusterConnection(node, thread_id);
+    if (connection == NULL) return;
+    redisContext *ctx = connection->context;
+    if (ctx != NULL && ctx->fd >= 0) {
+        aeEventLoop *el = proxy.threads[thread_id]->loop;
+        aeDeleteFileEvent(el, ctx->fd, AE_WRITABLE | AE_READABLE);
+        sds err = sdsnew("Cluster node disconnected: ");
+        err = sdscatprintf(err, "%s:%d", node->ip, node->port);
+        listIter li;
+        listNode *ln;
+        /* If there are requests currently writing to the node, we must reply
+         * to their client with a "node disconnected" error, free them and then
+         * dequeue them. */
+        listRewind(connection->requests_to_send, &li);
+        while ((ln = listNext(&li))) {
+            clientRequest *req = ln->value;
+            if (req == NULL) continue;
+            assert(req->node == node);
+            /* If the request has a write handler installed, it means that
+             * it hasn't completely written its buffer to the node. */
+            if (req->has_write_handler) {
+                if (req->written > 0) {
+                    addReplyError(req->client, err, req->id);
+                    dequeueRequestToSend(req);
+                    freeRequest(req, 0);
+                }
+            }
+        }
+        /* If there are pending requests that are reading or waiting to read
+         * from the node, we must reply to their client with a
+         * "node disconnected" error, free them and dequeue them. */
+        listRewind(connection->requests_pending, &li);
+        while ((ln = listNext(&li))) {
+            clientRequest *req = ln->value;
+            if (req == NULL) continue;
+            assert(req->node == node);
+            addReplyError(req->client, err, req->id);
+            dequeuePendingRequest(req);
+            freeRequest(req, 0);
+        }
+        sdsfree(err);
+    }
 }
 
 /* TODO: implement also UNIX socket listener */
@@ -1573,68 +1628,47 @@ static void readClusterReply(aeEventLoop *el, int fd,
     sds errmsg = NULL;
     proxyLogDebug("Reading reply from %s:%d on thread %d...\n",
                   node->ip, node->port, thread_id);
-    int success = (redisBufferRead(ctx) == REDIS_OK), retry = 0, replies = 0;
+    int success = (redisBufferRead(ctx) == REDIS_OK), replies = 0,
+                  node_disconnected = 0;
     if (!success) {
         proxyLogDebug("Failed redisBufferRead from %s:%d on thread %d\n",
                       node->ip, node->port, thread_id);
         int err = ctx->err;
-        if (err & (REDIS_ERR_IO | REDIS_ERR_EOF)) {
-            /* Try to reconnect to the node */
-            if (!(ctx = clusterNodeConnect(node, thread_id)))
-                errmsg = sdsnew("Cluster node disconnected: ");
-            else if (req != NULL) {
-                req->written = 0;
-                retry = 1;
-            }
-        } else {
+        node_disconnected = (err & (REDIS_ERR_IO | REDIS_ERR_EOF));
+        if (node_disconnected) errmsg = sdsnew("Cluster node disconnected: ");
+        else {
             proxyLogErr("Error from node %s:%d: %s\n", node->ip, node->port,
                         ctx->errstr);
             errmsg = sdsnew("Failed to read reply from ");
         }
-        if (errmsg != NULL && !retry) {
-            errmsg = sdscatfmt(errmsg, "%s:%u", node->ip, node->port);
-            /* An error occurred and it's not possibile to retry */
-            if (req != NULL) {
-                dequeuePendingRequest(req);
-                addReplyError(req->client, errmsg, req->id);
-                freeRequest(req, 1);
-            } else {
-                listNode *first = listFirst(queue);
-                if (first) listDelNode(queue, first);
-            }
-            /*TODO: Handle down cluster nodes */
-            sdsfree(errmsg);
-            return;
+        errmsg = sdscatfmt(errmsg, "%s:%u", node->ip, node->port);
+        /* An error occurred, so dequeue the request. If the request is not
+         * NULL, send an error reply to the client and then free the requests
+         * itself. If the node is down (node_disconnected), call
+         * clusterNodeDisconnect in order to close the socket, close the file
+         * event handlers and close all the other requests waiting for a
+         * reply on the same node's socket. */
+        if (req != NULL) {
+            dequeuePendingRequest(req);
+            addReplyError(req->client, errmsg, req->id);
+            freeRequest(req, 1);
+        } else {
+            listNode *first = listFirst(queue);
+            if (first) listDelNode(queue, first);
         }
+        if (node_disconnected) {
+            proxyLogDebug(errmsg);
+            clusterNodeDisconnect(node, thread_id);
+        }
+        sdsfree(errmsg);
+        /* Exit, since an error occurred. */
+        return;
     } else replies = processClusterReplyBuffer(ctx, node, thread_id);
     if (listLength(queue) == 0) {
         aeDeleteFileEvent(el, fd, AE_READABLE);
         proxyLogDebug("Deleting read handler for node %s:%d on thread %d\n",
                       node->ip, node->port, thread_id);
     }
-    if (retry) {
-        proxyLogDebug("Retrying request to %d on thread %d\n",
-                      node->port, thread_id);
-        if (aeCreateFileEvent(el, fd, AE_WRITABLE, writeToClusterHandler,
-            req->node) != AE_ERR) {
-            req->has_write_handler = 1;
-            /*TODO: check */
-            list *queue =
-                getClusterConnection(req->node, thread_id)->requests_to_send;
-            listAddNodeHead(queue, req);
-        } else {
-            if (errmsg) sdsfree(errmsg);
-            errmsg = sdsnew("Failed to read reply from ");
-            errmsg = sdscatfmt(errmsg, "%s:%d", node->ip, node->port);
-            retry = 0;
-        }
-    }
-    if (!success && !retry && req != NULL) {
-        if (errmsg != NULL) addReplyError(req->client, errmsg, req->id);
-        dequeuePendingRequest(req);
-        freeRequest(req, 1);
-    }
-    /*clientRequest *next_req = NULL;*/
     if (errmsg != NULL) sdsfree(errmsg);
     handleNextPendingRequest(node, thread_id);
 }

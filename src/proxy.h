@@ -93,5 +93,6 @@ typedef struct client {
 
 void freeRequest(clientRequest *req, int delete_from_lists);
 void freeRequestList(list *request_list);
+void onClusterNodeDisconnection(clusterNode *node, int thread_id);
 
 #endif /* __REDIS_CLUSTER_PROXY_H__ */

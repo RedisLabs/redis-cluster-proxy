@@ -68,6 +68,7 @@ int fetchClusterConfiguration(redisCluster *cluster, char *ip, int port,
 redisContext *getClusterNodeContext(clusterNode *node, int thread_id);
 redisContext *clusterNodeConnect(clusterNode *node, int thread_id);
 redisContext *clusterNodeConnectAtomic(clusterNode *node, int thread_id);
+void clusterNodeDisconnect(clusterNode *node, int thread_id);
 clusterNode *searchNodeBySlot(redisCluster *cluster, int slot);
 clusterNode *getNodeByKey(redisCluster *cluster, char *key, int keylen,
                           int *getslot);
