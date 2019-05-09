@@ -10,7 +10,7 @@ $datalen = [1, 4096]
 
 $datalen.each{|len|
 
-    test "SET #{$numkeys} keys (#{len} byte(s))" do
+    test "SET #{$numkeys} keys (size=#{len}b, clients=#{$numclients})" do
         spawn_clients($numclients){|client, idx|
             (0...$numkeys).each{|n|
                 log_test_update "key #{n + 1}/#{$numkeys}"
@@ -22,7 +22,7 @@ $datalen.each{|len|
         }
     end
 
-    test "GET #{$numkeys} keys (#{len} byte(s))" do
+    test "GET #{$numkeys} keys (size=#{len}b, clients=#{$numclients})" do
         spawn_clients($numclients){|client, idx|
             (0...$numkeys).each{|n|
                 log_test_update "key #{n + 1}/#{$numkeys}"
@@ -35,7 +35,7 @@ $datalen.each{|len|
         }
     end
 
-    test "RPUSH #{$numlists} keys (#{len} byte(s))" do
+    test "RPUSH #{$numlists} keys (size=#{len}b, clients=#{$numclients})" do
         spawn_clients(1){|client, idx|
             (0...$numlists).each{|n|
                 log_test_update "key #{n + 1}/#{$numlists}"
@@ -51,7 +51,7 @@ $datalen.each{|len|
         }
     end
 
-    test "LRANGE #{$numlists} keys (#{len} byte(s))" do
+    test "LRANGE #{$numlists} keys (size=#{len}b, clients=#{$numclients})" do
         spawn_clients($numclients){|client, idx|
             (0...$numlists).each{|n|
                 log_test_update "key #{n + 1}/#{$numlists}"
@@ -68,7 +68,7 @@ $datalen.each{|len|
         }
     end
 
-    test "SADD #{$numlists} keys (#{len} byte(s))" do
+    test "SADD #{$numlists} keys (size=#{len}b, clients=#{$numclients})" do
         spawn_clients(1){|client, idx|
             (0...$numlists).each{|n|
                 log_test_update "key #{n + 1}/#{$numlists}"
@@ -84,7 +84,7 @@ $datalen.each{|len|
         }
     end
 
-    test "SMEMBERS #{$numlists} keys (#{len} byte(s))" do
+    test "SMEMBERS #{$numlists} keys (size=#{len}b, clients=#{$numclients})" do
         spawn_clients($numclients){|client, idx|
             (0...$numlists).each{|n|
                 log_test_update "key #{n + 1}/#{$numlists}"

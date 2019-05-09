@@ -214,7 +214,7 @@ class RedisCluster
             destroy!
             exit 1
         end
-        log "Creating cluster...", :gray
+        log "Creating cluster with #{@instances.length} instances...", :gray
         redis_cli_version = match[0]
         if redis_cli_version.split('.')[0].to_i >= 5
             cmd = "#{@redis_cli} --cluster create " + @instances.map{|instance|
@@ -231,7 +231,10 @@ class RedisCluster
             #TODO: use redis-trib
             raise "Not supported: redis-trib!"
         end
-        update_cluster
+        res = update_cluster
+        log "Cluster created with #{@masters.length} masters:"
+        log @masters.map{|n| " - #{n[:port]}"}.join("\n")
+        res
     end
 
     def update_cluster(instance = nil)
