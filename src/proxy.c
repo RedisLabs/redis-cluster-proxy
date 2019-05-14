@@ -719,7 +719,7 @@ static int writeToClient(client *c) {
             assert(thread != NULL);
             aeEventLoop *el = thread->loop;
             assert(el != NULL);
-            aeDeleteFileEvent(el, c->fd, AE_READABLE);
+            aeDeleteFileEvent(el, c->fd, AE_WRITABLE);
             c->has_write_handler = 0;
         }
     }
