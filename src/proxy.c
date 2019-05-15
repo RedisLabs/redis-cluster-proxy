@@ -767,8 +767,10 @@ static int writeToCluster(aeEventLoop *el, int fd, clientRequest *req) {
                       "pending requests\n", c->id, req->id,
                       node->ip, node->port);
         aeDeleteFileEvent(el, fd, AE_WRITABLE);
-        req->has_write_handler = 0;
-        c->requests_with_write_handler--;
+        if (req->has_write_handler) {
+            req->has_write_handler = 0;
+            c->requests_with_write_handler--;
+        }
         dequeueRequestToSend(req);
         if (c->status == CLIENT_STATUS_UNLINKED) {
             /* Client has been disconnected, so we'll enqueue a NULL pointer
@@ -832,9 +834,13 @@ void onClusterNodeDisconnection(clusterNode *node, int thread_id) {
             if (req == NULL) continue;
             assert(req->node == node);
             /* If the request has a write handler installed, it means that
-             * it hasn't completely written its buffer to the node. */
+             * it could not have completely written its buffer to the node.
+             * In this case, the client shpuld receive the reply error and
+             * the request itself should be dequeued and freed. */
             if (req->has_write_handler) {
                 if (req->written > 0) {
+                    req->has_write_handler = 0;
+                    req->client->requests_with_write_handler--;
                     addReplyError(req->client, err, req->id);
                     dequeueRequestToSend(req);
                     freeRequest(req, 0);
@@ -1123,7 +1129,7 @@ static clusterNode *getRequestNode(clientRequest *req, sds *err) {
 void freeRequest(clientRequest *req, int delete_from_lists) {
     if (req == NULL) return;
     proxyLogDebug("Free Request %llu:%llu\n", req->client->id, req->id);
-    if (req->has_write_handler) {
+    if (req->has_write_handler && req->written > 0) {
         proxyLogDebug("Request %llu:%llu is still writting, cannot free "
                       "it now...\n", req->client->id, req->id);
         return;
@@ -1137,10 +1143,8 @@ void freeRequest(clientRequest *req, int delete_from_lists) {
     if (req->node)
         ctx = getClusterNodeContext(req->node, req->client->thread_id);
     aeEventLoop *el = getClientLoop(req->client);
-    if (ctx != NULL) {
-        if (req->has_write_handler) aeDeleteFileEvent(el, ctx->fd, AE_WRITABLE);
-        /*TODO: delete, handled by readClusterReply: if (req->has_read_handler) aeDeleteFileEvent(el, ctx->fd, AE_READABLE);*/
-    }
+    if (ctx != NULL && req->has_write_handler)
+        aeDeleteFileEvent(el, ctx->fd, AE_WRITABLE);
     if (delete_from_lists && req->node != NULL) {
         redisClusterConnection *conn =
             getClusterConnection(req->node, req->client->thread_id);
