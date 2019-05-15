@@ -15,4 +15,9 @@ if [ -z `which bundle` ]; then
     gem install bundler
 fi
 
+if [ -z `cd ./test && bundle check > /dev/null 2>&1 && echo OK` ]; then
+    cd ./test && bundle install
+    cd -
+fi
+
 ./test/runtest.rb $@
