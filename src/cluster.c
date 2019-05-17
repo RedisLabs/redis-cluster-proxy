@@ -71,6 +71,7 @@ static redisClusterConnection *createClusterConnection(void) {
     redisClusterConnection *conn = zmalloc(sizeof(*conn));
     if (conn == NULL) return NULL;
     conn->context = NULL;
+    conn->has_read_handler = 0;
     conn->requests_pending = listCreate();
     if (conn->requests_pending == NULL) {
         zfree(conn);
