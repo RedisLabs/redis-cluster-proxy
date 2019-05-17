@@ -797,7 +797,7 @@ static int writeToCluster(aeEventLoop *el, int fd, clientRequest *req) {
                       listLength(getClusterConnection(node,
                                  thread_id)->requests_to_send));
         /* Try to install the read handler immediately */
-        handleNextPendingRequest(node, thread_id);
+        /*handleNextPendingRequest(node, thread_id);*/
         /* Try to send the next available request to send, if one. */
         handleNextRequestToCluster(node, thread_id);
     }
@@ -1351,6 +1351,7 @@ static int sendRequestToCluster(clientRequest *req, sds *errmsg)
     if (req->has_write_handler) return 1;
     int thread_id = req->client->thread_id;
     assert(req->node != NULL);
+    aeEventLoop *el = getClientLoop(req->client);
     redisContext *ctx = getClusterNodeContext(req->node, thread_id);
     if (ctx == NULL) {
         if ((ctx = clusterNodeConnect(req->node, thread_id)) == NULL) {
@@ -1366,7 +1367,23 @@ static int sendRequestToCluster(clientRequest *req, sds *errmsg)
             return 0;
         }
     }
-    aeEventLoop *el = getClientLoop(req->client);
+    redisClusterConnection *conn =
+        getClusterConnection(req->node, thread_id);
+    assert(conn != NULL);
+    if (!conn->has_read_handler) {
+        if (aeCreateFileEvent(el, ctx->fd, AE_READABLE, readClusterReply,
+            req->node) != AE_ERR)
+        {
+            conn->has_read_handler = 1;
+            proxyLogDebug("Read reply handler installed "
+                          "for node %s:%d\n", req->node->ip, req->node->port);
+        } else {
+            proxyLogErr("Failed to create read reply handler for node %s:%d\n",
+                          req->node->ip, req->node->port);
+            /* TODO: handle failure reason, ie OOM */
+            return 0;
+        }
+    }
     if (!writeToCluster(el, ctx->fd, req)) return 0;
     int sent = (req->written == sdslen(req->buffer));
     if (!sent) {
@@ -1668,13 +1685,7 @@ static void readClusterReply(aeEventLoop *el, int fd,
         /* Exit, since an error occurred. */
         return;
     } else replies = processClusterReplyBuffer(ctx, node, thread_id);
-    if (listLength(queue) == 0) {
-        aeDeleteFileEvent(el, fd, AE_READABLE);
-        proxyLogDebug("Deleting read handler for node %s:%d on thread %d\n",
-                      node->ip, node->port, thread_id);
-    }
     if (errmsg != NULL) sdsfree(errmsg);
-    handleNextPendingRequest(node, thread_id);
 }
 
 static void *execProxyThread(void *ptr) {

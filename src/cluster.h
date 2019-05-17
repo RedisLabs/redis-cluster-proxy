@@ -32,6 +32,7 @@ typedef struct redisClusterConnection {
     redisContext *context;
     list *requests_to_send;
     list *requests_pending;
+    int has_read_handler;
 } redisClusterConnection;
 
 typedef struct clusterNode {
