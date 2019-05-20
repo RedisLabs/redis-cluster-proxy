@@ -1718,7 +1718,7 @@ static void checkTcpBacklogSettings(void) {
         if (somaxconn > 0 && somaxconn < proxy.tcp_backlog) {
             proxyLogWarn("The TCP backlog setting of %d cannot be enforced "
 			 "because /proc/sys/net/core/somaxconn is set to the "
-			 "lower value of %d.", proxy.tcp_backlog, somaxconn);
+			 "lower value of %d.\n", proxy.tcp_backlog, somaxconn);
         }
     }
     fclose(fp);
