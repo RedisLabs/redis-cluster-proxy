@@ -35,6 +35,7 @@
 #define MAX_THREADS             500
 #define DEFAULT_THREADS         8
 #define DEFAULT_TCP_KEEPALIVE   300
+#define DEFAULT_TCP_BACKLOG     511
 #define QUERY_OFFSETS_MIN_SIZE  10
 #define EL_INSTALL_HANDLER_FAIL 9999
 #define REQ_STATUS_UNKNOWN      -1
@@ -227,6 +228,7 @@ static void printHelp(void) {
             "  --max-clients <n>    Max clients (default: %d)\n"
             "  --threads <n>        Thread number (default: %d, max: %d)\n"
             "  --tcpkeepalive       TCP Keep Alive (default: %d)\n"
+            "  --tcp-backlog        TCP Backlog (default: %d)\n"
             "  --daemonize          Execute the proxy in background\n"
             "  -a, --auth <passw>   Authentication password\n"
             "  --disable-colors     Disable colorized output\n"
@@ -239,8 +241,8 @@ static void printHelp(void) {
             "  --dump-queues        Dump request queues (only for log-level "
                                     "'debug') \n"
             "  -h, --help         Print this help\n",
-            DEFAULT_PORT, DEFAULT_MAX_CLIENTS, DEFAULT_THREADS,
-            DEFAULT_TCP_KEEPALIVE, MAX_THREADS);
+            DEFAULT_PORT, DEFAULT_MAX_CLIENTS, DEFAULT_THREADS, MAX_THREADS,
+            DEFAULT_TCP_KEEPALIVE, DEFAULT_TCP_BACKLOG);
 }
 
 static int parseOptions(int argc, char **argv) {
@@ -260,6 +262,8 @@ static int parseOptions(int argc, char **argv) {
             config.maxclients = atoi(argv[++i]);
         else if (!strcmp("--tcpkeepalive", arg) && !lastarg)
             config.tcpkeepalive = atoi(argv[++i]);
+        else if (!strcmp("--tcp-backlog", arg) && !lastarg)
+            config.tcp_backlog = atoi(argv[++i]);
         else if (!strcmp("--dump-queries", arg))
             config.dump_queries = 1;
         else if (!strcmp("--dump-buffer", arg))
@@ -313,6 +317,7 @@ static void initConfig(void) {
     config.tcpkeepalive = DEFAULT_TCP_KEEPALIVE;
     config.maxclients = DEFAULT_MAX_CLIENTS;
     config.num_threads = DEFAULT_THREADS;
+    config.tcp_backlog = DEFAULT_TCP_BACKLOG;
     config.daemonize = 0;
     config.loglevel = LOGLEVEL_INFO;
     config.use_colors = 0;
@@ -1701,6 +1706,25 @@ void daemonize(void) {
     }
 }
 
+/* Check that server.tcp_backlog can be actually enforced in Linux according
+ * to the value of /proc/sys/net/core/somaxconn, or warn about it. */
+static void checkTcpBacklogSettings(void) {
+#ifdef HAVE_PROC_SOMAXCONN
+    FILE *fp = fopen("/proc/sys/net/core/somaxconn","r");
+    char buf[1024];
+    if (!fp) return;
+    if (fgets(buf,sizeof(buf),fp) != NULL) {
+        int somaxconn = atoi(buf);
+        if (somaxconn > 0 && somaxconn < server.tcp_backlog) {
+            proxyLogWarn("The TCP backlog setting of %d cannot be enforced "
+			 "because /proc/sys/net/core/somaxconn is set to the "
+			 "lower value of %d.", proxy.tcp_backlog, somaxconn);
+        }
+    }
+    fclose(fp);
+#endif
+}
+
 int main(int argc, char **argv) {
     int exit_status = 0, i;
     printf("Redis Cluster Proxy v%s\n", REDIS_CLUSTER_PROXY_VERSION);
@@ -1711,6 +1735,8 @@ int main(int argc, char **argv) {
         printHelp();
         return 1;
     }
+    proxy.tcp_backlog = config.tcp_backlog;
+    checkTcpBacklogSettings();
     config.cluster_address = argv[parsed_opts];
     printf("Cluster Address: %s\n", config.cluster_address);
     if (!parseAddress(config.cluster_address, &config.entry_node_host,

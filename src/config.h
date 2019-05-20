@@ -29,6 +29,7 @@ typedef struct {
     int tcpkeepalive;
     int maxclients;
     int num_threads;
+    int tcp_backlog;
     int daemonize;
     int loglevel;
     int use_colors;
