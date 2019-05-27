@@ -105,9 +105,6 @@ static void readClusterReply(aeEventLoop *el, int fd, void *privdata, int mask);
 static clusterNode *getRequestNode(clientRequest *req, sds *err);
 static clientRequest *handleNextRequestToCluster(clusterNode *node,
                                                  int thread_id);
-static clientRequest *handleNextPendingRequest(clusterNode *node,
-                                               int thread_id);
-static int prepareRequestForReadingReply(clientRequest *req);
 static clientRequest *getFirstQueuedRequest(list *queue, int *is_empty);
 static int enqueueRequest(clientRequest *req, int queue_type);
 static void dequeueRequest(clientRequest *req, int queue_type);
@@ -801,8 +798,6 @@ static int writeToCluster(aeEventLoop *el, int fd, clientRequest *req) {
         proxyLogDebug("Still have %d request(s) to send\n",
                       listLength(getClusterConnection(node,
                                  thread_id)->requests_to_send));
-        /* Try to install the read handler immediately */
-        /*handleNextPendingRequest(node, thread_id);*/
         /* Try to send the next available request to send, if one. */
         handleNextRequestToCluster(node, thread_id);
     }
@@ -1269,80 +1264,6 @@ alloc_failure:
     return NULL;
 }
 
-static int prepareRequestForReadingReply(clientRequest *req) {
-    if (req->has_read_handler) return 1;
-    assert(req->node != NULL);
-    aeEventLoop *el = getClientLoop(req->client);
-    int thread_id = req->client->thread_id, success;
-    redisContext *ctx = getClusterNodeContext(req->node, thread_id);
-    /* Connection to cluster node must be established in order to read the
-     * reply */
-    if (ctx == NULL) {
-        success = 0;
-        goto cleanup_and_return;
-    }
-    ///*TODO: check it*/if (aeGetFileEvents(el, ctx->fd) & AE_READABLE) {req->has_read_handler = 1; return 1;}
-    if (aeCreateFileEvent(el, ctx->fd, AE_READABLE, readClusterReply,
-        req->node) != AE_ERR)
-    {
-        req->has_read_handler = 1;
-        proxyLogDebug("Read reply handler installed into request %llu:%llu "
-                      "for node %s:%d\n", req->client->id, req->id,
-                      req->node->ip, req->node->port);
-        success = 1;
-    } else {
-        proxyLogDebug("Failed to create handler for request %llu:%llu!\n",
-                      req->client->id, req->id);
-        /* TODO: handle failure reason, ie OOM */
-        success = 0;
-    }
-cleanup_and_return:
-    if (!success) {
-        addReplyError(req->client, "Failed to read reply", req->id);
-        freeRequest(req, 1);
-    }
-    return success;
-}
-
-static clientRequest *getFirstValidRequestPending(clusterNode *node,
-                                                  int thread_id)
-{
-    int empty_queue = 0;
-    clientRequest *req = getFirstRequestPending(node, thread_id, &empty_queue);
-    if (req == NULL) {
-        /* Request can be NULL because the pending queue is empty or because
-         * it could be a 'ghost request' (that is a NULL placeholder for a
-         * request made by a freed client, ie. a disconnected client). In this
-         * case, we cycle the queue until we found the first valid request to
-         * be prepared for reading. If all the requests in the queue are NULL,
-         * just empty the queue and return NULL. */
-        if (!empty_queue) {
-            redisClusterConnection *conn =
-                getClusterConnection(node, thread_id);
-            listIter li;
-            listNode *ln;
-            listRewind(conn->requests_pending, &li);
-            while ((ln = listNext(&li))) {
-                req = ln->value;
-                if (req != NULL) break;
-            }
-        } else return NULL;
-    }
-    return req;
-}
-
-static clientRequest *handleNextPendingRequest(clusterNode *node,
-                                               int thread_id)
-{
-    clientRequest *req = getFirstValidRequestPending(node, thread_id);
-    if (req == NULL) return NULL;
-    while (!prepareRequestForReadingReply(req)) {
-        req = getFirstValidRequestPending(node, thread_id);
-        if (req == NULL) break;
-    }
-    return req;
-}
-
 /* Fetch the cluster node connection (redisContext *) related to the
  * request and try to connect to it if not already connected.
  * Then install the write handler on the request.
@@ -1644,6 +1565,7 @@ static void readClusterReply(aeEventLoop *el, int fd,
                              void *privdata, int mask)
 {
     UNUSED(mask);
+    UNUSED(fd);
     proxyThread *thread = el->privdata;
     int thread_id = thread->thread_id;
     clusterNode *node = privdata;
