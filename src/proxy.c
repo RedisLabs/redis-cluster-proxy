@@ -68,11 +68,6 @@
     (getFirstQueuedRequest(getClusterConnection(node, t)->requests_pending,\
      isempty))
 
-typedef struct _threadMessage {
-    char type;
-    void *data;
-} threadMessage;
-
 typedef struct proxyThread {
     int thread_id;
     int io[2];
@@ -81,7 +76,7 @@ typedef struct proxyThread {
     list *clients;
     list *pending_messages;
     uint64_t next_client_id;
-    pthread_mutex_t new_message_mutex;
+    sds msgbuffer;
 } proxyThread;
 
 redisClusterProxy proxy;
@@ -107,6 +102,7 @@ static clientRequest *handleNextRequestToCluster(clusterNode *node,
 static clientRequest *getFirstQueuedRequest(list *queue, int *is_empty);
 static int enqueueRequest(clientRequest *req, int queue_type);
 static void dequeueRequest(clientRequest *req, int queue_type);
+static int sendMessageToThread(proxyThread *thread, sds buf);
 
 /* Hiredis helpers */
 
@@ -354,7 +350,6 @@ static void initProxy(void) {
             fprintf(stderr, "FATAL: Failed to start thread %d.\n", i);
             exit(1);
         }
-        pthread_mutex_init(&(proxy.threads[i]->new_message_mutex), NULL);
     }
     pthread_mutex_init(&(proxy.numclients_mutex), NULL);
 }
@@ -433,41 +428,37 @@ static int proxyThreadCron(aeEventLoop *eventLoop, long long id, void *data) {
     return 1;
 } */
 
-static int processThreadMessage(proxyThread *thread, threadMessage *msg) {
-    if (msg->type == THREAD_MSG_NEW_CLIENT) {
-        client *c = msg->data;
-        aeEventLoop *el = thread->loop;
-        assert(el != NULL);
-        listAddNodeTail(thread->clients, c);
-        proxyLogDebug("Client %llu added to thread %d\n", c->id, c->thread_id);
-        errno = 0;
-        if (aeCreateFileEvent(el, c->fd, AE_READABLE, readQuery, c) == AE_ERR) {
-            proxyLogErr("ERROR: Failed to create read query handler for client "
-                        "%s\n", c->ip);
-            errno = EL_INSTALL_HANDLER_FAIL;
-            freeClient(c);
-            return 0;
-        }
-        c->status = CLIENT_STATUS_LINKED;
-    }
-    return 1;
-}
-
 static int processThreadMessages(proxyThread *thread) {
-    listIter li;
-    listNode *ln;
-    int processed = 0;
-    pthread_mutex_lock(&(thread->new_message_mutex));
-    listRewind(thread->pending_messages, &li);
-    while ((ln = listNext(&li)) != NULL) {
-        threadMessage *msg = ln->value;
-        if (!processThreadMessage(thread, msg)) {
-            if (errno != EL_INSTALL_HANDLER_FAIL) continue;
+    client *c = NULL;
+    int buflen = sdslen(thread->msgbuffer);
+    int msgsize = (1 + sizeof(c));
+    int processed = 0, count = buflen / msgsize, i;
+    for (i = 0; i < count; i++) {
+        char *p = thread->msgbuffer + (i * msgsize);
+        if (*(p++) == THREAD_MSG_NEW_CLIENT) {
+            client **pc = (void*) p;
+            c = (client *) *pc;
+            aeEventLoop *el = thread->loop;
+            listAddNodeTail(thread->clients, c);
+            proxyLogDebug("Client %llu added to thread %d\n",
+                          c->id, c->thread_id);
+            errno = 0;
+            if (aeCreateFileEvent(el, c->fd, AE_READABLE, readQuery, c) ==
+                AE_ERR)
+            {
+                proxyLogErr("ERROR: Failed to create read query handler for "
+                            "client %s\n", c->ip);
+                errno = EL_INSTALL_HANDLER_FAIL;
+                freeClient(c);
+                processed++;
+                continue;
+            }
+            c->status = CLIENT_STATUS_LINKED;
+            processed++;
         }
-        listDelNode(thread->pending_messages, ln);
-        processed++;
     }
-    pthread_mutex_unlock(&(thread->new_message_mutex));
+    if (processed > 0)
+        sdsrange(thread->msgbuffer, processed * msgsize, -1);
     return processed;
 }
 
@@ -475,9 +466,9 @@ static void readThreadPipe(aeEventLoop *el, int fd, void *privdata, int mask) {
     UNUSED(el);
     UNUSED(mask);
     proxyThread *thread = privdata;
-    int msgcount = 0, processed = 0, nread = 0;
-    char buf[2048];
-    nread = read(fd, buf + nread, sizeof(buf));
+    int processed = 0, nread = 0;
+    char buf[4096];
+    nread = read(fd, buf, sizeof(buf));
     if (nread == -1) {
         if (errno == EAGAIN) {
             return;
@@ -487,8 +478,7 @@ static void readThreadPipe(aeEventLoop *el, int fd, void *privdata, int mask) {
             return;
         }
     }
-    msgcount += nread;
-    if (msgcount == 0) return;
+    thread->msgbuffer = sdscatlen(thread->msgbuffer, buf, nread);
     processed = processThreadMessages(thread);
 }
 
@@ -526,30 +516,69 @@ static proxyThread *createProxyThread(int index) {
         freeProxyThread(thread);
         return NULL;
     }
+    thread->msgbuffer = sdsempty();
     return thread;
 }
 
-static threadMessage *createThreadMessage(char type, void *data) {
-    threadMessage *msg = zmalloc(sizeof(*msg));
-    if (msg == NULL) return NULL;
-    msg->type = type;
-    msg->data = data;
-    return msg;
+static void handlePendingAwakeMessages(aeEventLoop *el, int fd, void *privdata,
+                                       int mask)
+{
+    UNUSED(el);
+    UNUSED(fd);
+    UNUSED(mask);
+    proxyThread *thread = privdata;
+    listIter li;
+    listNode *ln;
+    listRewind(thread->pending_messages, &li);
+    while ((ln = listNext(&li))) {
+        sds msg = ln->value;
+        int sent = sendMessageToThread(thread, msg);
+        if (sent == -1) continue;
+        else {
+            listDelNode(thread->pending_messages, ln);
+            if (!sent) proxyLogErr("Failed to send message to thread!\n");
+        }
+    }
+}
+
+static int sendMessageToThread(proxyThread *thread, sds buf) {
+    int fd = thread->io[THREAD_IO_WRITE];
+    int nwritten = 0, totwritten = 0, buflen = sdslen(buf);
+    if (buflen == 0) return 0;
+    while (totwritten < buflen) {
+        nwritten = write(fd, buf + nwritten, sdslen(buf));
+        if (nwritten == -1) {
+            if (errno == EAGAIN) {
+                goto install_write_handler;
+            }
+            sdsfree(buf);
+            return 0;
+        } else if (nwritten == 0) break;
+        totwritten += nwritten;
+    }
+    if (totwritten == buflen) {
+        sdsfree(buf);
+        aeDeleteFileEvent(thread->loop, fd, AE_WRITABLE);
+    } else goto install_write_handler;
+    return 1;
+install_write_handler:
+    sdsrange(buf, totwritten, -1);
+    listAddNodeTail(thread->pending_messages, buf);
+    if (aeCreateFileEvent(thread->loop, fd, AE_WRITABLE,
+        handlePendingAwakeMessages, thread) == AE_ERR)
+    {
+        proxyLogDebug("Failed to create thread awake write handler!\n");
+        listNode *ln = listSearchKey(thread->pending_messages, buf);
+        if (ln != NULL) listDelNode(thread->pending_messages, ln);
+        sdsfree(buf);
+    }
+    return -1;
 }
 
 static int awakeThread(proxyThread *thread, char msgtype, void *data) {
-    threadMessage *msg = createThreadMessage(msgtype, data);
-    if (msg == NULL) return 0;
-    pthread_mutex_lock(&(thread->new_message_mutex));
-    listAddNodeTail(thread->pending_messages, msg);
-    pthread_mutex_unlock(&(thread->new_message_mutex));
-    int fd = thread->io[THREAD_IO_WRITE];
-    int nwritten = write(fd, &msgtype, sizeof(msgtype));
-    if (nwritten == -1) {
-        /* TODO: try again later */
-        return 0;
-    }
-    return 1;
+    sds buf = sdsnewlen(&msgtype, 1);
+    buf = sdscatlen(buf, &data, sizeof(data));
+    return sendMessageToThread(thread, buf);
 }
 
 static void freeProxyThread(proxyThread *thread) {
