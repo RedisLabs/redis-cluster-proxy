@@ -30,7 +30,7 @@
 #include <sys/stat.h>
 
 #define DEFAULT_PORT            7777
-#define DEFAULT_MAX_CLIENTS     10000000
+#define DEFAULT_MAX_CLIENTS     10000
 #define MAX_THREADS             500
 #define DEFAULT_THREADS         8
 #define DEFAULT_TCP_KEEPALIVE   300
@@ -101,6 +101,8 @@ static clientRequest *getFirstQueuedRequest(list *queue, int *is_empty);
 static int enqueueRequest(clientRequest *req, int queue_type);
 static void dequeueRequest(clientRequest *req, int queue_type);
 static int sendMessageToThread(proxyThread *thread, sds buf);
+static int installIOHandler(aeEventLoop *el, int fd, int mask, aeFileProc *proc,
+                            void *data, int retried);
 
 /* Hiredis helpers */
 
@@ -303,6 +305,109 @@ invalid:
     exit(1);
 }
 
+/* This function will try to raise the max number of open files accordingly to
+ * the configured max number of clients. It also reserves a number of file
+ * descriptors (proxy.min_reserved_fds) for thread pipes, listen sockets, and
+ * so on.
+ *
+ * If it will not be possible to set the limit accordingly to the configured
+ * max number of clients, the function will do the reverse setting
+ * comfig.maxclients to the value that we can actually handle. */
+void adjustOpenFilesLimit(void) {
+    rlim_t maxfiles = config.maxclients + proxy.min_reserved_fds;
+    struct rlimit limit;
+
+    if (getrlimit(RLIMIT_NOFILE,&limit) == -1) {
+        proxyLogWarn("Unable to obtain the current NOFILE limit (%s), "
+                     "assuming 1024 and setting the max clients configuration "
+                     "accordingly.\n", strerror(errno));
+        config.maxclients = 1024 - proxy.min_reserved_fds;
+    } else {
+        rlim_t oldlimit = limit.rlim_cur;
+
+        /* Set the max number of files if the current limit is not enough
+         * for our needs. */
+        if (oldlimit < maxfiles) {
+            rlim_t bestlimit;
+            int setrlimit_error = 0;
+
+            /* Try to set the file limit to match 'maxfiles' or at least
+             * to the higher value supported less than maxfiles. */
+            bestlimit = maxfiles;
+            while(bestlimit > oldlimit) {
+                rlim_t decr_step = 16;
+
+                limit.rlim_cur = bestlimit;
+                limit.rlim_max = bestlimit;
+                if (setrlimit(RLIMIT_NOFILE,&limit) != -1) break;
+                setrlimit_error = errno;
+
+                /* We failed to set file limit to 'bestlimit'. Try with a
+                 * smaller limit decrementing by a few FDs per iteration. */
+                if (bestlimit < decr_step) break;
+                bestlimit -= decr_step;
+            }
+
+            /* Assume that the limit we get initially is still valid if
+             * our last try was even lower. */
+            if (bestlimit < oldlimit) bestlimit = oldlimit;
+
+            if (bestlimit < maxfiles) {
+                unsigned int old_maxclients = config.maxclients;
+                config.maxclients = bestlimit - proxy.min_reserved_fds;
+                /* maxclients is unsigned so may overflow: in order
+                 * to check if maxclients is now logically less than 1
+                 * we test indirectly via bestlimit. */
+                if (bestlimit <= (rlim_t) proxy.min_reserved_fds) {
+                    proxyLogWarn("Your current 'ulimit -n' "
+                        "of %llu is not enough for the server to start. "
+                        "Please increase your open file limit to at least "
+                        "%llu. Exiting.\n",
+                        (unsigned long long) oldlimit,
+                        (unsigned long long) maxfiles);
+                    exit(1);
+                }
+                proxyLogWarn("You requested maxclients of %d "
+                    "requiring at least %llu max file descriptors.\n",
+                    old_maxclients,
+                    (unsigned long long) maxfiles);
+                proxyLogWarn("Server can't set maximum open files "
+                    "to %llu because of OS error: %s.\n",
+                    (unsigned long long) maxfiles, strerror(setrlimit_error));
+                proxyLogWarn("Current maximum open files is %llu. "
+                    "maxclients has been reduced to %d to compensate for "
+                    "low ulimit. "
+                    "If you need higher maxclients increase 'ulimit -n'.\n",
+                    (unsigned long long) bestlimit, config.maxclients);
+            } else {
+                proxyLogInfo("Increased maximum number of open files "
+                    "to %llu (it was originally set to %llu).\n",
+                    (unsigned long long) maxfiles,
+                    (unsigned long long) oldlimit);
+            }
+        }
+    }
+}
+
+/* Check that server.tcp_backlog can be actually enforced in Linux according
+ * to the value of /proc/sys/net/core/somaxconn, or warn about it. */
+static void checkTcpBacklogSettings(void) {
+#ifdef HAVE_PROC_SOMAXCONN
+    FILE *fp = fopen("/proc/sys/net/core/somaxconn","r");
+    char buf[1024];
+    if (!fp) return;
+    if (fgets(buf,sizeof(buf),fp) != NULL) {
+        int somaxconn = atoi(buf);
+        if (somaxconn > 0 && somaxconn < proxy.tcp_backlog) {
+            proxyLogWarn("The TCP backlog setting of %d cannot be enforced "
+			 "because /proc/sys/net/core/somaxconn is set to the "
+			 "lower value of %d.\n", proxy.tcp_backlog, somaxconn);
+        }
+    }
+    fclose(fp);
+#endif
+}
+
 static void initConfig(void) {
     config.port = DEFAULT_PORT;
     config.tcpkeepalive = DEFAULT_TCP_KEEPALIVE;
@@ -321,6 +426,9 @@ static void initConfig(void) {
 static void initProxy(void) {
     int i;
     proxy.numclients = 0;
+    proxy.min_reserved_fds = 10 + (config.num_threads * 3) +
+                             (proxy.fd_count * 2);
+    adjustOpenFilesLimit();
     /* Populate commands table. */
     proxy.commands = raxNew();
     int command_count = sizeof(redisCommandTable) / sizeof(redisCommandDef);
@@ -329,7 +437,7 @@ static void initProxy(void) {
         raxInsert(proxy.commands, (unsigned char*) cmd->name,
                   strlen(cmd->name), cmd, NULL);
     }
-    proxy.main_loop = aeCreateEventLoop(config.maxclients);
+    proxy.main_loop = aeCreateEventLoop(proxy.min_reserved_fds);
     proxy.threads = zmalloc(config.num_threads *
                             sizeof(proxyThread *));
     if (proxy.threads == NULL) {
@@ -350,6 +458,7 @@ static void initProxy(void) {
             exit(1);
         }
     }
+    proxyLogInfo("All thread(s) started!\n");
     pthread_mutex_init(&(proxy.numclients_mutex), NULL);
 }
 
@@ -432,9 +541,7 @@ static int processThreadPipeBufferForNewClients(proxyThread *thread) {
         proxyLogDebug("Client %llu added to thread %d\n",
                       c->id, c->thread_id);
         errno = 0;
-        if (aeCreateFileEvent(el, c->fd, AE_READABLE, readQuery, c) ==
-            AE_ERR)
-        {
+        if (!installIOHandler(el, c->fd, AE_READABLE, readQuery, c, 0)) {
             proxyLogErr("ERROR: Failed to create read query handler for "
                         "client %s\n", c->ip);
             errno = EL_INSTALL_HANDLER_FAIL;
@@ -491,7 +598,10 @@ static proxyThread *createProxyThread(int index) {
         return NULL;
     }
     listSetFreeMethod(thread->pending_messages, zfree);
-    thread->loop = aeCreateEventLoop(config.maxclients + 2);
+    int loopsize = proxy.min_reserved_fds +
+                   listLength(proxy.cluster->nodes) +
+                   (config.maxclients / config.num_threads) + 1;
+    thread->loop = aeCreateEventLoop(loopsize);
     if (thread->loop == NULL) {
         freeProxyThread(thread);
         return NULL;
@@ -1278,6 +1388,28 @@ alloc_failure:
     return NULL;
 }
 
+/* Try to call aeCreateFileEvent, and if ERANGE error has been issued, try to
+ * resize event loop's setsize to fd + proxy.min_reserved_fds.
+ * The 'retried' argument is used to ensure that resizing will be tried only
+ * once. */
+static int installIOHandler(aeEventLoop *el, int fd, int mask, aeFileProc *proc,
+                            void *data, int retried)
+{
+    if (aeCreateFileEvent(el, fd, mask, proc, data) != AE_ERR) {
+        return 1;
+    } else {
+        if (!retried && errno == ERANGE) {
+            int newsize = fd + proxy.min_reserved_fds;
+            if (aeResizeSetSize(el, newsize) == AE_ERR)
+                return 0;
+            return installIOHandler(el, fd, mask, proc, data, 1);
+        } else if (errno != ERANGE) {
+            proxyLogErr("Could not create read handler: %s\n", strerror(errno));
+        }
+        return 0;
+    }
+}
+
 /* Fetch the cluster node connection (redisContext *) related to the
  * request and try to connect to it if not already connected.
  * Then install the write handler on the request.
@@ -1311,17 +1443,16 @@ static int sendRequestToCluster(clientRequest *req, sds *errmsg)
         getClusterConnection(req->node, thread_id);
     assert(conn != NULL);
     if (!conn->has_read_handler) {
-        if (aeCreateFileEvent(el, ctx->fd, AE_READABLE, readClusterReply,
-            req->node) != AE_ERR)
+        if (!installIOHandler(el, ctx->fd, AE_READABLE, readClusterReply,
+                              req->node, 0))
         {
+            proxyLogErr("Failed to create read reply handler for node %s:%d\n",
+                          req->node->ip, req->node->port);
+            return 0;
+        } else  {
             conn->has_read_handler = 1;
             proxyLogDebug("Read reply handler installed "
                           "for node %s:%d\n", req->node->ip, req->node->port);
-        } else {
-            proxyLogErr("Failed to create read reply handler for node %s:%d\n",
-                          req->node->ip, req->node->port);
-            /* TODO: handle failure reason, ie OOM */
-            return 0;
         }
     }
     if (!writeToCluster(el, ctx->fd, req)) return 0;
@@ -1651,25 +1782,6 @@ void daemonize(void) {
         dup2(fd, STDERR_FILENO);
         if (fd > STDERR_FILENO) close(fd);
     }
-}
-
-/* Check that server.tcp_backlog can be actually enforced in Linux according
- * to the value of /proc/sys/net/core/somaxconn, or warn about it. */
-static void checkTcpBacklogSettings(void) {
-#ifdef HAVE_PROC_SOMAXCONN
-    FILE *fp = fopen("/proc/sys/net/core/somaxconn","r");
-    char buf[1024];
-    if (!fp) return;
-    if (fgets(buf,sizeof(buf),fp) != NULL) {
-        int somaxconn = atoi(buf);
-        if (somaxconn > 0 && somaxconn < proxy.tcp_backlog) {
-            proxyLogWarn("The TCP backlog setting of %d cannot be enforced "
-			 "because /proc/sys/net/core/somaxconn is set to the "
-			 "lower value of %d.\n", proxy.tcp_backlog, somaxconn);
-        }
-    }
-    fclose(fp);
-#endif
 }
 
 int main(int argc, char **argv) {

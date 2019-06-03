@@ -70,6 +70,7 @@ typedef struct {
     struct proxyThread **threads;
     _Atomic uint64_t numclients;
     rax *commands;
+    int min_reserved_fds;
     pthread_mutex_t numclients_mutex;
 } redisClusterProxy;
 
