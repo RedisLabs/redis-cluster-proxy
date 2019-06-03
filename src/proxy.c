@@ -52,8 +52,6 @@
 #define QUEUE_TYPE_SENDING      1
 #define QUEUE_TYPE_PENDING      2
 
-#define THREAD_MSG_NEW_CLIENT   'c'
-
 #define UNUSED(V) ((void) V)
 
 #define getClusterConnection(node, thread_id) (node->connections[thread_id])
@@ -419,43 +417,32 @@ void beforeThreadSleep(struct aeEventLoop *eventLoop) {
     }
 }
 
-
-/*
-static int proxyThreadCron(aeEventLoop *eventLoop, long long id, void *data) {
-    UNUSED(eventLoop);
-    UNUSED(id);
-    UNUSED(data);
-    return 1;
-} */
-
-static int processThreadMessages(proxyThread *thread) {
+static int processThreadPipeBufferForNewClients(proxyThread *thread) {
     client *c = NULL;
     int buflen = sdslen(thread->msgbuffer);
-    int msgsize = (1 + sizeof(c));
+    int msgsize = sizeof(c);
     int processed = 0, count = buflen / msgsize, i;
     for (i = 0; i < count; i++) {
         char *p = thread->msgbuffer + (i * msgsize);
-        if (*(p++) == THREAD_MSG_NEW_CLIENT) {
-            client **pc = (void*) p;
-            c = (client *) *pc;
-            aeEventLoop *el = thread->loop;
-            listAddNodeTail(thread->clients, c);
-            proxyLogDebug("Client %llu added to thread %d\n",
-                          c->id, c->thread_id);
-            errno = 0;
-            if (aeCreateFileEvent(el, c->fd, AE_READABLE, readQuery, c) ==
-                AE_ERR)
-            {
-                proxyLogErr("ERROR: Failed to create read query handler for "
-                            "client %s\n", c->ip);
-                errno = EL_INSTALL_HANDLER_FAIL;
-                freeClient(c);
-                processed++;
-                continue;
-            }
-            c->status = CLIENT_STATUS_LINKED;
+        client **pc = (void*) p;
+        c = (client *) *pc;
+        aeEventLoop *el = thread->loop;
+        listAddNodeTail(thread->clients, c);
+        proxyLogDebug("Client %llu added to thread %d\n",
+                      c->id, c->thread_id);
+        errno = 0;
+        if (aeCreateFileEvent(el, c->fd, AE_READABLE, readQuery, c) ==
+            AE_ERR)
+        {
+            proxyLogErr("ERROR: Failed to create read query handler for "
+                        "client %s\n", c->ip);
+            errno = EL_INSTALL_HANDLER_FAIL;
+            freeClient(c);
             processed++;
+            continue;
         }
+        c->status = CLIENT_STATUS_LINKED;
+        processed++;
     }
     if (processed > 0)
         sdsrange(thread->msgbuffer, processed * msgsize, -1);
@@ -479,7 +466,7 @@ static void readThreadPipe(aeEventLoop *el, int fd, void *privdata, int mask) {
         }
     }
     thread->msgbuffer = sdscatlen(thread->msgbuffer, buf, nread);
-    processed = processThreadMessages(thread);
+    processed = processThreadPipeBufferForNewClients(thread);
 }
 
 static proxyThread *createProxyThread(int index) {
@@ -575,9 +562,8 @@ install_write_handler:
     return -1;
 }
 
-static int awakeThread(proxyThread *thread, char msgtype, void *data) {
-    sds buf = sdsnewlen(&msgtype, 1);
-    buf = sdscatlen(buf, &data, sizeof(data));
+static int awakeThreadForNewClient(proxyThread *thread, client *c) {
+    sds buf = sdsnewlen(&c, sizeof(c));
     return sendMessageToThread(thread, buf);
 }
 
@@ -1492,7 +1478,7 @@ static void acceptHandler(int fd, char *ip) {
     proxyLogDebug("Client %llu connected from %s\n", c->id, ip);
     proxyThread *thread = proxy.threads[c->thread_id];
     assert(thread != NULL);
-    if (!awakeThread(thread, THREAD_MSG_NEW_CLIENT, c)) {
+    if (!awakeThreadForNewClient(thread, c)) {
         /* TODO: append client to a list of pending clients to be handled
          * by a beforeSleep (which should call awakeThread again*/
     }
