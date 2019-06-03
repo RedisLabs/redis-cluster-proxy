@@ -100,4 +100,36 @@ $datalen.each{|len|
         }
     end
 
+    test "ZADD #{$numlists} keys (size=#{len}b, clients=#{$numclients})" do
+        spawn_clients(1){|client, idx|
+            (0...$numlists).each{|n|
+                log_test_update "key #{n + 1}/#{$numlists}"
+                (0...10).each{|vn| 
+                    val = vn.to_s * len
+                    val = "#{n}:#{vn}"
+                    reply = redis_command client, :zadd,
+                                          "myzset:#{n}:#{len}", vn, val
+                    assert_not_redis_err(reply)
+                }
+            }
+            log_same_line ''
+        }
+    end
+
+    test "ZRANGE #{$numlists} keys (size=#{len}b, clients=#{$numclients})" do
+        spawn_clients($numclients){|client, idx|
+            (0...$numlists).each{|n|
+                log_test_update "key #{n + 1}/#{$numlists}"
+                values = (0...10).map{|vn| 
+                    val = vn.to_s * len
+                    val = "#{n}:#{vn}"
+                }
+                reply = redis_command client, :zrange, "myzset:#{n}:#{len}",0,-1
+                assert_not_redis_err(reply)
+                assert_equal(reply, values)
+            }
+            log_same_line ''
+        }
+    end
+
 }
