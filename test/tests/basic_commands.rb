@@ -132,4 +132,35 @@ $datalen.each{|len|
         }
     end
 
+    test "HSET #{$numlists} keys (size=#{len}b, clients=#{$numclients})" do
+        spawn_clients(1){|client, idx|
+            (0...$numlists).each{|n|
+                log_test_update "key #{n + 1}/#{$numlists}"
+                ('a'..'z').each{|f| 
+                    val = f * len
+                    reply = redis_command client, :hset,
+                                          "myhash:#{n}", f, val
+                    assert_not_redis_err(reply)
+                }
+            }
+            log_same_line ''
+        }
+    end
+
+    test "HGET #{$numlists} keys (size=#{len}b, clients=#{$numclients})" do
+        spawn_clients(1){|client, idx|
+            (0...$numlists).each{|n|
+                log_test_update "key #{n + 1}/#{$numlists}"
+                ('a'..'z').each{|f| 
+                    val = f * len
+                    reply = redis_command client, :hget,
+                                          "myhash:#{n}", f
+                    assert_not_redis_err(reply)
+                    assert_equal(reply, val)
+                }
+            }
+            log_same_line ''
+        }
+    end
+
 }
