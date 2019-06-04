@@ -199,6 +199,12 @@ distclean: clean
 
 .PHONY: distclean
 
+install: all
+	@mkdir -p $(INSTALL_BIN)
+	$(REDIS_CLUSTER_PROXY_INSTALL) $(REDIS_CLUSTER_PROXY_NAME) $(INSTALL_BIN)
+uninstall:
+	rm -f $(INSTALL_BIN)/$(REDIS_CLUSTER_PROXY_NAME)
+
 test: $(REDIS_CLUSTER_PROXY_NAME)
 	@(cd ..; ./runtest)
 .PHONY: test
