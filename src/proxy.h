@@ -20,6 +20,7 @@
 
 #include <pthread.h>
 #include <stdint.h>
+#include <sys/resource.h>
 #include <hiredis.h>
 #include "ae.h"
 #include "anet.h"
