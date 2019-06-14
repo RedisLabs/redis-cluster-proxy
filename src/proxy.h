@@ -82,6 +82,7 @@ typedef struct client {
     int thread_id;
     sds obuf;
     size_t written;
+    list *reply_array;
     int status;
     int has_write_handler;
     uint64_t next_request_id;

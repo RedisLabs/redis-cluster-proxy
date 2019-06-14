@@ -155,6 +155,175 @@ static int __hiredisReadReplyFromBuffer(redisReader *r, void **reply) {
     return REDIS_OK;
 }
 
+/* Custom Commands */
+
+static sds proxySubCommandConfig(clientRequest *r, sds option, sds value,
+                                 sds *err)
+{
+    void *opt = NULL;
+    sds reply = NULL;
+    int ok = 0;
+    int is_int = 0, is_float = 0, is_string = 0, read_only = 0;
+    UNUSED(is_float);
+    UNUSED(is_string);
+    if (strcmp("log-level", option) == 0) {
+        opt = &(config.loglevel);
+    } else if (strcmp("threads", option) == 0) {
+        is_int = 1;
+        opt = &(config.num_threads);
+        read_only = 1;
+    } else if (strcmp("max-clients", option) == 0) {
+        is_int = 1;
+        opt = &(config.maxclients);
+        read_only = 1;
+    } else if (strcmp("tcpkeepalive", option) == 0) {
+        is_int = 1;
+        opt = &(config.tcpkeepalive);
+        read_only = 1;
+    } else if (strcmp("tcp-backlog", option) == 0) {
+        is_int = 1;
+        opt = &(config.tcp_backlog);
+        read_only = 1;
+    } else if (strcmp("daemonize", option) == 0) {
+        is_int = 1;
+        opt = &(config.daemonize);
+        read_only = 1;
+    } else if (strcmp("dump-queries", option) == 0) {
+        is_int = 1;
+        opt = &(config.dump_queries);
+    } else if (strcmp("dump-buffer", option) == 0) {
+        is_int = 1;
+        opt = &(config.dump_buffer);
+    } else if (strcmp("dump-replies", option) == 0) {
+        is_int = 1;
+        opt = &(config.dump_queues);
+    }
+    if (opt == NULL) {
+        if (err) *err = sdsnew("Invalid config option");
+        return NULL;
+    }
+    if (opt == &(config.loglevel)) {
+        if (value != NULL) {
+            int i, level = -1;
+            for (i = 0; i < LOGLEVEL_ERROR; i++) {
+                if (!strcasecmp(value, redisProxyLogLevels[i])) {
+                    level = i;
+                    break;
+                }
+            }
+            if (level == -1) {
+                *err = sdsnew("Invalid log-level");
+                return NULL;
+            }
+            config.loglevel = level;
+            ok = 1;
+        } else {
+            reply = sdsnew(redisProxyLogLevels[config.loglevel]);
+        }
+    } else {
+        if (value == NULL) {
+            if (!initReplyArray(r->client)) {
+                *err = sdsnew("Out of memory");
+                return NULL;
+            }
+            addReplyString(r->client, option, r->id);
+            if (is_int) addReplyInt(r->client, *((int *) opt), r->id);
+            addReplyArray(r->client, r->id);
+        } else {
+            if (read_only) *err = sdsnew("This config option is read-only");
+            else {
+                if (is_int) {
+                    *((int *) opt) = atoi(value);
+                    ok = 1;
+                }
+            }
+        }
+    }
+    if (reply == NULL && ok) reply = sdsnew("OK");
+    return reply;
+}
+
+int proxyCommand(void *r) {
+    clientRequest *req = r;
+    sds subcmd = NULL, err = NULL;
+    if (req->argc < 2) {
+        err = sdsnew("Wrong number of arguments for command PROXY");
+        goto final;
+    }
+    assert(req->offsets_size >= 2);
+    int buflen = sdslen(req->buffer);
+    int offset = req->offsets[1];
+    int len = req->lengths[1];
+    char *p = req->buffer + offset, *end = req->buffer + buflen;
+    assert(p < end);
+    assert((p + len) < end);
+    subcmd = sdsnewlen(p, len);
+    if (strcasecmp("config", subcmd) == 0) {
+        if (req->argc < 3) {
+            err = sdsnew("Missing PROXY CONFIG action (GET | SET)");
+            goto final;
+        }
+        assert(req->offsets_size >= 3);
+        offset = req->offsets[2];
+        len = req->lengths[2];
+        p = req->buffer + offset, end = req->buffer + buflen;
+        assert(p < end);
+        assert((p + len) < end);
+        sds action = sdsnewlen(p, len), value = NULL;
+        int is_set_action = 0;
+        if (strcasecmp("get", action) == 0 || strcasecmp("set", action) == 0) {
+            is_set_action = (action[0] == 's' || action[0] == 'S');
+        } else {
+            err = sdsnew("Unsupported PROXY CONFIG action ");
+            err = sdscatfmt(err, "'%S'", action);
+            sdsfree(action);
+            goto final;
+        }
+        sdsfree(action);
+        if (req->argc < 4)
+            err = sdsnew("Missing config option name");
+        else if (is_set_action && req->argc < 5)
+            err = sdsnew("Missing config option value");
+        if (err != NULL) goto final;
+        assert(req->offsets_size >= 4);
+        offset = req->offsets[3];
+        len = req->lengths[3];
+        p = req->buffer + offset, end = req->buffer + buflen;
+        assert(p < end);
+        assert((p + len) < end);
+        sds option = sdsnewlen(p, len);
+        if (is_set_action) {
+            assert(req->offsets_size >= 5);
+            offset = req->offsets[4];
+            len = req->lengths[4];
+            p = req->buffer + offset, end = req->buffer + buflen;
+            assert(p < end);
+            assert((p + len) < end);
+            value = sdsnewlen(p, len);
+        }
+        sds reply = proxySubCommandConfig(req, option, value, &err);
+        if (reply != NULL) {
+            addReplyString(req->client, reply, req->id);
+            sdsfree(reply);
+        }
+        sdsfree(option);
+        if (value != NULL) sdsfree(value);
+    } else if (strcasecmp("ping", subcmd) == 0) {
+        addReplyString(req->client, "PONG", req->id);
+    } else {
+        err = sdsnew("Unsupported subcommand ");
+        err = sdscatfmt(err, "'%S' for command PROXY", subcmd);
+    }
+final:
+    if (err != NULL) {
+        addReplyError(req->client, err, req->id);
+        sdsfree(err);
+    }
+    if (subcmd != NULL) sdsfree(subcmd);
+    freeRequest(req, 1);
+    return PROXY_COMMAND_HANDLED;
+}
+
 /* Proxy functions */
 
 static void dumpQueue(clusterNode *node, int thread_id, int type) {
@@ -720,6 +889,7 @@ static client *createClient(int fd, char *ip) {
     c->fd = fd;
     c->ip = sdsnew(ip);
     c->obuf = sdsempty();
+    c->reply_array = NULL;
     c->current_request = NULL;
     anetNonBlock(NULL, fd);
     anetEnableTcpNoDelay(NULL, fd);
@@ -804,6 +974,7 @@ static void freeClient(client *c) {
     if (ln != NULL) listDelNode(thread->clients, ln);
     if (c->ip != NULL) sdsfree(c->ip);
     if (c->obuf != NULL) sdsfree(c->obuf);
+    if (c->reply_array != NULL) listRelease(c->reply_array);
     if (c->current_request) freeRequest(c->current_request, 1);
     listIter li;
     listRewind(c->requests_to_process, &li);
@@ -1525,13 +1696,17 @@ static int processRequest(clientRequest *req) {
      * - Commands explictly having unsupported to 1
      * - Commands without explicit first_key offset */
     if (cmd == NULL || cmd->unsupported ||
-        (cmd->arity != 1 && !cmd->first_key)){
+        (!cmd->handle && cmd->arity != 1 && !cmd->first_key)){
         errmsg = sdsnew("Unsupported command: ");
         errmsg = sdscatfmt(errmsg, "'%s'", command_name);
         proxyLogDebug("%s\n", errmsg);
         goto invalid_request;
     }
     req->command = cmd;
+    if (cmd->handle && cmd->handle(req) == PROXY_COMMAND_HANDLED) {
+        if (command_name) sdsfree(command_name);
+        return 1;
+    }
     clusterNode *node = getRequestNode(req, &errmsg);
     if (node == NULL) {
         if (errmsg == NULL)

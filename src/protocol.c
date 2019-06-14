@@ -23,10 +23,35 @@
 #include "reply_order.h"
 #include "sds.h"
 
+int initReplyArray(client *c) {
+    c->reply_array = listCreate();
+    if (c->reply_array == NULL) return 0;
+    listSetFreeMethod(c->reply_array, (void (*)(void *)) sdsfree);
+    return 1;
+}
+
+void addReplyArray(client *c, uint64_t req_id) {
+    if (c->reply_array == NULL) return;
+    sds r = sdsnew("*");
+    r = sdscatfmt(r, "%I\r\n", listLength(c->reply_array));
+    listIter li;
+    listNode *ln;
+    listRewind(c->reply_array, &li);
+    while ((ln = listNext(&li))) r = sdscat(r, ln->value);
+    listRelease(c->reply_array);
+    c->reply_array = NULL;
+    addReplyRaw(c, (const char*) r, sdslen(r), req_id);
+    sdsfree(r);
+}
+
 void addReplyStringLen(client *c, const char *str, int len, uint64_t req_id) {
     sds r = sdsnew("+");
     r = sdscatlen(r, str, len);
     r = sdscat(r, "\r\n");
+    if (c->reply_array != NULL) {
+        listAddNodeTail(c->reply_array, r);
+        return;
+    }
     addReplyRaw(c, (const char*) r, sdslen(r), req_id);
     sdsfree(r);
 }
@@ -37,8 +62,11 @@ void addReplyString(client *c, const char *str, uint64_t req_id) {
 
 void addReplyInt(client *c, int64_t integer, uint64_t req_id) {
     sds r = sdsnew(":");
-    r = sdscatfmt(r, "%U\r\n", integer);
-    c->obuf = sdscat(c->obuf, r);
+    r = sdscatfmt(r, "%I\r\n", integer);
+    if (c->reply_array != NULL) {
+        listAddNodeTail(c->reply_array, r);
+        return;
+    }
     addReplyRaw(c, (const char*) r, sdslen(r), req_id);
     sdsfree(r);
 }
@@ -50,6 +78,10 @@ void addReplyErrorLen(client *c, const char *err, int len, uint64_t req_id) {
         r = sdscatlen(r, err, len);
     }
     r = sdscat(r, "\r\n");
+    if (c->reply_array != NULL) {
+        listAddNodeTail(c->reply_array, r);
+        return;
+    }
     addReplyRaw(c, (const char*) r, sdslen(r), req_id);
     sdsfree(r);
 }

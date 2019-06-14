@@ -21,6 +21,8 @@
 #include <stdint.h>
 #include "proxy.h"
 
+int initReplyArray(client *c);
+void addReplyArray(client *c, uint64_t req_id);
 void addReplyStringLen(client *c, const char *str, int len, uint64_t req_id);
 void addReplyString(client *c, const char *str, uint64_t req_id);
 void addReplyInt(client *c, int64_t integer, uint64_t req_id);

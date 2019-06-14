@@ -19,6 +19,13 @@
 #ifndef __REDIS_CLUSTER_PROXY_COMMANDS_H__
 #define __REDIS_CLUSTER_PROXY_COMMANDS_H__
 
+#include <stdlib.h>
+
+#define PROXY_COMMAND_HANDLED      1
+#define PROXY_COMMAND_UNHANDLED    0
+
+typedef int redisClusterProxyCommandHandler(void *);
+
 typedef struct redisCommandDef {
     char *name;
     int arity;
@@ -26,9 +33,10 @@ typedef struct redisCommandDef {
     int last_key;
     int key_step;
     int unsupported;
+    redisClusterProxyCommandHandler* handle;
 } redisCommandDef;
 
 
-extern struct redisCommandDef redisCommandTable[202];
+extern struct redisCommandDef redisCommandTable[203];
 
 #endif /* __REDIS_CLUSTER_PROXY_COMMANDS_H__  */
