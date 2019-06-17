@@ -628,7 +628,6 @@ static void initProxy(void) {
         }
     }
     proxyLogInfo("All thread(s) started!\n");
-    pthread_mutex_init(&(proxy.numclients_mutex), NULL);
 }
 
 static void releaseProxy(void) {
@@ -1532,7 +1531,6 @@ static clientRequest *createRequest(client *c) {
     req->current_bulk_length = REQ_STATUS_UNKNOWN;
     req->parsing_status = PARSE_STATUS_INCOMPLETE;
     req->has_write_handler = 0;
-    req->has_read_handler = 0;
     req->written = 0;
     size_t offsets_size = sizeof(int) * QUERY_OFFSETS_MIN_SIZE;
     req->offsets = zmalloc(offsets_size);
@@ -1850,7 +1848,6 @@ static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
         proxyLogDebug("Reply read complete for request %llu:%llu, %s%s\n",
                       req->client->id, req->id, errmsg ? " ERR: " : "OK!",
                       errmsg ? errmsg : "");
-        req->has_read_handler = 0;
         dequeuePendingRequest(req);
         if (errmsg != NULL) addReplyError(req->client, errmsg, req->id);
         else {
@@ -1978,7 +1975,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Invalid address '%s'\n", config.cluster_address);
         return 1;
     }
-    proxy.cluster = createCluster(config.num_threads + 1);
+    proxy.cluster = createCluster(config.num_threads);
     if (proxy.cluster == NULL) {
         fprintf(stderr, "Failed to allocate memory!\n");
         return 1;

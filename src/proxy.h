@@ -58,7 +58,6 @@ typedef struct clientRequest{
     size_t written;
     int parsing_status;
     int has_write_handler;
-    int has_read_handler;
 } clientRequest;
 
 typedef struct {
@@ -72,7 +71,6 @@ typedef struct {
     _Atomic uint64_t numclients;
     rax *commands;
     int min_reserved_fds;
-    pthread_mutex_t numclients_mutex;
 } redisClusterProxy;
 
 typedef struct client {
