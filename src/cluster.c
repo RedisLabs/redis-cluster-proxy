@@ -277,40 +277,29 @@ void mapSlot(redisCluster *cluster, int slot, clusterNode *node) {
               sizeof(slot_be), node, NULL);
 }
 
-int fetchClusterConfiguration(redisCluster *cluster, char *ip, int port,
-                              char *hostsocket)
+int clusterNodeLoadInfo(redisCluster *cluster, clusterNode *node, list *friends,
+                        redisContext *ctx)
 {
-    printf("Fetching cluster configuration...\n");
-    int success = 1;
-    redisContext *ctx = NULL;
+    int success = 1, free_ctx = 0;
     redisReply *reply =  NULL;
-    if (hostsocket == NULL)
-        ctx = redisConnect(ip, port);
-    else
-        ctx = redisConnectUnix(hostsocket);
-    if (ctx->err) {
-        fprintf(stderr, "Could not connect to Redis at ");
-        if (hostsocket == NULL)
-            fprintf(stderr,"%s:%d: %s\n", ip, port, ctx->errstr);
-        else fprintf(stderr,"%s: %s\n", hostsocket, ctx->errstr);
-        redisFree(ctx);
-        return 0;
+    if (ctx == NULL) {
+        ctx = redisConnect(node->ip, node->port);
+        if (ctx->err) {
+            fprintf(stderr, "Could not connect to Redis at %s:%d: %s\n",
+                    node->ip, node->port, ctx->errstr);
+            redisFree(ctx);
+            return 0;
+        }
+        free_ctx = 1;
     }
-    clusterNode *firstNode = createClusterNode(ip, port, cluster);
-    if (!firstNode) {success = 0; goto cleanup;}
     reply = redisCommand(ctx, "CLUSTER NODES");
     success = (reply != NULL);
     if (!success) goto cleanup;
     success = (reply->type != REDIS_REPLY_ERROR);
     if (!success) {
         fprintf(stderr, "Failed to retrieve cluster configuration.\n");
-        if (hostsocket == NULL) {
-            fprintf(stderr, "Cluster node %s:%d replied with error:\n%s\n",
-                    ip, port, reply->str);
-        } else {
-            fprintf(stderr, "Cluster node %s replied with error:\n%s\n",
-                    hostsocket, reply->str);
-        }
+        fprintf(stderr, "Cluster node %s:%d replied with error:\n%s\n",
+                node->ip, node->port, reply->str);
         goto cleanup;
     }
     char *lines = reply->str, *p, *line;
@@ -343,7 +332,6 @@ int fetchClusterConfiguration(redisCluster *cluster, char *ip, int port,
             goto cleanup;
         }
         int myself = (strstr(flags, "myself") != NULL);
-        clusterNode *node = NULL;
         char *ip = NULL;
         int port = 0;
         char *paddr = strchr(addr, ':');
@@ -356,19 +344,21 @@ int fetchClusterConfiguration(redisCluster *cluster, char *ip, int port,
             port = atoi(addr);
         }
         if (myself) {
-            node = firstNode;
             if (node->ip == NULL && ip != NULL) {
                 node->ip = ip;
                 node->port = port;
             }
         } else {
-            node = createClusterNode(ip, port, cluster);
+            if (friends == NULL) continue;
+            clusterNode *friend = createClusterNode(ip, port, cluster);
+            if (friend == NULL) {
+                success = 0;
+                goto cleanup;
+            }
+            listAddNodeTail(friends, friend);
+            continue;
         }
-        if (node == NULL) {
-            success = 0;
-            goto cleanup;
-        }
-        if (name != NULL) node->name = sdsnew(name);
+        if (name != NULL && node->name == NULL) node->name = sdsnew(name);
         node->is_replica = (strstr(flags, "slave") != NULL ||
                            (master_id != NULL && master_id[0] != '-'));
         if (i == 8) {
@@ -436,11 +426,56 @@ int fetchClusterConfiguration(redisCluster *cluster, char *ip, int port,
                 }
             }
         }
-        listAddNodeTail(cluster->nodes, node);
     }
 cleanup:
+    if (free_ctx) redisFree(ctx);
     freeReplyObject(reply);
+    return success;
+}
+
+int fetchClusterConfiguration(redisCluster *cluster, char *ip, int port,
+                              char *hostsocket)
+{
+    printf("Fetching cluster configuration...\n");
+    int success = 1;
+    redisContext *ctx = NULL;
+    list *friends = NULL;
+    if (hostsocket == NULL)
+        ctx = redisConnect(ip, port);
+    else
+        ctx = redisConnectUnix(hostsocket);
+    if (ctx->err) {
+        fprintf(stderr, "Could not connect to Redis at ");
+        if (hostsocket == NULL)
+            fprintf(stderr,"%s:%d: %s\n", ip, port, ctx->errstr);
+        else fprintf(stderr,"%s: %s\n", hostsocket, ctx->errstr);
+        redisFree(ctx);
+        return 0;
+    }
+    clusterNode *firstNode = createClusterNode(ip, port, cluster);
+    if (!firstNode) {success = 0; goto cleanup;}
+    listAddNodeTail(cluster->nodes, firstNode);
+    friends = listCreate();
+    success = (friends != NULL);
+    if (!success) goto cleanup;
+    success = clusterNodeLoadInfo(cluster, firstNode, friends, ctx);
+    if (!success) goto cleanup;
+    listIter li;
+    listNode *ln;
+    listRewind(friends, &li);
+    while ((ln = listNext(&li))) {
+        clusterNode *friend = ln->value;
+        success = clusterNodeLoadInfo(cluster, friend, NULL, NULL);
+        if (!success) {
+            listDelNode(friends, ln);
+            freeClusterNode(friend);
+            goto cleanup;
+        }
+        listAddNodeTail(cluster->nodes, friend);
+    }
+cleanup:
     redisFree(ctx);
+    if (friends) listRelease(friends);
     if (!success) freeCluster(cluster);
     return success;
 }
