@@ -63,6 +63,10 @@ typedef struct clientRequest{
     int parsed;
     int owned_by_client;
     int closes_transaction;
+    list *child_requests;
+    rax  *child_replies;
+    uint64_t max_child_reply_id;
+    struct clientRequest *parent_request;
 } clientRequest;
 
 typedef struct {

@@ -33,6 +33,14 @@ COMMAND_HANDLERS = {
     'bzpopmin' => 'genericBlockingCommand',
     'bzpopmax' => 'genericBlockingCommand',
 }
+REPLY_HANDLERS = {
+    'mget' => 'mergeReplies',
+    'mset' => 'getFirstMultipleReply',
+    'dbsize' => 'sumReplies',
+    'touch' => 'sumReplies',
+    'exists' => 'sumReplies',
+    'del' => 'sumReplies'
+}
 CUSTOM_COMMANDS = [
     {
         name: 'proxy',
@@ -146,8 +154,9 @@ commands = commands.map{|c|
         code << ' '
     end
     handler = COMMAND_HANDLERS[name] || 'NULL'
+    reply_handler = REPLY_HANDLERS[name] || 'NULL'
     code << "#{first_key.to_i}, #{last_key.to_i}, #{key_step.to_i}, "
-    code << "#{unsupported}, #{handler}}"
+    code << "#{unsupported}, #{handler}, #{reply_handler}}"
     code
 }
 custom_commands = CUSTOM_COMMANDS.map{|cmd|
@@ -172,8 +181,9 @@ custom_commands = CUSTOM_COMMANDS.map{|cmd|
     first_key, last_key, key_step = cmd[:first_key], cmd[:last_key],
                                     cmd[:key_step]
     handler = COMMAND_HANDLERS[cmd[:name]] || 'NULL'
+    reply_handler = REPLY_HANDLERS[cmd[:name]] || 'NULL'
     code << "#{first_key.to_i}, #{last_key.to_i}, #{key_step.to_i}, "
-    code << "0, #{handler}}"
+    code << "0, #{handler}, #{reply_handler}}"
     code
 }
 
@@ -184,7 +194,8 @@ if cur_year > COPY_START_YEAR
 end
 header = File.read(File.join($path, 'src_header.h'))
 header.gsub! '$CP_YEAR', copy_year
-handler_def = "typedef int redisClusterProxyCommandHandler(void *);"
+handler_def = "typedef int redisClusterProxyCommandHandler(void *request);\n" +
+    "typedef int redisClusterProxyReplyHandler(void *reply, void *request);"
 struct = <<EOS
 typedef struct redisCommandDef {
     char *name;
@@ -194,7 +205,8 @@ typedef struct redisCommandDef {
     int last_key;
     int key_step;
     int unsupported;
-    redisClusterProxyCommandHandler* handle;
+    redisClusterProxyCommandHandler *handle;
+    redisClusterProxyReplyHandler   *handleReply;
 } redisCommandDef;
 EOS
 
@@ -236,11 +248,21 @@ code = header + "\n\n" +
 "#include \"commands.h\"\n\n"
 if COMMAND_HANDLERS.length > 0
     code << "/* Command Handlers */\n"
-    funcs = {}
+    added = {}
     COMMAND_HANDLERS.each{|cmdname, func|
-        next if funcs[func]
+        next if added[func]
         code << "int #{func}(void *req);\n"
-        funcs[func] = true
+        added[func] = true
+    }
+    code << "\n"
+end
+if REPLY_HANDLERS.length > 0
+    code << "/* Reply Handlers */\n"
+    added = {}
+    REPLY_HANDLERS.each{|cmdname, func|
+        next if added[func]
+        code << "int #{func}(void *reply, void *request);\n"
+        added[func] = true
     }
     code << "\n"
 end

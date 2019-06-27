@@ -39,8 +39,9 @@ $options = opts.options
 
 $tests = ARGV
 if $tests.length == 0
-    $tests = %w(basic basic_commands pipeline client_disconnect node_down
-                proxy_command disable_multiplexing multi cluster_errors)
+    $tests = %w(basic basic_commands pipeline multislot client_disconnect 
+                node_down proxy_command disable_multiplexing multi 
+                cluster_errors)
 end
 
 def final_cleanup

@@ -20,6 +20,7 @@
 #include "logger.h"
 #include "zmalloc.h"
 #include "protocol.h"
+#include "endianconv.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -486,6 +487,146 @@ final:
     if (subcmd != NULL) sdsfree(subcmd);
     freeRequest(req);
     return PROXY_COMMAND_HANDLED;
+}
+
+int mergeReplies(void *_reply, void *_req) {
+    UNUSED(_reply);
+    clientRequest *req = _req;
+    raxIterator iter;
+    raxStart(&iter, req->child_replies);
+    if (!raxSeek(&iter, "^", NULL, 0)) {
+        raxStop(&iter);
+        addReplyError(req->client, "Failed to iterate multiple replies",
+                      req->id);
+        return 0;
+    }
+    int count = 0, ok = 1;
+    sds reply = NULL;
+    sds merged_replies = sdsempty();
+    char *err = NULL;
+    while (raxNext(&iter)) {
+        sds child_reply = (sds) iter.data;
+        if (child_reply == NULL) continue;
+        if (child_reply[0] == '-') {
+            /* Reply is an error, reply the error and exit. */
+            addReplyRaw(req->client, child_reply, sdslen(child_reply),
+                        req->id);
+            raxStop(&iter);
+            return 1;
+        }
+        char *p = strchr(child_reply, '*'), *endl = NULL, *strptr = NULL;
+        ok = (p != NULL);
+        if (ok) endl = strchr(++p, '\r');
+        ok = (endl != NULL);
+        if (!ok) {
+            if (config.dump_buffer) {
+                proxyLogDebug("Child reply:\n%s\np:\n%s\nendl:\n%s\n",
+                              child_reply, p, endl);
+            }
+            err = "Invalid reply format while merging multiple replies";
+            goto final;
+        }
+        *endl = '\0';
+        int c = strtol(p, &strptr, 10);
+        ok = (strptr != p);
+        if (ok) ok = (*(++endl) == '\n');
+        if (!ok) {
+            if (config.dump_buffer) {
+                proxyLogDebug("Invalid count!\nChild reply:\n%s\np:\n%s\n"
+                              "endl:\n%s\n", child_reply, p, endl);
+            }
+            err = "Invalid reply format while merging multiple replies";
+            goto final;
+        }
+        count += c;
+        p = endl + 1;
+        merged_replies = sdscatfmt(merged_replies, "%s", p);
+    }
+final:
+    raxStop(&iter);
+    if (err != NULL) {
+        addReplyError(req->client, err, req->id);
+        proxyLogDebug("%s\n", err);
+    } else {
+        reply = sdscatfmt(sdsempty(), "*%I\r\n%S", count, merged_replies);
+        addReplyRaw(req->client, reply, sdslen(reply), req->id);
+    }
+    req->client->min_reply_id = req->max_child_reply_id + 1;
+    if (reply) sdsfree(reply);
+    sdsfree(merged_replies);
+    return ok;
+}
+
+int getFirstMultipleReply(void *_reply, void *_req) {
+    UNUSED(_reply);
+    clientRequest *req = _req;
+    raxIterator iter;
+    raxStart(&iter, req->child_replies);
+    if (!raxSeek(&iter, "^", NULL, 0)) {
+        raxStop(&iter);
+        addReplyError(req->client, "Failed to iterate multiple replies",
+                      req->id);
+        return 0;
+    }
+    sds first = NULL;
+    while (raxNext(&iter)) {
+        sds child_reply = (sds) iter.data;
+        if (child_reply == NULL) continue;
+        if (child_reply[0] == '-') {
+            /* Reply is an error, reply the error and exit. */
+            addReplyRaw(req->client, child_reply, sdslen(child_reply),
+                        req->id);
+            raxStop(&iter);
+            return 1;
+        }
+        first = child_reply;
+        break;
+    }
+    raxStop(&iter);
+    if (first) {
+        addReplyRaw(req->client, first, sdslen(first), req->id);
+        req->client->min_reply_id = req->max_child_reply_id + 1;
+    } else return 0;
+    return 1;
+}
+
+int sumReplies(void *_reply, void *_req) {
+    UNUSED(_reply);
+    clientRequest *req = _req;
+    raxIterator iter;
+    raxStart(&iter, req->child_replies);
+    if (!raxSeek(&iter, "^", NULL, 0)) {
+        raxStop(&iter);
+        addReplyError(req->client, "Failed to iterate multiple replies",
+                      req->id);
+        return 0;
+    }
+    uint64_t tot = 0;
+    while (raxNext(&iter)) {
+        sds child_reply = (sds) iter.data;
+        if (child_reply == NULL) continue;
+        if (child_reply[0] == '-') {
+            /* Reply is an error, reply the error and exit. */
+            addReplyRaw(req->client, child_reply, sdslen(child_reply),
+                        req->id);
+            raxStop(&iter);
+            return 1;
+        }
+        if (child_reply[0] == ':') {
+            char *strprt = NULL;
+            int64_t val = strtoll(child_reply + 1, &strprt, 10);
+            tot += val;
+        } else {
+            addReplyError(req->client, "Invalid reply format",
+                          req->id);
+            raxStop(&iter);
+            return 0;
+        }
+    }
+    raxStop(&iter);
+    addReplyInt(req->client, tot, req->id);
+    req->client->min_reply_id = req->max_child_reply_id + 1;
+    return 1;
 }
 
 /* Proxy functions */
@@ -1727,40 +1868,211 @@ static sds getRequestCommand(clientRequest *req) {
     return cmd;
 }
 
+static int duplicateRequestForAllMasters(clientRequest *req) {
+    int ok = 1, i;
+    if (req->child_requests == NULL) {
+        req->child_requests = listCreate();
+        if (req->child_requests == NULL) return 0;
+    }
+    if (req->child_replies == NULL) {
+        req->child_replies = raxNew();
+        if (req->child_replies == NULL) return 0;
+    }
+    /* TODO: use private slots_map if multiplexing is disabled. */
+    listIter li;
+    listNode *ln;
+    redisCluster *cluster = getCluster(req->client->thread_id);
+    listRewind(cluster->nodes, &li);
+    clientRequest *cur = req->client->current_request;
+    while ((ln = listNext(&li)) != NULL) {
+        clusterNode *node = ln->value;
+        if (node->is_replica) continue;
+        if (req->node == NULL) req->node = node;
+        else {
+            clientRequest *child = createRequest(req->client);
+            ok = (child != NULL);
+            if (!ok) break;
+            child->parent_request = req;
+            child->buffer = sdscat(child->buffer, req->buffer);
+            child->argc = req->argc;
+            child->offsets_size = req->offsets_size;
+            ok = requestMakeRoomForArgs(child, child->argc);
+            if (!ok) break;
+            for (i = 0; i < req->argc; i++) {
+                child->offsets[i] = req->offsets[i];
+                child->lengths[i] = req->lengths[i];
+            }
+            child->node = node;
+            child->command = req->command;
+            child->parsing_status = req->parsing_status;
+            listAddNodeHead(req->child_requests, child);
+            if (child->id > req->max_child_reply_id)
+                req->max_child_reply_id = child->id;
+        }
+    }
+    req->client->current_request = cur;
+    return ok;
+}
+
+static int splitMultiSlotRequest(clientRequest *req, int idx) {
+    if (idx >= req->offsets_size) return 0;
+    if (req->command == NULL) return 0;
+    if (!req->is_multibulk) return 0;
+    clientRequest *parent = req->parent_request;
+    if (parent == NULL) parent = req;
+    if (parent->child_requests == NULL) {
+        parent->child_requests = listCreate();
+        if (parent->child_requests == NULL) return 0;
+    }
+    if (parent->child_replies == NULL) {
+        parent->child_replies = raxNew();
+        if (parent->child_replies == NULL) return 0;
+    }
+    clientRequest *new = NULL;
+    int offset = req->offsets[idx], original_argc = req->argc, success = 1,
+                 len, llen, diff, i;
+    proxyLogDebug("Splitting multi-slot request %llu:%llu at index %d "
+                  "(offset: %d)\n", req->client->id, req->id, idx, offset);
+    req->argc = idx;
+    /* Keep a pointer to the original buffer. */
+    sds oldbuf = req->buffer;
+    /* Search backwards for '$' since it's 'part' of the argument. */
+    while (--offset >= 0) {
+        if (*(oldbuf + offset) == '$') break;
+    }
+    success = (offset >= 0);
+    if (!success) goto cleanup;
+    /* Trim the buffer up to the offset. */
+    req->buffer = sdsnewlen(req->buffer, offset);
+    success = (req->buffer != NULL);
+    if (!success) goto cleanup;
+    len = sdslen(req->buffer);
+    /* Append "\r\n" if missing */
+    if (req->buffer[len - 1] != '\n') {
+        if (req->buffer[len - 1] != '\r')
+            req->buffer = sdscat(req->buffer, "\r");
+        req->buffer = sdscat(req->buffer, "\n");
+    }
+    /* Search for the argument count in the query (ie. '*2\r\n') */
+    char *p = strchr(req->buffer, '*');
+    if (p != NULL) p = strchr(p, '\r');
+    success = (p != NULL);
+    if (!success) goto cleanup;
+    llen = (p - req->buffer);
+    /* Create a new query header containing the updated argument count */
+    sds newbuf = sdscatfmt(sdsempty(), "*%I", req->argc);
+    diff = sdslen(newbuf) - llen;
+    sdsrange(req->buffer, llen, -1);
+    newbuf = sdscatfmt(newbuf, "%S", req->buffer);
+    //sdsfree(req->buffer);
+    req->buffer = newbuf;
+    /* Update offsets for current request's new buffer. */
+    if (diff != 0)
+        for (i = 0; i < req->argc; i++) req->offsets[i] += diff;
+    /* Trim the original buffer from offset to end to create a new request. */
+    sdsrange(oldbuf, offset, -1);
+    clientRequest *cur = req->client->current_request;
+    new = createRequest(req->client);
+    success = (new != NULL);
+    if (!success) goto cleanup;
+    req->client->current_request = cur;
+    new->argc = (original_argc - req->argc) + 1;
+    success = requestMakeRoomForArgs(new, new->argc);
+    if (!success) goto cleanup;
+    char *command_name = req->command->name;
+    int cmdlen = strlen(command_name), first_offset = 0;
+    newbuf = sdscatfmt(sdsempty(), "*%I\r\n$%I\r\n", new->argc, cmdlen);
+    first_offset = sdslen(newbuf);
+    newbuf = sdscatfmt(newbuf, "%s\r\n", req->command->name);
+    len = sdslen(newbuf);
+    new->offsets[0] = first_offset;
+    new->lengths[0] = cmdlen;
+    for (i = idx; i < original_argc; i++) {
+        int new_idx = i - idx + 1;
+        new->offsets[new_idx] = req->offsets[i] - offset + len;
+        new->lengths[new_idx] = req->lengths[i];
+    }
+    newbuf = sdscat(newbuf, oldbuf);
+    sdsfree(oldbuf);
+    oldbuf = NULL;
+    new->buffer = sdscat(new->buffer, newbuf);
+    new->command = req->command;
+    new->parent_request = parent;
+    sdsfree(newbuf);
+    newbuf = NULL;
+    if (!getRequestNode(new, NULL)) {
+        success = 0;
+        goto cleanup;
+    }
+    listAddNodeHead(parent->child_requests, new);
+    if (new->id > parent->max_child_reply_id)
+        parent->max_child_reply_id = new->id;
+    proxyLogDebug("Added child request %llu:%llu to parent %llu:%llu\n",
+                  new->client->id, new->id, parent->client->id, parent->id);
+    if (config.dump_buffer) {
+        proxyLogDebug("Req. %llu:%llu buffer:\n%s\n", req->client->id, req->id, 
+                      req->buffer);
+        proxyLogDebug("Req. %llu:%llu buffer:\n%s\n", new->client->id, new->id, 
+                      new->buffer);
+    }
+cleanup:
+    if (!success) {
+        proxyLogDebug("Failed to split multiple request %llu:%llu\n",
+                      req->client->id, req->id);
+        if (oldbuf && oldbuf != req->buffer) sdsfree(oldbuf);
+        if (newbuf) sdsfree(newbuf);
+        if (new != NULL) {
+            listNode *ln = listSearchKey(parent->child_requests, new);
+            if (ln) listDelNode(parent->child_requests, ln);
+            freeRequest(new);
+        }
+    }
+    return success;
+}
+
 static clusterNode *getRequestNode(clientRequest *req, sds *err) {
     clusterNode *node = NULL;
     redisCluster *cluster = getCluster(req->client);
-    int slot = UNDEFINED_SLOT;
+    int slot = UNDEFINED_SLOT, last_slot = UNDEFINED_SLOT;
     int first_key = req->command->first_key,
         last_key = req->command->last_key,
         key_step = req->command->key_step, i;
-    if (req->argc == 1 || first_key == 0) {
-        /*TODO: temporary behaviour */
-        node = getFirstMappedNode(cluster);
-        req->node = node;
-        return node;
+    redisCluster *cluster = getCluster(req->client->thread_id);
+    if (req->argc == 1) {
+        if (req->command->handleReply != NULL) {
+            if (!duplicateRequestForAllMasters(req)) {
+                if (err) *err = sdsnew("Failed to create multiple requests");
+                req->node = NULL;
+                return NULL;
+            }
+            return req->node;
+        } else {
+            if (err != NULL) *err = "Unsupported command";
+            req->node = NULL;
+            return NULL;
+        }
     }
     if (first_key >= req->argc) first_key = req->argc - 1;
     if (last_key >= req->argc) last_key = req->argc - 1;
     if (last_key < 0) last_key = req->argc + last_key;
     if (last_key < first_key) last_key = first_key;
     if (key_step < 1) key_step = 1;
-    if (last_key >= req->argc) last_key = req->argc - 1;
-    if (last_key < 0) last_key = req->argc + last_key;
-    if (last_key < first_key) last_key = first_key;
     for (i = first_key; i <= last_key; i += key_step) {
         char *key = req->buffer + req->offsets[i];
         clusterNode *n = getNodeByKey(cluster, key, req->lengths[i], &slot);
         if (n == NULL) break;
-        if (node == NULL) node = n;
-        else {
-            if (node != n) {
-                if (err != NULL) {
-                    if (*err != NULL) sdsfree(*err);
-                    *err = sdsnew("Queries with keys belonging to "
-                                  "different nodes are not supported");
+        if (node == NULL) {
+            node = n;
+            last_slot = slot;
+        } else {
+            if (node != n || (last_slot != slot && slot != UNDEFINED_SLOT)) {
+                if (!splitMultiSlotRequest(req, i)) {
+                    if (err != NULL) {
+                        if (*err != NULL) sdsfree(*err);
+                        *err = sdsnew("Failed to handle multislot request");
+                    }
+                    node = NULL;
                 }
-                node = NULL;
                 break;
             }
         }
@@ -1791,6 +2103,20 @@ void freeRequest(clientRequest *req) {
     aeEventLoop *el = getClientLoop(req->client);
     if (ctx != NULL && req->has_write_handler)
         aeDeleteFileEvent(el, ctx->fd, AE_WRITABLE);
+    if (req->child_requests != NULL) {
+        if (listLength(req->child_requests) > 0) {
+            listIter li;
+            listNode *ln;
+            listRewind(req->child_requests, &li);
+            while ((ln = listNext(&li))) {
+                clientRequest *r = ln->value;
+                freeRequest(r);
+            }
+        }
+        listRelease(req->child_requests);
+    }
+    if (req->child_replies != NULL)
+        raxFreeWithCallback(req->child_replies, (void (*)(void*))sdsfree);
     if (req->node != NULL) {
         redisClusterConnection *conn = req->node->connection;
         assert(conn != NULL);
@@ -1911,6 +2237,10 @@ static clientRequest *createRequest(client *c) {
     req->parsed = 0;
     req->owned_by_client = (c->cluster != NULL);
     req->closes_transaction = 0;
+    req->parent_request = NULL;
+    req->child_requests = NULL;
+    req->child_replies = NULL;
+    req->max_child_reply_id = 0;
     proxyLogDebug("Created Request " REQID_PRINTF_FMT  "\n",
                   REQID_PRINTF_ARG(req));
     return req;
@@ -2139,6 +2469,20 @@ int processRequest(clientRequest *req, int *parsing_status) {
     }
     if (!enqueueRequestToSend(req)) goto invalid_request;
     handleNextRequestToCluster(req->node);
+    if (req->child_requests && listLength(req->child_requests) > 0) {
+        listIter li;
+        listNode *ln;
+        listRewind(req->child_requests, &li);
+        clusterNode *last_node = req->node;
+        while ((ln = listNext(&li))) {
+            clientRequest *r = ln->value;
+            if (!enqueueRequestToSend(r)) goto invalid_request;
+            if (r->node != last_node) {
+                handleNextRequestToCluster(r->node);
+                last_node = r->node;
+            }
+        }
+    }
     if (command_name) sdsfree(command_name);
     return 1;
 invalid_request:
@@ -2243,6 +2587,32 @@ void acceptTcpHandler(aeEventLoop *el, int fd, void *privdata, int mask)
     }
 }
 
+static void addChildRequestReply(clientRequest *req, char *replybuf, int len) {
+    clientRequest *parent = req->parent_request;
+    /* If the request has no parent, then the request itself is the parent. */
+    if (parent == NULL) parent = req;
+    assert(parent->child_replies != NULL);
+    proxyLogDebug("Adding child reply for %llu:%llu\n", req->client->id,
+                  req->id);
+    uint64_t be_id = htonu64(req->id); /* Big-endian request ID */
+    sds reply = sdsnewlen(replybuf, len);
+    raxInsert(parent->child_replies, (unsigned char *) &be_id,
+              sizeof(be_id), reply, NULL);
+    /* Check if all the requests (all child requests plus the parent request)
+     * received the reply. */
+    uint64_t numrequests = listLength(parent->child_requests) + 1;
+    if (raxSize(parent->child_replies) == numrequests) {
+        proxyLogDebug("All %d child requests for %llu:%llu received replies\n",
+                      numrequests, req->client->id, req->id);
+        redisCommandDef *cmd = parent->command;
+        assert(cmd != NULL);
+        if (cmd->handleReply != NULL) {
+            cmd->handleReply(NULL, parent);
+        }
+        freeRequest(parent);
+    }
+}
+
 static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
                                      int thread_id)
 {
@@ -2263,6 +2633,7 @@ static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
         if (ok && reply == NULL) break;
         replies++;
         clientRequest *req = getFirstRequestPending(node, NULL);
+        int free_reply = 1;
         /* If request is NULL, it's a ghost request that is a NULL
          * placeholder in place of a request created by a freed client
          * (ie. a disconnected client). In this case, just dequeue the list
@@ -2333,7 +2704,14 @@ static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
                              ":\n%s\n", REQID_PRINTF_ARG(req), rstr);
                 sdsfree(rstr);
             }
-            addReplyRaw(req->client, obuf, len, req->id);
+            if (req->child_requests != NULL || req->parent_request != NULL) {
+                addChildRequestReply(req, obuf, len);
+                free_reply = 0;
+            } else {
+                proxyLogDebug("Writing reply for request %llu:%llu to client "
+                              "buffer...\n", req->client->id, req->id);
+                addReplyRaw(req->client, obuf, len, req->id);
+            }
         }
         if (req->closes_transaction) {
             req->client->multi_transaction = 0;
@@ -2386,7 +2764,7 @@ consume_buffer:
         ctx->reader->len = sdslen(ctx->reader->buf);
 clean:
         freeReplyObject(reply);
-        if (req) freeRequest(req);
+        if (req && free_reply) freeRequest(req);
         if (!ok || do_break) break;
     }
     return replies;

@@ -24,7 +24,8 @@
 #define PROXY_COMMAND_HANDLED      1
 #define PROXY_COMMAND_UNHANDLED    0
 
-typedef int redisClusterProxyCommandHandler(void *);
+typedef int redisClusterProxyCommandHandler(void *request);
+typedef int redisClusterProxyReplyHandler(void *reply, void *request);
 
 typedef struct redisCommandDef {
     char *name;
@@ -33,7 +34,8 @@ typedef struct redisCommandDef {
     int last_key;
     int key_step;
     int unsupported;
-    redisClusterProxyCommandHandler* handle;
+    redisClusterProxyCommandHandler *handle;
+    redisClusterProxyReplyHandler   *handleReply;
 } redisCommandDef;
 
 
