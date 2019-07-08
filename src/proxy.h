@@ -61,7 +61,6 @@ typedef struct clientRequest{
 } clientRequest;
 
 typedef struct {
-    redisCluster *cluster;
     aeEventLoop *main_loop;
     int fds[2];
     int fd_count;
@@ -94,6 +93,6 @@ typedef struct client {
 
 void freeRequest(clientRequest *req, int delete_from_lists);
 void freeRequestList(list *request_list);
-void onClusterNodeDisconnection(clusterNode *node, int thread_id);
+void onClusterNodeDisconnection(clusterNode *node);
 
 #endif /* __REDIS_CLUSTER_PROXY_H__ */

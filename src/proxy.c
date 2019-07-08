@@ -54,22 +54,23 @@
 
 #define UNUSED(V) ((void) V)
 
-#define getClusterConnection(node, thread_id) (node->connections[thread_id])
+#define getCluster(thread_id) (proxy.threads[thread_id]->cluster)
 #define enqueueRequestToSend(req) (enqueueRequest(req, QUEUE_TYPE_SENDING))
 #define dequeueRequestToSend(req) (dequeueRequest(req, QUEUE_TYPE_SENDING))
 #define enqueuePendingRequest(req) (enqueueRequest(req, QUEUE_TYPE_PENDING))
 #define dequeuePendingRequest(req) (dequeueRequest(req, QUEUE_TYPE_PENDING))
-#define getFirstRequestToSend(node, t, isempty) \
-    (getFirstQueuedRequest(getClusterConnection(node, t)->requests_to_send,\
+#define getFirstRequestToSend(node, isempty) \
+    (getFirstQueuedRequest(node->connection->requests_to_send,\
      isempty))
-#define getFirstRequestPending(node, t, isempty) \
-    (getFirstQueuedRequest(getClusterConnection(node, t)->requests_pending,\
+#define getFirstRequestPending(node, isempty) \
+    (getFirstQueuedRequest(node->connection->requests_pending,\
      isempty))
 
 typedef struct proxyThread {
     int thread_id;
     int io[2];
     pthread_t thread;
+    redisCluster *cluster;
     aeEventLoop *loop;
     list *clients;
     list *pending_messages;
@@ -95,8 +96,7 @@ static void writeToClusterHandler(aeEventLoop *el, int fd, void *privdata,
                                   int mask);
 static void readClusterReply(aeEventLoop *el, int fd, void *privdata, int mask);
 static clusterNode *getRequestNode(clientRequest *req, sds *err);
-static clientRequest *handleNextRequestToCluster(clusterNode *node,
-                                                 int thread_id);
+static clientRequest *handleNextRequestToCluster(clusterNode *node);
 static clientRequest *getFirstQueuedRequest(list *queue, int *is_empty);
 static int enqueueRequest(clientRequest *req, int queue_type);
 static void dequeueRequest(clientRequest *req, int queue_type);
@@ -327,7 +327,7 @@ final:
 /* Proxy functions */
 
 static void dumpQueue(clusterNode *node, int thread_id, int type) {
-    redisClusterConnection *conn = getClusterConnection(node, thread_id);
+    redisClusterConnection *conn = node->connection;
     if (conn == NULL) return;
     list *queue = NULL;
     if (type == QUEUE_TYPE_PENDING) queue = conn->requests_pending;
@@ -644,7 +644,6 @@ static void releaseProxy(void) {
         }
         zfree(proxy.threads);
     }
-    freeCluster(proxy.cluster);
     if (proxy.commands)
         raxFree(proxy.commands);
 }
@@ -688,10 +687,10 @@ void beforeThreadSleep(struct aeEventLoop *eventLoop) {
     writeRepliesToClients(eventLoop);
     listIter li;
     listNode *ln;
-    listRewind(proxy.cluster->nodes, &li);
+    listRewind(thread->cluster->nodes, &li);
     while ((ln = listNext(&li))) {
         clusterNode *node = ln->value;
-        handleNextRequestToCluster(node, thread->thread_id);
+        handleNextRequestToCluster(node);
     }
 }
 
@@ -745,7 +744,37 @@ static void readThreadPipe(aeEventLoop *el, int fd, void *privdata, int mask) {
     processed = processThreadPipeBufferForNewClients(thread);
 }
 
+static void printClusterConfiguration(redisCluster *cluster) {
+    if (config.loglevel == LOGLEVEL_DEBUG) {
+        int j;
+        clusterNode *last_n = NULL;
+        for (j = 0; j < CLUSTER_SLOTS; j++) {
+            clusterNode *n = searchNodeBySlot(cluster, j);
+            if (n == NULL) {
+                proxyLogErr("NULL node for slot %d\n", j);
+                break;
+            }
+            if (n != last_n) {
+                last_n = n;
+                proxyLogDebug("Slot %d -> node %d\n", j, n->port);
+            }
+        }
+    }
+    int master_count = 0, replica_count = 0;
+    listIter li;
+    listNode *ln;
+    listRewind(cluster->nodes, &li);
+    while ((ln = listNext(&li)) != NULL) {
+        clusterNode *n = ln->value;
+        if (n->is_replica) replica_count++;
+        else master_count++;
+    }
+    printf("Cluster has %d masters and %d replica(s)\n", master_count,
+           replica_count);
+}
+
 static proxyThread *createProxyThread(int index) {
+    int is_first = (index == 0);
     proxyThread *thread = zmalloc(sizeof(*thread));
     if (thread == NULL) return NULL;
     if (pipe(thread->io) == -1) {
@@ -755,6 +784,21 @@ static proxyThread *createProxyThread(int index) {
     }
     thread->thread_id = index;
     thread->next_client_id = 0;
+    thread->cluster = createCluster(index);
+    if (thread->cluster == NULL) {
+        proxyLogErr("ERROR: failed to allocate cluster for thread: %d\n",
+                    index);
+        freeProxyThread(thread);
+        return NULL;
+    }
+    if (is_first) printf("Fetching cluster configuration...\n");
+    if (!fetchClusterConfiguration(thread->cluster, config.entry_node_host,
+                                   config.entry_node_port,
+                                   config.entry_node_socket)) {
+        proxyLogErr("ERROR: Failed to fetch cluster configuration!\n");
+        return NULL;
+    }
+    if (is_first) printClusterConfiguration(thread->cluster);
     thread->clients = listCreate();
     if (thread->clients == NULL) {
         freeProxyThread(thread);
@@ -767,7 +811,7 @@ static proxyThread *createProxyThread(int index) {
     }
     listSetFreeMethod(thread->pending_messages, zfree);
     int loopsize = proxy.min_reserved_fds +
-                   listLength(proxy.cluster->nodes) +
+                   listLength(thread->cluster->nodes) +
                    (config.maxclients / config.num_threads) + 1;
     thread->loop = aeCreateEventLoop(loopsize);
     if (thread->loop == NULL) {
@@ -864,6 +908,7 @@ static void freeProxyThread(proxyThread *thread) {
     }
     if (thread->io[0]) close(thread->io[0]);
     if (thread->io[1]) close(thread->io[1]);
+    if (thread->cluster != NULL) freeCluster(thread->cluster);
     zfree(thread);
 }
 
@@ -921,10 +966,11 @@ static void unlinkClient(client *c) {
 static void freeAllClientRequests(client *c) {
     listIter li;
     listNode *ln;
-    listRewind(proxy.cluster->nodes, &li);
+    redisCluster *cluster = getCluster(c->thread_id);
+    listRewind(cluster->nodes, &li);
     while ((ln = listNext(&li))) {
         clusterNode *node = ln->value;
-        redisClusterConnection *conn = getClusterConnection(node, c->thread_id);
+        redisClusterConnection *conn = node->connection;
         if (!conn) continue;
         listIter nli;
         listNode *nln;
@@ -1027,8 +1073,7 @@ static void writeToClusterHandler(aeEventLoop *el, int fd, void *privdata,
 {
     UNUSED(mask);
     clusterNode *node = privdata;
-    proxyThread *thread = el->privdata;
-    clientRequest *req = getFirstRequestToSend(node, thread->thread_id, NULL);
+    clientRequest *req = getFirstRequestToSend(node, NULL);
     if (req == NULL) return;
     writeToCluster(el, fd, req);
 }
@@ -1077,7 +1122,7 @@ static int writeToCluster(aeEventLoop *el, int fd, clientRequest *req) {
              * free and the request itself and try to free the client
              * completely. */
             list *pending_queue =
-                getClusterConnection(node, thread_id)->requests_pending;
+                node->connection->requests_pending;
             listAddNodeTail(pending_queue, NULL);
             freeRequest(req, 1);
             freeClient(c);
@@ -1090,10 +1135,9 @@ static int writeToCluster(aeEventLoop *el, int fd, clientRequest *req) {
         }
         if (config.dump_queues) dumpQueue(node, thread_id, QUEUE_TYPE_PENDING);
         proxyLogDebug("Still have %d request(s) to send\n",
-                      listLength(getClusterConnection(node,
-                                 thread_id)->requests_to_send));
+                      listLength(node->connection->requests_to_send));
         /* Try to send the next available request to send, if one. */
-        handleNextRequestToCluster(node, thread_id);
+        handleNextRequestToCluster(node);
     }
     return success;
 }
@@ -1108,11 +1152,12 @@ static int writeToCluster(aeEventLoop *el, int fd, clientRequest *req) {
  *   - Check for requests that were still waiting to read replies from the
  *     node's socket, dequeue and free them (after repying with an error to
  *     their client). */
-void onClusterNodeDisconnection(clusterNode *node, int thread_id) {
-    redisClusterConnection *connection = getClusterConnection(node, thread_id);
+void onClusterNodeDisconnection(clusterNode *node) {
+    redisClusterConnection *connection = node->connection;
     if (connection == NULL) return;
     redisContext *ctx = connection->context;
     if (ctx != NULL && ctx->fd >= 0) {
+        int thread_id = node->cluster->thread_id;
         aeEventLoop *el = proxy.threads[thread_id]->loop;
         aeDeleteFileEvent(el, ctx->fd, AE_WRITABLE | AE_READABLE);
         sds err = sdsnew("Cluster node disconnected: ");
@@ -1382,10 +1427,11 @@ static sds getRequestCommand(clientRequest *req) {
 
 static clusterNode *getRequestNode(clientRequest *req, sds *err) {
     clusterNode *node = NULL;
+    redisCluster *cluster = getCluster(req->client->thread_id);
     int slot = UNDEFINED_SLOT;
     if (req->argc == 1) {
         /*TODO: temporary behaviour */
-        node = getFirstMappedNode(proxy.cluster);
+        node = getFirstMappedNode(cluster);
         req->node = node;
         return node;
     }
@@ -1399,8 +1445,7 @@ static clusterNode *getRequestNode(clientRequest *req, sds *err) {
     if (key_step < 1) key_step = 1;
     for (i = first_key; i <= last_key; i += key_step) {
         char *key = req->buffer + req->offsets[i];
-        clusterNode *n = getNodeByKey(proxy.cluster, key, req->lengths[i],
-                                      &slot);
+        clusterNode *n = getNodeByKey(cluster, key, req->lengths[i], &slot);
         if (n == NULL) break;
         if (node == NULL) node = n;
         else {
@@ -1434,14 +1479,12 @@ void freeRequest(clientRequest *req, int delete_from_lists) {
     if (req->client->current_request == req)
         req->client->current_request = NULL;
     redisContext *ctx = NULL;
-    if (req->node)
-        ctx = getClusterNodeContext(req->node, req->client->thread_id);
+    if (req->node) ctx = getClusterNodeContext(req->node);
     aeEventLoop *el = getClientLoop(req->client);
     if (ctx != NULL && req->has_write_handler)
         aeDeleteFileEvent(el, ctx->fd, AE_WRITABLE);
     if (delete_from_lists && req->node != NULL) {
-        redisClusterConnection *conn =
-            getClusterConnection(req->node, req->client->thread_id);
+        redisClusterConnection *conn = req->node->connection;
         assert(conn != NULL);
         listNode *ln = listSearchKey(conn->requests_to_send, req);
         if (ln) listDelNode(conn->requests_to_send, ln);
@@ -1491,7 +1534,7 @@ static clientRequest *getFirstQueuedRequest(list *queue, int *is_empty) {
 static redisClusterConnection *getRequestConnection(clientRequest *req) {
     clusterNode *node = req->node;
     if (node == NULL) return NULL;
-    return node->connections[req->client->thread_id];
+    return node->connection;
 }
 
 static int enqueueRequest(clientRequest *req, int queue_type) {
@@ -1590,12 +1633,11 @@ static int sendRequestToCluster(clientRequest *req, sds *errmsg)
 {
     if (errmsg != NULL) *errmsg = NULL;
     if (req->has_write_handler) return 1;
-    int thread_id = req->client->thread_id;
     assert(req->node != NULL);
     aeEventLoop *el = getClientLoop(req->client);
-    redisContext *ctx = getClusterNodeContext(req->node, thread_id);
+    redisContext *ctx = getClusterNodeContext(req->node);
     if (ctx == NULL) {
-        if ((ctx = clusterNodeConnect(req->node, thread_id)) == NULL) {
+        if ((ctx = clusterNodeConnect(req->node)) == NULL) {
             sds err = sdsnew("Could not connect to node ");
             err = sdscatfmt(err, "%s:%u", req->node->ip, req->node->port);
             addReplyError(req->client, err, req->id);
@@ -1608,8 +1650,7 @@ static int sendRequestToCluster(clientRequest *req, sds *errmsg)
             return 0;
         }
     }
-    redisClusterConnection *conn =
-        getClusterConnection(req->node, thread_id);
+    redisClusterConnection *conn = req->node->connection;
     assert(conn != NULL);
     if (!conn->has_read_handler) {
         if (!installIOHandler(el, ctx->fd, AE_READABLE, readClusterReply,
@@ -1648,13 +1689,11 @@ static int sendRequestToCluster(clientRequest *req, sds *errmsg)
  * keep cycling the queue until sendRequestsToCluster returns 1.
  * Return the handled request, if any. */
 
-static clientRequest *handleNextRequestToCluster(clusterNode *node,
-                                                 int thread_id)
-{
-    clientRequest *req = getFirstRequestToSend(node, thread_id, NULL);
+static clientRequest *handleNextRequestToCluster(clusterNode *node) {
+    clientRequest *req = getFirstRequestToSend(node, NULL);
     if (req == NULL) return NULL;
     while (!sendRequestToCluster(req, NULL)) {
-        req = getFirstRequestToSend(node, thread_id, NULL);
+        req = getFirstRequestToSend(node, NULL);
         if (req == NULL) break;
     }
     return req;
@@ -1713,7 +1752,7 @@ static int processRequest(clientRequest *req) {
         goto invalid_request;
     }
     if (!enqueueRequestToSend(req)) goto invalid_request;
-    handleNextRequestToCluster(req->node, req->client->thread_id);
+    handleNextRequestToCluster(req->node);
     if (command_name) sdsfree(command_name);
     return 1;
 invalid_request:
@@ -1829,15 +1868,14 @@ static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
         /* Reply not yet available, just return */
         if (ok && reply == NULL) break;
         replies++;
-        clientRequest *req = getFirstRequestPending(node, thread_id, NULL);
+        clientRequest *req = getFirstRequestPending(node, NULL);
         /* If request is NULL, it's a ghost request that is a NULL
          * placeholder in place of a request created by a freed client
          * (ie. a disconnected client). In this case, just dequeue the list
          * node containing the NULL placeholder and directly skip to
          * 'consume_buffer' in order to process the remaining reply buffer. */
         if (req == NULL) {
-            list *queue =
-                getClusterConnection(node, thread_id)->requests_pending;
+            list *queue = node->connection->requests_pending;
             /* It should never happen that the request is NULL because of an
              * empty queue while we still have reply buffer to process */
             assert(listLength(queue) > 0);
@@ -1886,10 +1924,9 @@ static void readClusterReply(aeEventLoop *el, int fd,
     proxyThread *thread = el->privdata;
     int thread_id = thread->thread_id;
     clusterNode *node = privdata;
-    clientRequest *req = getFirstRequestPending(node, thread_id, NULL);
-    redisContext *ctx = getClusterNodeContext(node, thread_id);
-    list *queue =
-        getClusterConnection(node, thread_id)->requests_pending;
+    clientRequest *req = getFirstRequestPending(node, NULL);
+    redisContext *ctx = getClusterNodeContext(node);
+    list *queue = node->connection->requests_pending;
     sds errmsg = NULL;
     proxyLogDebug("Reading reply from %s:%d on thread %d...\n",
                   node->ip, node->port, thread_id);
@@ -1923,7 +1960,7 @@ static void readClusterReply(aeEventLoop *el, int fd,
         }
         if (node_disconnected) {
             proxyLogDebug(errmsg);
-            clusterNodeDisconnect(node, thread_id);
+            clusterNodeDisconnect(node);
         }
         sdsfree(errmsg);
         /* Exit, since an error occurred. */
@@ -1975,43 +2012,6 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Invalid address '%s'\n", config.cluster_address);
         return 1;
     }
-    proxy.cluster = createCluster(config.num_threads);
-    if (proxy.cluster == NULL) {
-        fprintf(stderr, "Failed to allocate memory!\n");
-        return 1;
-    }
-    if (!fetchClusterConfiguration(proxy.cluster, config.entry_node_host,
-                                   config.entry_node_port,
-                                   config.entry_node_socket)) {
-        fprintf(stderr, "Failed to fetch cluster configuration!\n");
-        return 1;
-    }
-    if (config.loglevel == LOGLEVEL_DEBUG) {
-        int j;
-        clusterNode *last_n = NULL;
-        for (j = 0; j < CLUSTER_SLOTS; j++) {
-            clusterNode *n = searchNodeBySlot(proxy.cluster, j);
-            if (n == NULL) {
-                proxyLogErr("NULL node for slot %d\n", j);
-                break;
-            }
-            if (n != last_n) {
-                last_n = n;
-                proxyLogDebug("Slot %d -> node %d\n", j, n->port);
-            }
-        }
-    }
-    int master_count = 0, replica_count = 0;
-    listIter li;
-    listNode *ln;
-    listRewind(proxy.cluster->nodes, &li);
-    while ((ln = listNext(&li)) != NULL) {
-        clusterNode *n = ln->value;
-        if (n->is_replica) replica_count++;
-        else master_count++;
-    }
-    printf("Cluster has %d masters and %d replica(s)\n", master_count,
-           replica_count);
     if (!listen()) {
         proxyLogErr("Failed to listen on port %d\n", config.port);
         exit_status = 1;

@@ -21,10 +21,10 @@
 #include "sds.h"
 #include "adlist.h"
 #include "rax.h"
-#include <pthread.h>
 #include <hiredis.h>
 
 #define CLUSTER_SLOTS 16384
+#define getClusterNodeContext(node) (node->connection->context)
 
 struct redisCluster;
 
@@ -36,7 +36,7 @@ typedef struct redisClusterConnection {
 } redisClusterConnection;
 
 typedef struct clusterNode {
-    redisClusterConnection **connections;
+    redisClusterConnection *connection;
     struct redisCluster *cluster;
     sds ip;
     int port;
@@ -53,23 +53,20 @@ typedef struct clusterNode {
                      * strings are the source node IDs. */
     int migrating_count; /* Length of the migrating array (migrating slots*2) */
     int importing_count; /* Length of the importing array (importing slots*2) */
-    pthread_mutex_t connection_mutex;
 } clusterNode;
 
 typedef struct redisCluster {
+    int thread_id;
     list *nodes;
     rax  *slots_map;
-    int numthreads;
 } redisCluster;
 
-redisCluster *createCluster(int numthreads);
+redisCluster *createCluster(int thread_id);
 void freeCluster(redisCluster *cluster);
 int fetchClusterConfiguration(redisCluster *cluster, char *ip, int port,
                               char *hostsocket);
-redisContext *getClusterNodeContext(clusterNode *node, int thread_id);
-redisContext *clusterNodeConnect(clusterNode *node, int thread_id);
-redisContext *clusterNodeConnectAtomic(clusterNode *node, int thread_id);
-void clusterNodeDisconnect(clusterNode *node, int thread_id);
+redisContext *clusterNodeConnect(clusterNode *node);
+void clusterNodeDisconnect(clusterNode *node);
 clusterNode *searchNodeBySlot(redisCluster *cluster, int slot);
 clusterNode *getNodeByKey(redisCluster *cluster, char *key, int keylen,
                           int *getslot);
