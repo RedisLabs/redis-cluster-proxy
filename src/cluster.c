@@ -72,6 +72,7 @@ static redisClusterConnection *createClusterConnection(void) {
     if (conn == NULL) return NULL;
     conn->context = NULL;
     conn->has_read_handler = 0;
+    conn->connected = 0;
     conn->requests_pending = listCreate();
     if (conn->requests_pending == NULL) {
         zfree(conn);
@@ -203,7 +204,7 @@ redisContext *clusterNodeConnect(clusterNode *node) {
         ctx = NULL;
     }
     proxyLogDebug("Connecting to node %s:%d\n", node->ip, node->port);
-    ctx = redisConnect(node->ip, node->port);
+    ctx = redisConnectNonBlock(node->ip, node->port);
     if (ctx->err) {
         proxyLogErr("Could not connect to Redis at %s:%d: %s\n",
                     node->ip, node->port, ctx->errstr);
@@ -235,6 +236,7 @@ redisContext *clusterNodeConnect(clusterNode *node) {
 void clusterNodeDisconnect(clusterNode *node) {
     redisContext *ctx = getClusterNodeContext(node);
     if (ctx == NULL) return;
+    proxyLogDebug("Disconnecting from node %s:%d\n", node->ip, node->port);
     onClusterNodeDisconnection(node);
     redisFree(ctx);
     node->connection->context = NULL;

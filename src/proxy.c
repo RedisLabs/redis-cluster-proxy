@@ -1073,7 +1073,39 @@ static void writeToClusterHandler(aeEventLoop *el, int fd, void *privdata,
 {
     UNUSED(mask);
     clusterNode *node = privdata;
+    redisContext *ctx = getClusterNodeContext(node);
+    if (ctx == NULL) return;
     clientRequest *req = getFirstRequestToSend(node, NULL);
+    if (ctx->err) {
+        proxyLogErr("Failed to connect to node %s:%d\n", node->ip, node->port);
+        if (req != NULL) {
+            sds err = sdsnew("Cluster node disconnected: ");
+            err = sdscatprintf(err, "%s:%d", node->ip, node->port);
+            addReplyError(req->client, err, req->id);
+            sdsfree(err);
+            freeRequest(req, 1);
+        }
+        return;
+    }
+    if (!node->connection->has_read_handler) {
+        if (!installIOHandler(el, ctx->fd, AE_READABLE, readClusterReply,
+                              node, 0))
+        {
+            proxyLogErr("Failed to create read reply handler for node %s:%d\n",
+                          node->ip, node->port);
+            if (req != NULL) {
+                addReplyError(req->client, "Failed to read from cluster",
+                              req->id);
+                freeRequest(req, 1);
+            }
+            return;
+        } else  {
+            node->connection->has_read_handler = 1;
+            proxyLogDebug("Read reply handler installed "
+                          "for node %s:%d\n", node->ip, node->port);
+        }
+    }
+    node->connection->connected = 1;
     if (req == NULL) return;
     writeToCluster(el, fd, req);
 }
@@ -1091,9 +1123,13 @@ static int writeToCluster(aeEventLoop *el, int fd, clientRequest *req) {
         if (errno == EAGAIN) {
             nwritten = 0;
         } else {
-            proxyLogDebug("Error writing to cluster: %s", strerror(errno));
-            addReplyError(req->client, "Error writing to cluster", req->id);
-            freeRequest(req, 1);
+            proxyLogDebug("Error writing to cluster: %s\n", strerror(errno));
+            if (errno == EPIPE) {
+                clusterNodeDisconnect(req->node);
+            } else {
+                addReplyError(req->client, "Error writing to cluster", req->id);
+                freeRequest(req, 1);
+            }
             return 0;
         }
     }
@@ -1177,13 +1213,11 @@ void onClusterNodeDisconnection(clusterNode *node) {
              * In this case, the client shpuld receive the reply error and
              * the request itself should be dequeued and freed. */
             if (req->has_write_handler) {
-                if (req->written > 0) {
-                    req->has_write_handler = 0;
-                    req->client->requests_with_write_handler--;
-                    addReplyError(req->client, err, req->id);
-                    dequeueRequestToSend(req);
-                    freeRequest(req, 0);
-                }
+                req->has_write_handler = 0;
+                req->client->requests_with_write_handler--;
+                addReplyError(req->client, err, req->id);
+                dequeueRequestToSend(req);
+                freeRequest(req, 0);
             }
         }
         /* If there are pending requests that are reading or waiting to read
@@ -1649,6 +1683,23 @@ static int sendRequestToCluster(clientRequest *req, sds *errmsg)
             freeRequest(req, 1);
             return 0;
         }
+        /* Install the write handler since the connection to the cluster node
+         * is asynchronous. */
+        if (aeCreateFileEvent(el, ctx->fd, AE_WRITABLE,
+                              writeToClusterHandler, req->node) == AE_ERR) {
+            addReplyError(req->client, "Failed to write to cluster\n", req->id);
+            proxyLogErr("Failed to create write handler for request\n");
+            freeRequest(req, 1);
+            return 0;
+        }
+        req->has_write_handler = 1;
+        req->client->requests_with_write_handler++;
+        proxyLogDebug("Write handler installed into request %llu:%llu for "
+                      "node %s:%d\n", req->client->id, req->id,
+                      req->node->ip, req->node->port);
+        return 1;
+    } else if (!isClusterNodeConnected(req->node)) {
+        return 1;
     }
     redisClusterConnection *conn = req->node->connection;
     assert(conn != NULL);
@@ -1658,6 +1709,9 @@ static int sendRequestToCluster(clientRequest *req, sds *errmsg)
         {
             proxyLogErr("Failed to create read reply handler for node %s:%d\n",
                           req->node->ip, req->node->port);
+            addReplyError(req->client, "Failed to read from cluster\n",
+                          req->id);
+            freeRequest(req, 1);
             return 0;
         } else  {
             conn->has_read_handler = 1;
@@ -1995,6 +2049,7 @@ void daemonize(void) {
 
 int main(int argc, char **argv) {
     int exit_status = 0, i;
+    signal(SIGPIPE, SIG_IGN);
     printf("Redis Cluster Proxy v%s\n", REDIS_CLUSTER_PROXY_VERSION);
     initConfig();
     int parsed_opts = parseOptions(argc, argv);

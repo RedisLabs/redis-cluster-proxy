@@ -90,7 +90,7 @@ test "GET #{$numkeys} keys (Node down every #{$node_down_every})" do
             reply = redis_command client, :get, key
             if is_down
                 err = "Node for key '#{key}' (:#{node_for_key[:port]} should "+
-                      "be down, but got reply: 'reply'"
+                      "be down, but got reply: '#{reply}'"
                 assert_redis_err(reply)
                 assert(is_down_err(reply), err)
             else

@@ -25,6 +25,7 @@
 
 #define CLUSTER_SLOTS 16384
 #define getClusterNodeContext(node) (node->connection->context)
+#define isClusterNodeConnected(node) (node->connection->connected)
 
 struct redisCluster;
 
@@ -32,6 +33,7 @@ typedef struct redisClusterConnection {
     redisContext *context;
     list *requests_to_send;
     list *requests_pending;
+    int connected;
     int has_read_handler;
 } redisClusterConnection;
 
