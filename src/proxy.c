@@ -24,6 +24,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <signal.h>
 #include <assert.h>
 #include <unistd.h>
 #include <fcntl.h>
