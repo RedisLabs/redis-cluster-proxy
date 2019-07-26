@@ -20,6 +20,10 @@
 
 #include "redis_config.h"
 
+#define CFG_DISABLE_MULTIPLEXING_NEVER      0
+#define CFG_DISABLE_MULTIPLEXING_AUTO       1
+#define CFG_DISABLE_MULTIPLEXING_ALWAYS     2
+
 typedef struct {
     int port;
     char *cluster_address;
@@ -37,6 +41,7 @@ typedef struct {
     int dump_buffer;
     int dump_queues;
     char *auth;
+    int disable_multiplexing;
 } redisClusterProxyConfig;
 
 extern redisClusterProxyConfig config;
