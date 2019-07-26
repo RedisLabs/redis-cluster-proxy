@@ -59,6 +59,7 @@ typedef struct clientRequest{
     size_t written;
     int parsing_status;
     int has_write_handler;
+    int owned_by_client;
 } clientRequest;
 
 typedef struct {
@@ -92,6 +93,11 @@ typedef struct client {
     list *requests_to_process;       /* Requests not completely parsed */
     int requests_with_write_handler; /* Number of request that are still
                                       * being writing to cluster */
+    int pending_multiplex_requests;  /* Number of request that have to be
+                                      * written/read before sending requests
+                                      * to private cluster connection */
+
+    redisCluster *cluster;
 } client;
 
 void freeRequest(clientRequest *req, int delete_from_lists);

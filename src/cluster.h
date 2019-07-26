@@ -28,6 +28,7 @@
 #define isClusterNodeConnected(node) (node->connection->connected)
 
 struct redisCluster;
+struct clusterNode;
 
 typedef struct redisClusterConnection {
     redisContext *context;
@@ -55,15 +56,20 @@ typedef struct clusterNode {
                      * strings are the source node IDs. */
     int migrating_count; /* Length of the migrating array (migrating slots*2) */
     int importing_count; /* Length of the importing array (importing slots*2) */
+    struct clusterNode *duplicated_from;
 } clusterNode;
 
 typedef struct redisCluster {
     int thread_id;
     list *nodes;
     rax  *slots_map;
+    struct redisCluster *duplicated_from;
+    list *duplicates;
+    void *owner; /* Can be the client in case of private clister */
 } redisCluster;
 
 redisCluster *createCluster(int thread_id);
+redisCluster *duplicateCluster(redisCluster *source);
 void freeCluster(redisCluster *cluster);
 int fetchClusterConfiguration(redisCluster *cluster, char *ip, int port,
                               char *hostsocket);

@@ -34,6 +34,13 @@
     proxyLogErr("Node %s:%d replied with error:\n%s\n", \
                 n->ip, n->port, err);
 
+/* Forward declarations. */
+
+clusterNode *duplicateClusterNode(clusterNode *source, redisCluster *c);
+static void freeClusterNode(clusterNode *node);
+
+/* Utils */
+
 uint16_t crc16(const char *buf, int len);
 
 /* -----------------------------------------------------------------------------
@@ -66,6 +73,8 @@ static unsigned int clusterKeyHashSlot(char *key, int keylen) {
      * what is in the middle between { and }. */
     return crc16(key+s+1,e-s-1) & 0x3FFF;
 }
+
+/* Cluster functions. */
 
 static redisClusterConnection *createClusterConnection(void) {
     redisClusterConnection *conn = zmalloc(sizeof(*conn));
@@ -118,6 +127,9 @@ redisCluster *createCluster(int thread_id) {
     redisCluster *cluster = zcalloc(sizeof(*cluster));
     if (!cluster) return NULL;
     cluster->thread_id = thread_id;
+    cluster->duplicated_from = NULL;
+    cluster->duplicates = NULL;
+    cluster->owner = NULL;
     cluster->nodes = listCreate();
     if (cluster->nodes == NULL) {
         zfree(cluster);
@@ -128,6 +140,64 @@ redisCluster *createCluster(int thread_id) {
         listRelease(cluster->nodes);
         zfree(cluster);
         return NULL;
+    }
+    return cluster;
+}
+
+redisCluster *duplicateCluster(redisCluster *source) {
+    redisCluster *cluster = createCluster(source->thread_id);
+    if (cluster == NULL) return NULL;
+    cluster->duplicated_from = source;
+    rax *nodes_by_name = raxNew();
+    if (nodes_by_name == NULL) {
+        freeCluster(cluster);
+        return NULL;
+    }
+    int success = 1;
+    raxIterator iter;
+    listIter li;
+    listNode *ln;
+    listRewind(source->nodes, &li);
+    while ((ln = listNext(&li))) {
+        clusterNode *srcnode = ln->value;
+        clusterNode *node = duplicateClusterNode(srcnode, cluster);
+        success = (node != NULL && node->name != NULL);
+        if (!success) {
+            if (node) freeClusterNode(node);
+            goto cleanup;
+        }
+        raxInsert(nodes_by_name, (unsigned char*) node->name,
+                  sdslen(node->name), node, NULL);
+        listAddNodeTail(cluster->nodes, node);
+    }
+    raxStart(&iter, source->slots_map);
+    if (!raxSeek(&iter, "^", NULL, 0)) {
+        success = 0;
+        goto cleanup;
+    }
+    while (raxNext(&iter)) {
+        clusterNode *srcnode = (clusterNode *) iter.data;
+        success = (srcnode->name != NULL);
+        if (!success) goto cleanup;
+        clusterNode *node = raxFind(nodes_by_name,
+                                    (unsigned char*) srcnode->name,
+                                    sdslen(srcnode->name));
+        success = node != raxNotFound;
+        if (!success) goto cleanup;
+        raxInsert(cluster->slots_map, iter.key, iter.key_len, node, NULL);
+    }
+    if (source->duplicates == NULL) {
+        source->duplicates = listCreate();
+        success = source->duplicates != NULL;
+        if (!success) goto cleanup;
+    }
+    listAddNodeTail(source->duplicates, cluster);
+cleanup:
+    raxStop(&iter);
+    if (nodes_by_name != NULL) raxFree(nodes_by_name);
+    if (!success && cluster != NULL) {
+        freeCluster(cluster);
+        cluster = NULL;
     }
     return cluster;
 }
@@ -169,6 +239,33 @@ static void freeClusterNodes(redisCluster *cluster) {
 void freeCluster(redisCluster *cluster) {
     raxFree(cluster->slots_map);
     freeClusterNodes(cluster);
+    if (cluster->duplicates != NULL) {
+        listIter li;
+        listNode *ln;
+        listRewind(cluster->duplicates, &li);
+        while ((ln = listNext(&li))) {
+            redisCluster *dup = ln->value;
+            /* Set duplicated_from to NULL since it would point to a
+             * freed cluster. */
+            dup->duplicated_from = NULL;
+            /* Also set duplicated_from to NULL into single nodes. */
+            listIter nli;
+            listNode *nln;
+            listRewind(dup->nodes, &nli);
+            while ((nln = listNext(&nli))) {
+                clusterNode *n = nln->value;
+                n->duplicated_from = NULL;
+            }
+        }
+        listRelease(cluster->duplicates);
+    }
+    if (cluster->duplicated_from != NULL) {
+        list *parent_duplicates = cluster->duplicated_from->duplicates;
+        if (parent_duplicates != NULL) {
+            listNode *ln = listSearchKey(parent_duplicates, cluster);
+            if (ln != NULL) listDelNode(parent_duplicates, ln);
+        }
+    }
     zfree(cluster);
 }
 
@@ -188,10 +285,46 @@ static clusterNode *createClusterNode(char *ip, int port, redisCluster *c) {
     node->importing = NULL;
     node->migrating_count = 0;
     node->importing_count = 0;
+    node->duplicated_from = NULL;
     node->connection = createClusterConnection();
     if (node->connection == NULL) {
         freeClusterNode(node);
         return NULL;
+    }
+    return node;
+}
+
+clusterNode *duplicateClusterNode(clusterNode *source, redisCluster *c) {
+    clusterNode *node = createClusterNode(source->ip, source->port, c);
+    if (!node) return NULL;
+    node->duplicated_from = source;
+    int i;
+    if (source->name) node->name = sdsdup(source->name);
+    node->flags = source->flags;
+    node->replicas_count = source->replicas_count;
+    if (source->replicate) node->replicate = sdsdup(source->replicate);
+    node->slots_count = source->slots_count;
+    if ((node->slots_count = source->slots_count) > 0)
+        for (i = 0; i < CLUSTER_SLOTS; i++) node->slots[i] = source->slots[i];
+    node->migrating_count = source->migrating_count;
+    if (node->migrating_count > 0 && source->migrating != NULL) {
+        node->migrating = zmalloc(node->migrating_count * sizeof(sds));
+        if (node->migrating == NULL) {
+            freeClusterNode(node);
+            return NULL;
+        }
+        for (i = 0; i < node->migrating_count; i++)
+            node->migrating[i] = sdsdup(source->migrating[i]);
+    }
+    node->importing_count = source->importing_count;
+    if (node->importing_count > 0 && source->importing != NULL) {
+        node->importing = zmalloc(node->importing_count * sizeof(sds));
+        if (node->importing == NULL) {
+            freeClusterNode(node);
+            return NULL;
+        }
+        for (i = 0; i < node->importing_count; i++)
+            node->importing[i] = sdsdup(source->importing[i]);
     }
     return node;
 }
