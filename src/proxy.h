@@ -61,6 +61,7 @@ typedef struct clientRequest{
     int has_write_handler;
     int need_reprocessing;
     int parsed;
+    int owned_by_client;
 } clientRequest;
 
 typedef struct {
@@ -95,6 +96,11 @@ typedef struct client {
     int requests_with_write_handler; /* Number of request that are still
                                       * being writing to cluster */
     list *requests_to_reprocess;
+    int pending_multiplex_requests;  /* Number of request that have to be
+                                      * written/read before sending requests
+                                      * to private cluster connection */
+
+    redisCluster *cluster;
 } client;
 
 int processRequest(clientRequest *req, int *parsing_status);
