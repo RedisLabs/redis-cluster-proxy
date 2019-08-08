@@ -386,7 +386,8 @@ static int parseAddress(char *address, char **ip, int *port, char **hostsocket)
 
 static void printHelp(void) {
     fprintf(stderr, "Usage: redis-cluster-proxy [OPTIONS] "
-            "cluster_host:cluster_port\n"
+            "[cluster_host:cluster_port]\n"
+            "  -c <file>            Configuration file\n"
             "  -p, --port <port>    Port (default: %d)\n"
             "  --max-clients <n>    Max clients (default: %d)\n"
             "  --threads <n>        Thread number (default: %d, max: %d)\n"
@@ -408,7 +409,7 @@ static void printHelp(void) {
             DEFAULT_TCP_KEEPALIVE, DEFAULT_TCP_BACKLOG);
 }
 
-static int parseOptions(int argc, char **argv) {
+int parseOptions(int argc, char **argv) {
     int i;
     for (i = 1; i < argc; i++) {
         int lastarg = (i == (argc - 1));
@@ -433,7 +434,9 @@ static int parseOptions(int argc, char **argv) {
             config.dump_buffer = 1;
         else if (!strcmp("--dump-queues", arg))
             config.dump_queues = 1;
-        else if (!strcmp("--threads", arg) && !lastarg) {
+        else if (!strcmp("-c", arg) && !lastarg) {
+            if (!parseOptionsFromFile(argv[++i])) exit(1);
+        } else if (!strcmp("--threads", arg) && !lastarg) {
             config.num_threads = atoi(argv[++i]);
             if (config.num_threads > MAX_THREADS) {
                 fprintf(stderr, "Warning: maximum threads allowed: %d\n",
@@ -2064,20 +2067,28 @@ int main(int argc, char **argv) {
     printf("Redis Cluster Proxy v%s\n", REDIS_CLUSTER_PROXY_VERSION);
     initConfig();
     int parsed_opts = parseOptions(argc, argv);
+    char *config_cluster_addr = config.cluster_address;
     if (parsed_opts >= argc) {
-        fprintf(stderr, "Missing cluster address.\n\n");
-        printHelp();
-        return 1;
+        if (config_cluster_addr == NULL) {
+            fprintf(stderr, "Missing cluster address.\n\n");
+            printHelp();
+            return 1;
+        }
+    } else {
+        if (config_cluster_addr) {
+            sdsfree((sds) config_cluster_addr);
+            config_cluster_addr = NULL;
+        }
+        config.cluster_address = argv[parsed_opts];
     }
-    proxy.tcp_backlog = config.tcp_backlog;
-    checkTcpBacklogSettings();
-    config.cluster_address = argv[parsed_opts];
     printf("Cluster Address: %s\n", config.cluster_address);
     if (!parseAddress(config.cluster_address, &config.entry_node_host,
                       &config.entry_node_port, &config.entry_node_socket)) {
         fprintf(stderr, "Invalid address '%s'\n", config.cluster_address);
         return 1;
     }
+    proxy.tcp_backlog = config.tcp_backlog;
+    checkTcpBacklogSettings();
     if (!listen()) {
         proxyLogErr("Failed to listen on port %d\n", config.port);
         exit_status = 1;
@@ -2097,6 +2108,7 @@ int main(int argc, char **argv) {
     }
     aeMain(proxy.main_loop);
 cleanup:
+    if (config_cluster_addr) sdsfree((sds) config_cluster_addr);
     releaseProxy();
     return exit_status;
 }

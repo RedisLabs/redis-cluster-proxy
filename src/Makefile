@@ -131,7 +131,7 @@ QUIET_INSTALL = @printf '    %b %b\n' $(LINKCOLOR)INSTALL$(ENDCOLOR) $(BINCOLOR)
 endif
 
 REDIS_CLUSTER_PROXY_NAME=redis-cluster-proxy
-REDIS_CLUSTER_PROXY_OBJ=adlist.o ae.o anet.o cluster.o commands.o crc16.o dict.o endianconv.o logger.o protocol.o proxy.o rax.o reply_order.o siphash.o sds.o zmalloc.o
+REDIS_CLUSTER_PROXY_OBJ=adlist.o ae.o anet.o cluster.o commands.o config.o crc16.o dict.o endianconv.o logger.o protocol.o proxy.o rax.o reply_order.o siphash.o sds.o zmalloc.o
 
 Makefile.dep:
 	-$(REDIS_CLUSTER_PROXY_CC) -MM *.c > Makefile.dep 2> /dev/null || true
