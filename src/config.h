@@ -40,5 +40,7 @@ typedef struct {
 } redisClusterProxyConfig;
 
 extern redisClusterProxyConfig config;
+int parseOptions(int argc, char **argv);
+int parseOptionsFromFile(const char *filename);
 
 #endif /* __REDIS_CLUSTER_PROXY_CONFIG_H__ */
