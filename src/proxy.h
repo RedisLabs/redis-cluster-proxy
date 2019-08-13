@@ -22,6 +22,7 @@
 #include <stdint.h>
 #include <sys/resource.h>
 #include <hiredis.h>
+#include <time.h>
 #include "ae.h"
 #include "anet.h"
 #include "cluster.h"
@@ -70,6 +71,8 @@ typedef struct {
     _Atomic uint64_t numclients;
     rax *commands;
     int min_reserved_fds;
+    time_t start_time;
+    sds configfile;
 } redisClusterProxy;
 
 typedef struct client {

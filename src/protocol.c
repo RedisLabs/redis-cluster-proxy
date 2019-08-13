@@ -60,6 +60,20 @@ void addReplyString(client *c, const char *str, uint64_t req_id) {
     addReplyStringLen(c, str, strlen(str), req_id);
 }
 
+void addReplyBulkStringLen(client *c, const char *str, int len,
+                           uint64_t req_id) {
+    sds s = sdsnewlen(str, len);
+    sds r = sdscatprintf(sdsempty(), "$%d\r\n", len);
+    r = sdscatfmt(r, "%S\r\n", s);
+    addReplyRaw(c, r, sdslen(r), req_id);
+    sdsfree(s);
+    sdsfree(r);
+}
+
+void addReplyBulkString(client *c, const char *str, uint64_t req_id) {
+    addReplyBulkStringLen(c, str, strlen(str), req_id);
+}
+
 void addReplyInt(client *c, int64_t integer, uint64_t req_id) {
     sds r = sdsnew(":");
     r = sdscatfmt(r, "%I\r\n", integer);
