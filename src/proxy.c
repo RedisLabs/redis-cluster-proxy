@@ -29,6 +29,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/utsname.h>
 
 #define DEFAULT_PORT            7777
 #define DEFAULT_MAX_CLIENTS     10000
@@ -244,6 +245,78 @@ static sds proxySubCommandConfig(clientRequest *r, sds option, sds value,
     return reply;
 }
 
+static sds genInfoString(sds section) {
+    int default_section = (section == NULL ||
+                           strcasecmp("default", section) == 0);
+    int all_sections = (!default_section && section &&
+                        strcasecmp("all", section) == 0);
+    sds info = sdsempty();
+    int sections = 0;
+    if (default_section || all_sections ||
+        !strcasecmp("proxy", section))
+    {
+        static int call_uname = 1;
+        static struct utsname name;
+        time_t uptime = time(NULL) - proxy.start_time;
+        if (call_uname) {
+            /* Uname can be slow and is always the same output. Cache it. */
+            uname(&name);
+            call_uname = 0;
+        }
+        if (sections++) info = sdscat(info,"\r\n");
+        info = sdscatprintf(info,
+                    "#Proxy\r\n"
+                    "proxy_version:%s\r\n"
+                    "os:%s %s %s\r\n"
+                    "gcc_version:%d.%d.%d\r\n"
+                    "process_id:%ld\r\n"
+                    "threads:%d\n"
+                    "tcp_port:%d\r\n"
+                    "uptime_in_seconds:%jd\r\n"
+                    "uptime_in_days:%jd\r\n"
+                    "config_file:%s\r\n",
+                    REDIS_CLUSTER_PROXY_VERSION,
+                    name.sysname, name.release, name.machine,
+    #ifdef __GNUC__
+                    __GNUC__,__GNUC_MINOR__,__GNUC_PATCHLEVEL__,
+    #else
+                    0,0,0,
+    #endif
+                    (long) getpid(),
+                    config.num_threads,
+                    config.port,
+                    (intmax_t)uptime,
+                    (intmax_t)(uptime/(3600*24)),
+                    (proxy.configfile ? proxy.configfile : "")
+        );
+    }
+    if (default_section || all_sections ||
+        !strcasecmp("clients", section))
+    {
+        if (sections++) info = sdscat(info,"\r\n");
+        info = sdscatprintf(info,
+                     "#Clients\r\n"
+                     "connected_clients:%llu\r\n",
+                     proxy.numclients
+        );
+    }
+    if (default_section || all_sections ||
+        !strcasecmp("cluster", section))
+    {
+        if (sections++) info = sdscat(info,"\r\n");
+        info = sdscatprintf(info,
+                     "#Cluster\r\n"
+                     "address:%s\r\n"
+                     "entry_node:%s:%d",
+                     (config.cluster_address ? config.cluster_address : ""),
+                     (config.entry_node_host ? config.entry_node_host : ""),
+                     config.entry_node_port
+
+        );
+    }
+    return info;
+}
+
 int proxyCommand(void *r) {
     clientRequest *req = r;
     sds subcmd = NULL, err = NULL;
@@ -311,6 +384,22 @@ int proxyCommand(void *r) {
         if (value != NULL) sdsfree(value);
     } else if (strcasecmp("ping", subcmd) == 0) {
         addReplyString(req->client, "PONG", req->id);
+    } else if (strcasecmp("info", subcmd) == 0) {
+        sds section = NULL;
+        if (req->argc > 3) {
+            err = sdsnew("Wrong number of arguments for command PROXY's "
+                         "subcommand");
+            goto final;
+        } else if (req->argc == 3) {
+            assert(req->offsets_size >= 3);
+            int offset = req->offsets[2];
+            int len = req->lengths[2];
+            section = sdsnewlen(req->buffer + offset, len);
+        }
+        sds infostr = genInfoString(section);
+        addReplyBulkString(req->client, infostr, req->id);
+        sdsfree(infostr);
+        if (section != NULL) sdsfree(section);
     } else {
         err = sdsnew("Unsupported subcommand ");
         err = sdscatfmt(err, "'%S' for command PROXY", subcmd);
@@ -435,7 +524,9 @@ int parseOptions(int argc, char **argv) {
         else if (!strcmp("--dump-queues", arg))
             config.dump_queues = 1;
         else if (!strcmp("-c", arg) && !lastarg) {
-            if (!parseOptionsFromFile(argv[++i])) exit(1);
+            char *cfgfile = argv[++i];
+            if (!parseOptionsFromFile(cfgfile)) exit(1);
+            proxy.configfile = sdsnew(cfgfile);
         } else if (!strcmp("--threads", arg) && !lastarg) {
             config.num_threads = atoi(argv[++i]);
             if (config.num_threads > MAX_THREADS) {
@@ -2066,6 +2157,7 @@ int main(int argc, char **argv) {
     signal(SIGPIPE, SIG_IGN);
     printf("Redis Cluster Proxy v%s\n", REDIS_CLUSTER_PROXY_VERSION);
     initConfig();
+    proxy.configfile = NULL;
     int parsed_opts = parseOptions(argc, argv);
     char *config_cluster_addr = config.cluster_address;
     if (parsed_opts >= argc) {
@@ -2106,6 +2198,7 @@ int main(int argc, char **argv) {
             goto cleanup;
         }
     }
+    proxy.start_time = time(NULL);
     aeMain(proxy.main_loop);
 cleanup:
     if (config_cluster_addr) sdsfree((sds) config_cluster_addr);
