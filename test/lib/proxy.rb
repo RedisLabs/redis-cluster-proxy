@@ -27,7 +27,7 @@ class RedisClusterProxy
 
     attr_reader :cluster, :entry_point, :pid, :logfile, :port
 
-    def initialize(cluster, port: nil, **opts)
+    def initialize(cluster, port: nil, verbose: false, **opts)
         @cluster = cluster
         @port = port || find_available_port(17777)
         @cluster.start if !@cluster.instances
@@ -36,7 +36,7 @@ class RedisClusterProxy
         @cmdpath = File.join($redis_proxy_path, 'src/redis-cluster-proxy')
         if !File.exists?(@cmdpath) && !File.symlink?(@cmdpath)
             @cluster.destroy!
-            STDERR.puts ("Could not find redis-cluster-proxy in:\n'" + 
+            STDERR.puts ("Could not find redis-cluster-proxy in:\n'" +
                          @cmdpath + "'\nCompile redis-cluster-proxy "+
                          "before making tests!").red
             exit 1
@@ -46,6 +46,7 @@ class RedisClusterProxy
         ts = Time.now.strftime('%Y%m%d-%H%M%S')
         @logfile = File.join(RedisProxyTestCase::LOGDIR,
                              "redis-cluster-proxy-#{ts}.log")
+        @verbose = verbose
     end
 
     def start
@@ -78,8 +79,9 @@ class RedisClusterProxy
             }.join(' ')
         end
         entry_port = @entry_point[:port]
-        cmd = "#{@cmdpath} -p #{@port}#{cmdopts} " + 
+        cmd = "#{@cmdpath} -p #{@port}#{cmdopts} " +
               "127.0.0.1:#{entry_port}"
+        log cmd, :gray if @verbose
         log "Starting proxy to 127.0.0.1:#{entry_port} on port #{@port}...",
             :gray
         STDOUT.flush

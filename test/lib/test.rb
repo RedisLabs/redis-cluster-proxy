@@ -23,6 +23,7 @@ load File.join($redis_proxy_test_libdir, 'log.rb')
 load File.join($redis_proxy_test_libdir, 'helpers.rb')
 load File.join($redis_proxy_test_libdir, 'cluster.rb')
 load File.join($redis_proxy_test_libdir, 'proxy.rb')
+load File.join($redis_proxy_test_libdir, 'optparser.rb')
 
 class RedisProxyTestCase
 
@@ -39,7 +40,7 @@ class RedisProxyTestCase
     @@exceptions = []
 
     GenericSetup = proc{
-        if !$main_cluster    
+        if !$main_cluster
             @cluster = RedisCluster.new
             @cluster.restart
             $main_cluster = @cluster
