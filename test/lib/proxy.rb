@@ -73,6 +73,8 @@ class RedisClusterProxy
                 end
                 if val == true
                     opt
+                elsif val.nil?
+                    ''
                 else
                     "#{opt} #{val}"
                 end
