@@ -43,7 +43,7 @@ def find_redis!
     return $redis_paths if $redis_paths
     paths = {}
     redis_home = ENV['REDIS_HOME']
-    %w(server cli).each{|progname|
+    %w(server cli benchmark).each{|progname|
         progname = "redis-#{progname}"
         path = nil
         if redis_home

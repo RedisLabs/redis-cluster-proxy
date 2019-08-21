@@ -75,7 +75,7 @@ class RedisCluster
     def start
         build_dirs if !@instances || !File.exists?(@tmppath)
         if @verbose
-            log("Starting #{@instances.length} cluster nodes...", :gray) 
+            log("Starting #{@instances.length} cluster nodes...", :gray)
         end
         @instances.each{|instance|
             next if is_instance_running?(instance)
@@ -114,7 +114,7 @@ class RedisCluster
             }
         }
     end
-    
+
     def destroy!
         stop
         FileUtils.rm_r(@tmppath) if File.exists?(@tmppath)
@@ -122,7 +122,7 @@ class RedisCluster
 
     def start_instance(instance, quiet: false, fatal: true, timeout: 10)
         port = instance[:port]
-      	script = %Q(cd #{instance[:path]} && #{@redis_server} ./redis.conf)
+        script = %Q(cd #{instance[:path]} && #{@redis_server} ./redis.conf)
         print("Starting cluster node #{port}...".gray) if @verbose
         `#{script}`
         if !$?.success?
@@ -354,13 +354,13 @@ class RedisCluster
     end
 
     def config_for(port, path)
-        "port #{port}\n" + 
-        "cluster-enabled yes\n" + 
-        "cluster-config-file \"nodes.conf\"\n" + 
+        "port #{port}\n" +
+        "cluster-enabled yes\n" +
+        "cluster-config-file \"nodes.conf\"\n" +
         "logfile ./redis.log\n" +
         "cluster-node-timeout #{@node_timeout}\n" +
         #"unixsocket \"#{File.join(path, 'redis.sock')}\"\n" +
-        "daemonize yes\n" + 
+        "daemonize yes\n" +
         "dir \"#{path}\"\n"
     end
 
