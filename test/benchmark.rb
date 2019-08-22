@@ -25,10 +25,11 @@ include RedisProxyTestLogger
 
 opts =RedisProxyTestUtils::OptionParser.new help_banner_arguments: '[TESTS]' do
 
-    option  '',   '--proxy-threads NUM', 'Number of proxy threads'
-    option  '',   '--benchmark-threads NUM', 'Number of benchmark threads'
-    option '-o', '--output PATH', 'Output results to a file'
-    option  '',   '--csv', 'Set output format to CSV'
+    option   '',   '--proxy-threads NUM', 'Number of proxy threads'
+    option   '',   '--benchmark-threads NUM', 'Number of benchmark threads'
+    option '-r',   '--repeat NUM', 'Repeat tests multiple times'
+    option '-o',   '--output PATH', 'Output results to a file'
+    option   '',   '--csv', 'Set output format to CSV'
 
 end
 
@@ -37,7 +38,7 @@ opts.parse!
 $options = opts.options
 $tests = ARGV
 if $tests.length == 0
-    $tests = %w(get set)
+    $tests = %w(get)
 end
 
 def setup(proxy_threads: nil)
@@ -166,28 +167,32 @@ end
 total_tests = 0
 started = Time.now.to_f
 benchmarks = []
+repeat = $options[:repeat] || 1
+repeat = repeat.to_i
+repeat = 1 if repeat.zero?
 proxy_threads.each{|pthreads|
     failed = false
     setup(proxy_threads: pthreads)
-    sleep(1)
     benchmark_threads.each{|bthreads|
         begin
             log "PROXY THREADS: #{pthreads}",nil,:bold if pthreads
             log "BENCHMARK THREADS: #{bthreads}",nil,:bold if bthreads
-            out = redis_benchmark($main_proxy.port, $tests, r: 10,
-                                  threads: bthreads)
-            if !$?.success?
-                raise out
-            end
-            puts RedisProxyTestLogger::colorized(out, :cyan)
-            total_tests += $tests.length
-            tests = parse_benchmark(out)
-            benchmarks.push({
-                proxy_threads: pthreads,
-                benchmark_threads: bthreads,
-                output: out,
-                tests: tests
-            })
+            repeat.times{
+                out = redis_benchmark($main_proxy.port, $tests, r: 10,
+                                      threads: bthreads)
+                if !$?.success?
+                    raise out
+                end
+                puts RedisProxyTestLogger::colorized(out, :cyan)
+                total_tests += $tests.length
+                tests = parse_benchmark(out)
+                benchmarks.push({
+                    proxy_threads: pthreads,
+                    benchmark_threads: bthreads,
+                    output: out,
+                    tests: tests
+                })
+            }
         rescue Exception => e
             STDERR.puts e.to_s.red
             STDERR.puts e.backtrace.join("\n").yellow
@@ -206,8 +211,8 @@ best_rps = nil
 worst_rps = nil
 if total_tests > 1
     benchmarks.each{|bm|
-        res = bm[:tests]
-        res.each{|test|
+        tests = bm[:tests]
+        tests.each{|test|
             rps = test[:rps]
             next if !rps
             if !best_rps || rps > best_rps[:rps]
