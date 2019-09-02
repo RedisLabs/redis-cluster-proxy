@@ -62,6 +62,7 @@ typedef struct clientRequest{
     int need_reprocessing;
     int parsed;
     int owned_by_client;
+    int closes_transaction;
 } clientRequest;
 
 typedef struct {
@@ -101,6 +102,9 @@ typedef struct client {
                                       * to private cluster connection */
 
     redisCluster *cluster;
+    int multi_transaction;
+    clientRequest *multi_request;
+    clusterNode *multi_transaction_node;
 } client;
 
 int processRequest(clientRequest *req, int *parsing_status);
