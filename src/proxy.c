@@ -319,6 +319,59 @@ static sds genInfoString(sds section) {
     return info;
 }
 
+int multiCommand(void *r) {
+    clientRequest *req = r;
+    client *c = req->client;
+    if (!c->multi_transaction) {
+        /* Disable multiplexing for the requesting client and create a
+         * private cluster connection for it. */
+        if (!disableMultiplexingForClient(c)) {
+            freeClient(c);
+            return PROXY_COMMAND_HANDLED;
+        }
+        if (c->multi_request != NULL) freeRequest(c->multi_request, 1);
+        c->multi_transaction = 1;
+        c->multi_request = createRequest(c);
+        if (c->multi_request == NULL) {
+            freeClient(c);
+            return PROXY_COMMAND_HANDLED;
+        }
+        /* Create a deferred MULTI request to be sent later just before
+         * the first query of the transaction, since it's not possibile
+         * to determine the target node in this moment. */
+        c->multi_request->buffer =
+            sdscat(c->multi_request->buffer, "*1\r\n$5\r\nMULTI\r\n");
+        c->current_request = NULL;
+        c->multi_request->owned_by_client = 1;
+        if (listLength(c->requests_to_process) > 0) {
+            clientRequest *first = listFirst(c->requests_to_process)->value;
+            listIter li;
+            listNode *ln;
+            listRewind(c->requests_to_process, &li);
+            while ((ln = listNext(&li))) {
+                clientRequest *r2p = ln->value;
+                r2p->id++;
+            }
+            c->multi_request->id = first->id;
+        }
+    } else return PROXY_COMMAND_UNHANDLED;
+    addReplyString(c, "OK", req->id);
+    return PROXY_COMMAND_HANDLED;
+}
+
+int execOrDiscardCommand(void *r) {
+    clientRequest *req = r;
+    client *c = req->client;
+    if (!c->multi_transaction) {
+        addReplyError(c, "Client is not under MULTI transaction", req->id);
+        return PROXY_COMMAND_HANDLED;
+    }
+    if (c->multi_request != NULL && c->multi_request->node != NULL)
+        req->node = c->multi_request->node;
+    req->closes_transaction = 1;
+    return PROXY_COMMAND_UNHANDLED;
+}
+
 int proxyCommand(void *r) {
     clientRequest *req = r;
     sds subcmd = NULL, err = NULL;
@@ -1082,6 +1135,9 @@ static client *createClient(int fd, char *ip) {
     c->min_reply_id = 0;
     c->requests_with_write_handler = 0;
     c->pending_multiplex_requests = 0;
+    c->multi_transaction = 0;
+    c->multi_request = NULL;
+    c->multi_transaction_node = NULL;
     if (config.disable_multiplexing == CFG_DISABLE_MULTIPLEXING_ALWAYS) {
         if (!disableMultiplexingForClient(c)) {
             freeClient(c);
@@ -1707,6 +1763,8 @@ void freeRequest(clientRequest *req, int delete_from_lists) {
     if (req->lengths != NULL) zfree(req->lengths);
     if (req->client->current_request == req)
         req->client->current_request = NULL;
+    if (req->client->multi_request == req)
+        req->client->multi_request = NULL;
     redisContext *ctx = NULL;
     if (req->node) ctx = getClusterNodeContext(req->node);
     aeEventLoop *el = getClientLoop(req->client);
@@ -1821,6 +1879,7 @@ static clientRequest *createRequest(client *c) {
     if (c->next_request_id >= UINT64_MAX)
         c->next_request_id = 0;
     req->owned_by_client = (c->cluster != NULL);
+    req->closes_transaction = 0;
     proxyLogDebug("Created Request %llu:%llu\n", req->client->id, req->id);
     return req;
 alloc_failure:
@@ -2017,6 +2076,28 @@ static int processRequest(clientRequest *req) {
         proxyLogDebug("%s %llu:%llu\n", errmsg, c->id, req->id);
         goto invalid_request;
     }
+    /* In we are under a MULTI transaction and there's no target node yet
+     * we use the current request's node as the node for the whole transaction.
+     * In this case we'll enqueue the client's MULTI request (multi_request),
+     * after setting the node to it. The same node will be used for all queries
+     * under that transaction. */
+    if (req->client->multi_transaction) {
+        clientRequest *multi_req = req->client->multi_request;
+        if (multi_req != NULL) {
+            if (multi_req->node == NULL) {
+                multi_req->node = node;
+                if (!enqueueRequestToSend(multi_req))
+                    goto invalid_request;
+                /* The client's min_reply_id must be also set to this first
+                 * query inside the transaction, since the 'multi_request'
+                 * request rely will be skipped. */
+                req->client->min_reply_id = req->id;
+            }
+        }
+        if (req->client->multi_transaction_node == NULL)
+            req->client->multi_transaction_node = node;
+        else node = req->node = req->client->multi_transaction_node;
+    }
     if (!enqueueRequestToSend(req)) goto invalid_request;
     handleNextRequestToCluster(req->node);
     if (command_name) sdsfree(command_name);
@@ -2148,6 +2229,12 @@ static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
             listNode *ln = listFirst(queue);
             listDelNode(queue, ln);
             goto consume_buffer;
+        } else if (req == req->client->multi_request) {
+            /* Since we've already replied "OK" to the first handled MULTI
+             * query received, we'll skip the actual MULTI's reply received
+             * from the node. */
+            /* TODO: if (errmsg != NULL) ; */
+            goto consume_buffer;
         }
         proxyLogDebug("Reply read complete for request %llu:%llu, %s%s\n",
                       req->client->id, req->id, errmsg ? " ERR: " : "OK!",
@@ -2168,6 +2255,14 @@ static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
                 sdsfree(rstr);
             }
             addReplyRaw(req->client, obuf, len, req->id);
+        }
+        if (req->closes_transaction) {
+            req->client->multi_transaction = 0;
+            if (req->client->multi_request != NULL) {
+                freeRequest(req->client->multi_request, 1);
+                req->client->multi_request = NULL;
+            }
+            req->client->multi_transaction_node = NULL;
         }
 consume_buffer:
         if (config.dump_queues) dumpQueue(node, thread_id, QUEUE_TYPE_PENDING);

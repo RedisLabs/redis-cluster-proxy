@@ -24,7 +24,7 @@ load File.join($redis_proxy_test_dir, 'lib/test.rb')
 $tests = ARGV
 if $tests.length == 0
     $tests = %w(basic basic_commands pipeline client_disconnect node_down
-                proxy_command disable_multiplexing)
+                proxy_command disable_multiplexing multi)
 end
 
 def final_cleanup

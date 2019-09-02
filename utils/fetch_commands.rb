@@ -22,9 +22,12 @@ require 'optparse'
 
 $path = File.expand_path(File.dirname(__FILE__))
 COPY_START_YEAR = 2019
-UNSUPPORTED_COMMANDS = %w(multi exec discard)
+UNSUPPORTED_COMMANDS = %w()
 COMMAND_HANDLERS = {
-    'proxy' => 'proxyCommand'
+    'proxy' => 'proxyCommand',
+    'multi' => 'multiCommand',
+    'exec' => 'execOrDiscardCommand',
+    'discard' => 'execOrDiscardCommand'
 }
 CUSTOM_COMMANDS = [
     {
