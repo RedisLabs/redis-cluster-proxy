@@ -27,7 +27,9 @@ COMMAND_HANDLERS = {
     'proxy' => 'proxyCommand',
     'multi' => 'multiCommand',
     'exec' => 'execOrDiscardCommand',
-    'discard' => 'execOrDiscardCommand'
+    'discard' => 'execOrDiscardCommand',
+    'blpop' => 'blockingCommandWithKeys',
+    'brpop' => 'blockingCommandWithKeys',
 }
 CUSTOM_COMMANDS = [
     {
@@ -232,8 +234,11 @@ code = header + "\n\n" +
 "#include \"commands.h\"\n\n"
 if COMMAND_HANDLERS.length > 0
     code << "/* Command Handlers */\n"
+    funcs = {}
     COMMAND_HANDLERS.each{|cmdname, func|
+        next if funcs[func]
         code << "int #{func}(void *req);\n"
+        funcs[func] = true
     }
     code << "\n"
 end
