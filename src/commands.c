@@ -23,6 +23,7 @@ int proxyCommand(void *req);
 int multiCommand(void *req);
 int execOrDiscardCommand(void *req);
 int execOrDiscardCommand(void *req);
+int blockingCommandWithKeys(void *req);
 
 struct redisCommandDef redisCommandTable[203] = {
     {"multi", 1, 0, 0, 0, 0, multiCommand},
@@ -181,7 +182,7 @@ struct redisCommandDef redisCommandTable[203] = {
     {"zremrangebyscore", 4, 1, 1, 1, 0, NULL},
     {"xinfo", -2, 2, 2, 1, 0, NULL},
     {"zrem", -3, 1, 1, 1, 0, NULL},
-    {"brpop", -3, 1, -2, 1, 0, NULL},
+    {"brpop", -3, 1, -2, 1, 0, blockingCommandWithKeys},
     {"hincrby", 4, 1, 1, 1, 0, NULL},
     {"replconf", -1, 0, 0, 0, 0, NULL},
     {"strlen", 2, 1, 1, 1, 0, NULL},
@@ -207,7 +208,7 @@ struct redisCommandDef redisCommandTable[203] = {
     {"mset", -3, 1, -1, 2, 0, NULL},
     {"msetnx", -3, 1, -1, 2, 0, NULL},
     {"role", 1, 0, 0, 0, 0, NULL},
-    {"blpop", -3, 1, -2, 1, 0, NULL},
+    {"blpop", -3, 1, -2, 1, 0, blockingCommandWithKeys},
     {"xdel", -3, 1, 1, 1, 0, NULL},
     {"pfcount", -2, 1, -1, 1, 0, NULL},
     {"pfdebug", -3, 0, 0, 0, 0, NULL},
