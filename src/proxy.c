@@ -324,6 +324,16 @@ static sds genInfoString(sds section) {
     return info;
 }
 
+int blockingCommandWithKeys(void *r){
+    clientRequest *req = r;
+    client *c = req->client;
+    if (!disableMultiplexingForClient(c)) {
+        freeClient(c);
+        return PROXY_COMMAND_HANDLED;
+    }
+    return PROXY_COMMAND_UNHANDLED;
+}
+
 int multiCommand(void *r) {
     clientRequest *req = r;
     client *c = req->client;
