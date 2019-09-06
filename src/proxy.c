@@ -319,7 +319,7 @@ static sds genInfoString(sds section) {
     return info;
 }
 
-int blockingCommandWithKeys(void *r){
+int genericBlockingCommand(void *r){
     clientRequest *req = r;
     client *c = req->client;
     if (!disableMultiplexingForClient(c)) {
@@ -1724,18 +1724,18 @@ static clusterNode *getRequestNode(clientRequest *req, sds *err) {
     clusterNode *node = NULL;
     redisCluster *cluster = getCluster(req->client);
     int slot = UNDEFINED_SLOT;
-    if (req->argc == 1) {
+    int first_key = req->command->first_key,
+        last_key = req->command->last_key,
+        key_step = req->command->key_step, i;
+    if (req->argc == 1 || first_key == 0) {
         /*TODO: temporary behaviour */
         node = getFirstMappedNode(cluster);
         req->node = node;
         return node;
     }
-    int first_key = req->command->first_key,
-        last_key = req->command->last_key,
-        key_step = req->command->key_step, i;
-    if (first_key == 0) return NULL;
-    else if (first_key >= req->argc) first_key = req->argc - 1;
-    if (last_key < 0 || last_key >= req->argc) last_key = req->argc - 1;
+    if (first_key >= req->argc) first_key = req->argc - 1;
+    if (last_key >= req->argc) last_key = req->argc - 1;
+    if (last_key < 0) last_key = req->argc + last_key;
     if (last_key < first_key) last_key = first_key;
     if (key_step < 1) key_step = 1;
     for (i = first_key; i <= last_key; i += key_step) {
@@ -2065,10 +2065,8 @@ static int processRequest(clientRequest *req) {
     redisCommandDef *cmd = getRedisCommand(command_name);
     /* Unsupported commands:
      * - Commands not defined in redisCommandTable
-     * - Commands explictly having unsupported to 1
-     * - Commands without explicit first_key offset */
-    if (cmd == NULL || cmd->unsupported ||
-        (!cmd->handle && cmd->arity != 1 && !cmd->first_key)){
+     * - Commands explictly having unsupported to 1 */
+    if (cmd == NULL || cmd->unsupported){
         errmsg = sdsnew("Unsupported command: ");
         errmsg = sdscatfmt(errmsg, "'%s'", command_name);
         proxyLogDebug("%s\n", errmsg);

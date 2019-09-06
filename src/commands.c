@@ -22,8 +22,7 @@
 int proxyCommand(void *req);
 int multiCommand(void *req);
 int execOrDiscardCommand(void *req);
-int execOrDiscardCommand(void *req);
-int blockingCommandWithKeys(void *req);
+int genericBlockingCommand(void *req);
 
 struct redisCommandDef redisCommandTable[203] = {
     {"multi", 1, 0, 0, 0, 0, multiCommand},
@@ -31,7 +30,7 @@ struct redisCommandDef redisCommandTable[203] = {
     {"zpopmax", -2, 1, 1, 1, 0, NULL},
     {"rpop", 2, 1, 1, 1, 0, NULL},
     {"lrem", 4, 1, 1, 1, 0, NULL},
-    {"bzpopmin", -3, 1, -2, 1, 0, NULL},
+    {"bzpopmin", -3, 1, -2, 1, 0, genericBlockingCommand},
     {"srem", -3, 1, 1, 1, 0, NULL},
     {"ltrim", 4, 1, 1, 1, 0, NULL},
     {"bgsave", -1, 0, 0, 0, 0, NULL},
@@ -46,7 +45,7 @@ struct redisCommandDef redisCommandTable[203] = {
     {"renamenx", 3, 1, 2, 1, 0, NULL},
     {"acl", -2, 0, 0, 0, 0, NULL},
     {"sinter", -2, 1, -1, 1, 0, NULL},
-    {"psubscribe", -2, 0, 0, 0, 0, NULL},
+    {"psubscribe", -2, 0, 0, 0, 1, NULL},
     {"geohash", -2, 1, 1, 1, 0, NULL},
     {"publish", 3, 0, 0, 0, 0, NULL},
     {"xlen", 2, 1, 1, 1, 0, NULL},
@@ -182,7 +181,7 @@ struct redisCommandDef redisCommandTable[203] = {
     {"zremrangebyscore", 4, 1, 1, 1, 0, NULL},
     {"xinfo", -2, 2, 2, 1, 0, NULL},
     {"zrem", -3, 1, 1, 1, 0, NULL},
-    {"brpop", -3, 1, -2, 1, 0, blockingCommandWithKeys},
+    {"brpop", -3, 1, -2, 1, 0, genericBlockingCommand},
     {"hincrby", 4, 1, 1, 1, 0, NULL},
     {"replconf", -1, 0, 0, 0, 0, NULL},
     {"strlen", 2, 1, 1, 1, 0, NULL},
@@ -208,7 +207,7 @@ struct redisCommandDef redisCommandTable[203] = {
     {"mset", -3, 1, -1, 2, 0, NULL},
     {"msetnx", -3, 1, -1, 2, 0, NULL},
     {"role", 1, 0, 0, 0, 0, NULL},
-    {"blpop", -3, 1, -2, 1, 0, blockingCommandWithKeys},
+    {"blpop", -3, 1, -2, 1, 0, genericBlockingCommand},
     {"xdel", -3, 1, 1, 1, 0, NULL},
     {"pfcount", -2, 1, -1, 1, 0, NULL},
     {"pfdebug", -3, 0, 0, 0, 0, NULL},
@@ -223,8 +222,8 @@ struct redisCommandDef redisCommandTable[203] = {
     {"zadd", -4, 1, 1, 1, 0, NULL},
     {"xsetid", 3, 1, 1, 1, 0, NULL},
     {"zlexcount", 4, 1, 1, 1, 0, NULL},
-    {"subscribe", -2, 0, 0, 0, 0, NULL},
-    {"bzpopmax", -3, 1, -2, 1, 0, NULL},
+    {"subscribe", -2, 0, 0, 0, 1, NULL},
+    {"bzpopmax", -3, 1, -2, 1, 0, genericBlockingCommand},
     {"zrangebyscore", -4, 1, 1, 1, 0, NULL},
     {"rpoplpush", 3, 1, 2, 1, 0, NULL},
     {"bitcount", -2, 1, 1, 1, 0, NULL},
