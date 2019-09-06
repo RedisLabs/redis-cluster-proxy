@@ -38,6 +38,13 @@ $datalen.each{|len|
 
     test "MULTI..GET..EXEC (size = #{len}b) #{$numkeys} keys" do
         spawn_clients($numclients){|client, idx|
+            begin
+                status = client.proxy 'multiplexing', 'status'
+            rescue Redis::CommandError => cmderr
+                status = cmderr
+            end
+            assert_not_redis_err(status)
+            assert_equal(status, 'on')
             pipeline_args = []
             (0...$numkeys).each{|n|
                 log_test_update "key #{n + 1}/#{$numkeys}"
@@ -62,6 +69,13 @@ $datalen.each{|len|
                 assert_not_redis_err(reply)
                 assert(reply, expected)
             }
+            begin
+                status = client.proxy 'multiplexing', 'status'
+            rescue Redis::CommandError => cmderr
+                status = cmderr
+            end
+            assert_not_redis_err(status)
+            assert_equal(status, 'off')
             log_same_line('')
         }
     end

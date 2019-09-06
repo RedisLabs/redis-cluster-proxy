@@ -22,14 +22,16 @@ require 'optparse'
 
 $path = File.expand_path(File.dirname(__FILE__))
 COPY_START_YEAR = 2019
-UNSUPPORTED_COMMANDS = %w()
+UNSUPPORTED_COMMANDS = %w(subscribe psubscribe)
 COMMAND_HANDLERS = {
     'proxy' => 'proxyCommand',
     'multi' => 'multiCommand',
     'exec' => 'execOrDiscardCommand',
     'discard' => 'execOrDiscardCommand',
-    'blpop' => 'blockingCommandWithKeys',
-    'brpop' => 'blockingCommandWithKeys',
+    'blpop' => 'genericBlockingCommand',
+    'brpop' => 'genericBlockingCommand',
+    'bzpopmin' => 'genericBlockingCommand',
+    'bzpopmax' => 'genericBlockingCommand',
 }
 CUSTOM_COMMANDS = [
     {
@@ -120,7 +122,7 @@ end
 
 $all_flags = %w(REDIS_COMMAND_FLAG_NONE)
 commands = $redis.command
-commands = commands.map{|c| 
+commands = commands.map{|c|
     name, arity, flags, first_key, last_key, key_step = c
     name = name.downcase
     if $options[:flags]
