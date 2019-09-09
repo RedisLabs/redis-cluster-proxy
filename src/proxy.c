@@ -2047,7 +2047,7 @@ static clusterNode *getRequestNode(clientRequest *req, sds *err) {
             }
             return req->node;
         } else {
-            if (err != NULL) *err = "Unsupported command";
+            if (err != NULL) *err = sdsnew("Unsupported command");
             req->node = NULL;
             return NULL;
         }
