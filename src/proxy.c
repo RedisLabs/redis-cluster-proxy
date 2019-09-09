@@ -1475,9 +1475,10 @@ static clusterNode *getRequestNode(clientRequest *req, sds *err) {
         key_step = req->command->key_step, i;
     if (first_key == 0) return NULL;
     else if (first_key >= req->argc) first_key = req->argc - 1;
-    if (last_key < 0 || last_key >= req->argc) last_key = req->argc - 1;
-    if (last_key < first_key) last_key = first_key;
     if (key_step < 1) key_step = 1;
+    if (last_key >= req->argc) last_key = req->argc - 1;
+    if (last_key < 0) last_key = req->argc + last_key;
+    if (last_key < first_key) last_key = first_key;
     for (i = first_key; i <= last_key; i += key_step) {
         char *key = req->buffer + req->offsets[i];
         clusterNode *n = getNodeByKey(cluster, key, req->lengths[i], &slot);
