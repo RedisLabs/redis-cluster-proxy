@@ -1524,15 +1524,15 @@ void freeRequest(clientRequest *req, int delete_from_lists) {
         assert(conn != NULL);
         listNode *ln = listSearchKey(conn->requests_to_send, req);
         if (ln) listDelNode(conn->requests_to_send, ln);
-        ln = listSearchKey(conn->requests_pending, req);
-        if (ln) listDelNode(conn->requests_pending, ln);
-        ln = listSearchKey(req->client->requests_to_process, req);
         /* We cannot delete the request's list node from the requests_pending
          * queue, since this would break the reply processing order. So we just
          * set its value to NULL. The resulting NULL placeholder (we can call
          * it a 'ghost request') will be simply skipped during reply buffer
          * processing. */
+        ln = listSearchKey(conn->requests_pending, req);
         if (ln) ln->value = NULL;
+        ln = listSearchKey(req->client->requests_to_process, req);
+        if (ln) listDelNode(req->client->requests_to_process, ln);
         if (config.dump_queues)
             dumpQueue(req->node, req->client->thread_id, QUEUE_TYPE_PENDING);
     }
@@ -1858,9 +1858,16 @@ void readQuery(aeEventLoop *el, int fd, void *privdata, int mask){
     /*TODO: support max query buffer length */
     if (!processRequest(req)) freeClient(c);
     else {
+        clientRequest *processed_req = req;
         while (listLength(c->requests_to_process) > 0) {
             listNode *ln = listFirst(c->requests_to_process);
             req = ln->value;
+            /* If the request to process is the already processed request,
+             * delete it from requests_to_process and just skip it. */
+            if (req == processed_req) {
+                listDelNode(c->requests_to_process, ln);
+                continue;
+            }
             if (!processRequest(req)) freeClient(c);
             else {
                 if (req->parsing_status == PARSE_STATUS_INCOMPLETE) break;
