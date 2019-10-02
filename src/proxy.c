@@ -321,7 +321,7 @@ final:
         sdsfree(err);
     }
     if (subcmd != NULL) sdsfree(subcmd);
-    freeRequest(req, 1);
+    freeRequest(req);
     return PROXY_COMMAND_HANDLED;
 }
 
@@ -986,7 +986,7 @@ static void freeAllClientRequests(client *c) {
             if (c->status == CLIENT_STATUS_UNLINKED && req->has_write_handler)
                 continue;
             listDelNode(conn->requests_to_send, nln);
-            freeRequest(req, 0);
+            freeRequest(req);
         }
         listRewind(conn->requests_pending, &nli);
         while ((nln = listNext(&nli))) {
@@ -998,7 +998,7 @@ static void freeAllClientRequests(client *c) {
              * we create a NULL placeholder (a 'ghost request') by simply
              * setting the list node's value to NULL. */
             nln->value = NULL;
-            freeRequest(req, 0);
+            freeRequest(req);
         }
         if (config.dump_queues)
             dumpQueue(node, c->thread_id, QUEUE_TYPE_PENDING);
@@ -1021,15 +1021,16 @@ static void freeClient(client *c) {
     if (c->ip != NULL) sdsfree(c->ip);
     if (c->obuf != NULL) sdsfree(c->obuf);
     if (c->reply_array != NULL) listRelease(c->reply_array);
-    if (c->current_request) freeRequest(c->current_request, 1);
+    if (c->current_request) freeRequest(c->current_request);
+    freeAllClientRequests(c);
     listIter li;
     listRewind(c->requests_to_process, &li);
     while ((ln = listNext(&li))) {
         clientRequest *req = ln->value;
-        freeRequest(req, 0);
+        listDelNode(c->requests_to_process, ln);
+        freeRequest(req);
     }
     listRelease(c->requests_to_process);
-    freeAllClientRequests(c);
     if (c->unordered_replies)
         raxFreeWithCallback(c->unordered_replies, (void (*)(void*))sdsfree);
     zfree(c);
@@ -1084,7 +1085,7 @@ static void writeToClusterHandler(aeEventLoop *el, int fd, void *privdata,
             err = sdscatprintf(err, "%s:%d", node->ip, node->port);
             addReplyError(req->client, err, req->id);
             sdsfree(err);
-            freeRequest(req, 1);
+            freeRequest(req);
         }
         return;
     }
@@ -1097,7 +1098,7 @@ static void writeToClusterHandler(aeEventLoop *el, int fd, void *privdata,
             if (req != NULL) {
                 addReplyError(req->client, "Failed to read from cluster",
                               req->id);
-                freeRequest(req, 1);
+                freeRequest(req);
             }
             return;
         } else  {
@@ -1129,7 +1130,7 @@ static int writeToCluster(aeEventLoop *el, int fd, clientRequest *req) {
                 clusterNodeDisconnect(req->node);
             } else {
                 addReplyError(req->client, "Error writing to cluster", req->id);
-                freeRequest(req, 1);
+                freeRequest(req);
             }
             return 0;
         }
@@ -1161,13 +1162,13 @@ static int writeToCluster(aeEventLoop *el, int fd, clientRequest *req) {
             list *pending_queue =
                 node->connection->requests_pending;
             listAddNodeTail(pending_queue, NULL);
-            freeRequest(req, 1);
+            freeRequest(req);
             freeClient(c);
         } else if (!enqueuePendingRequest(req)) {
             proxyLogDebug("Could not enqueue pending request %llu:%llu\n",
                           req->client->id, req->id);
             addReplyError(req->client, "Could not enqueue request", req->id);
-            freeRequest(req, 1);
+            freeRequest(req);
             return 0;
         }
         if (config.dump_queues) dumpQueue(node, thread_id, QUEUE_TYPE_PENDING);
@@ -1218,7 +1219,7 @@ void onClusterNodeDisconnection(clusterNode *node) {
                 req->client->requests_with_write_handler--;
                 addReplyError(req->client, err, req->id);
                 dequeueRequestToSend(req);
-                freeRequest(req, 0);
+                freeRequest(req);
             }
         }
         /* If there are pending requests that are reading or waiting to read
@@ -1231,7 +1232,7 @@ void onClusterNodeDisconnection(clusterNode *node) {
             assert(req->node == node);
             addReplyError(req->client, err, req->id);
             dequeuePendingRequest(req);
-            freeRequest(req, 0);
+            freeRequest(req);
         }
         sdsfree(err);
     }
@@ -1501,7 +1502,7 @@ static clusterNode *getRequestNode(clientRequest *req, sds *err) {
     return node;
 }
 
-void freeRequest(clientRequest *req, int delete_from_lists) {
+void freeRequest(clientRequest *req) {
     if (req == NULL) return;
     proxyLogDebug("Free Request %llu:%llu\n", req->client->id, req->id);
     if (req->has_write_handler && req->written > 0) {
@@ -1519,7 +1520,7 @@ void freeRequest(clientRequest *req, int delete_from_lists) {
     aeEventLoop *el = getClientLoop(req->client);
     if (ctx != NULL && req->has_write_handler)
         aeDeleteFileEvent(el, ctx->fd, AE_WRITABLE);
-    if (delete_from_lists && req->node != NULL) {
+    if (req->node != NULL) {
         redisClusterConnection *conn = req->node->connection;
         assert(conn != NULL);
         listNode *ln = listSearchKey(conn->requests_to_send, req);
@@ -1531,11 +1532,11 @@ void freeRequest(clientRequest *req, int delete_from_lists) {
          * processing. */
         ln = listSearchKey(conn->requests_pending, req);
         if (ln) ln->value = NULL;
-        ln = listSearchKey(req->client->requests_to_process, req);
-        if (ln) listDelNode(req->client->requests_to_process, ln);
-        if (config.dump_queues)
-            dumpQueue(req->node, req->client->thread_id, QUEUE_TYPE_PENDING);
     }
+    listNode *ln = listSearchKey(req->client->requests_to_process, req);
+    if (ln) listDelNode(req->client->requests_to_process, ln);
+    if (config.dump_queues)
+        dumpQueue(req->node, req->client->thread_id, QUEUE_TYPE_PENDING);
     zfree(req);
 }
 
@@ -1546,7 +1547,8 @@ void freeRequestList(list *request_list) {
     listRewind(request_list, &li);
     while ((ln = listNext(&li))) {
         clientRequest *req = ln->value;
-        freeRequest(req, 0);
+        listDelNode(request_list, ln);
+        freeRequest(req);
     }
     listRelease(request_list);
 }
@@ -1632,7 +1634,7 @@ static clientRequest *createRequest(client *c) {
 alloc_failure:
     proxyLogErr("ERROR: Failed to allocate request!\n");
     if (!req) return NULL;
-    freeRequest(req, 1);
+    freeRequest(req);
     return NULL;
 }
 
@@ -1682,7 +1684,7 @@ static int sendRequestToCluster(clientRequest *req, sds *errmsg)
                 /* Remember to free the string outside this function*/
                 *errmsg = err;
             } else sdsfree(err);
-            freeRequest(req, 1);
+            freeRequest(req);
             return 0;
         }
         /* Install the write handler since the connection to the cluster node
@@ -1691,7 +1693,7 @@ static int sendRequestToCluster(clientRequest *req, sds *errmsg)
                               writeToClusterHandler, req->node) == AE_ERR) {
             addReplyError(req->client, "Failed to write to cluster\n", req->id);
             proxyLogErr("Failed to create write handler for request\n");
-            freeRequest(req, 1);
+            freeRequest(req);
             return 0;
         }
         req->has_write_handler = 1;
@@ -1713,7 +1715,7 @@ static int sendRequestToCluster(clientRequest *req, sds *errmsg)
                           req->node->ip, req->node->port);
             addReplyError(req->client, "Failed to read from cluster\n",
                           req->id);
-            freeRequest(req, 1);
+            freeRequest(req);
             return 0;
         } else  {
             conn->has_read_handler = 1;
@@ -1728,7 +1730,7 @@ static int sendRequestToCluster(clientRequest *req, sds *errmsg)
                               writeToClusterHandler, req->node) == AE_ERR) {
             addReplyError(req->client, "Failed to write to cluster\n", req->id);
             proxyLogErr("Failed to create write handler for request\n");
-            freeRequest(req, 1);
+            freeRequest(req);
             return 0;
         }
         req->has_write_handler = 1;
@@ -1816,10 +1818,10 @@ invalid_request:
     if (errmsg != NULL) {
         addReplyError(c, (char *) errmsg, req->id);
         sdsfree(errmsg);
-        freeRequest(req, 1);
+        freeRequest(req);
         return 1;
     }
-    freeRequest(req, 1);
+    freeRequest(req);
     return 0;
 }
 
@@ -1973,7 +1975,7 @@ consume_buffer:
         ctx->reader->pos = 0;
         ctx->reader->len = sdslen(ctx->reader->buf);
         freeReplyObject(reply);
-        if (req) freeRequest(req, 1);
+        if (req) freeRequest(req);
         if (!ok) break;
     }
     return replies;
@@ -2016,7 +2018,7 @@ static void readClusterReply(aeEventLoop *el, int fd,
         if (req != NULL) {
             dequeuePendingRequest(req);
             addReplyError(req->client, errmsg, req->id);
-            freeRequest(req, 1);
+            freeRequest(req);
         } else {
             listNode *first = listFirst(queue);
             if (first) listDelNode(queue, first);

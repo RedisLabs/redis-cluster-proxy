@@ -34,7 +34,7 @@ $datalen.each{|len|
                 if ((n + 1) % $disconnect_every) == 0
                     client._client.write(['get', key])
                     client.disconnect!
-	            next	
+	            next
                 end
                 reply = redis_command client, :get, key
                 assert_not_redis_err(reply)

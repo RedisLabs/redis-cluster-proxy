@@ -91,7 +91,7 @@ typedef struct client {
                                       * being writing to cluster */
 } client;
 
-void freeRequest(clientRequest *req, int delete_from_lists);
+void freeRequest(clientRequest *req);
 void freeRequestList(list *request_list);
 void onClusterNodeDisconnection(clusterNode *node);
 
