@@ -344,7 +344,7 @@ int multiCommand(void *r) {
             freeClient(c);
             return PROXY_COMMAND_HANDLED;
         }
-        if (c->multi_request != NULL) freeRequest(c->multi_request, 1);
+        if (c->multi_request != NULL) freeRequest(c->multi_request);
         c->multi_transaction = 1;
         c->multi_request = createRequest(c);
         if (c->multi_request == NULL) {
@@ -2347,7 +2347,7 @@ static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
         if (req->closes_transaction) {
             req->client->multi_transaction = 0;
             if (req->client->multi_request != NULL) {
-                freeRequest(req->client->multi_request, 1);
+                freeRequest(req->client->multi_request);
                 req->client->multi_request = NULL;
             }
             req->client->multi_transaction_node = NULL;
