@@ -2296,6 +2296,7 @@ static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
              * query received, we'll skip the actual MULTI's reply received
              * from the node. */
             /* TODO: if (errmsg != NULL) ; */
+            dequeuePendingRequest(req);
             goto consume_buffer;
         }
         proxyLogDebug("Reply read complete for request " REQID_PRINTF_FMT
