@@ -43,6 +43,8 @@ class RedisProxyTestCase
         $options ||= {}
         use_valgrind = $options[:valgrind] == true
         loglevel = $options[:log_level] || 'debug'
+        dump_queues = $options[:dump_queues]
+        dump_queries = $options[:dump_queries]
         if !$main_cluster
             @cluster = RedisCluster.new
             @cluster.restart
@@ -50,6 +52,8 @@ class RedisProxyTestCase
         end
         if !$main_proxy
             @proxy = RedisClusterProxy.new @cluster, log_level: loglevel,
+                                                     dump_queues: dump_queues,
+                                                     dump_queries: dump_queries,
                                                      valgrind: use_valgrind
             @proxy.start
             $main_proxy = @proxy

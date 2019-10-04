@@ -24,6 +24,9 @@ load File.join($redis_proxy_test_dir, 'lib/test.rb')
 opts =RedisProxyTestUtils::OptionParser.new help_banner_arguments: '[TESTS]' do
 
     #option   '',   '--proxy-threads NUM', 'Number of proxy threads'
+    option   '',   '--log-level LEVEL', "Proxy's --log-level (default: debug)"
+    option   '',   '--dump-queues',"Proxy's --dump-queues"
+    option   '',   '--dump-queries',"Proxy's --dump-queries"
     option   '',   '--valgrind', 'Valgrind mode'
 
 end
