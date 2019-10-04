@@ -1964,7 +1964,7 @@ static int splitMultiSlotRequest(clientRequest *req, int idx) {
     diff = sdslen(newbuf) - llen;
     sdsrange(req->buffer, llen, -1);
     newbuf = sdscatfmt(newbuf, "%S", req->buffer);
-    //sdsfree(req->buffer);
+    sdsfree(req->buffer);
     req->buffer = newbuf;
     /* Update offsets for current request's new buffer. */
     if (diff != 0)
