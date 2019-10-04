@@ -21,6 +21,17 @@ require 'bundler/setup'
 $redis_proxy_test_dir = File.expand_path(File.dirname(__FILE__))
 load File.join($redis_proxy_test_dir, 'lib/test.rb')
 
+opts =RedisProxyTestUtils::OptionParser.new help_banner_arguments: '[TESTS]' do
+
+    #option   '',   '--proxy-threads NUM', 'Number of proxy threads'
+    option   '',   '--valgrind', 'Valgrind mode'
+
+end
+
+opts.auto_help!
+opts.parse!
+$options = opts.options
+
 $tests = ARGV
 if $tests.length == 0
     $tests = %w(basic basic_commands pipeline client_disconnect node_down
@@ -70,6 +81,7 @@ if RedisProxyTestCase::exceptions.length == 0
              "errors!").green
         # Clean logs
         Dir.glob(File.join(RedisProxyTestCase::LOGDIR, '*.log')).each{|logfile|
+            next if File.basename(logfile)[/^valgrind/]
             begin
                 FileUtils.rm logfile
             rescue Exception => e

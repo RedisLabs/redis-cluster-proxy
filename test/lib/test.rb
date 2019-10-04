@@ -40,13 +40,17 @@ class RedisProxyTestCase
     @@exceptions = []
 
     GenericSetup = proc{
+        $options ||= {}
+        use_valgrind = $options[:valgrind] == true
+        loglevel = $options[:log_level] || 'debug'
         if !$main_cluster
             @cluster = RedisCluster.new
             @cluster.restart
             $main_cluster = @cluster
         end
         if !$main_proxy
-            @proxy = RedisClusterProxy.new @cluster, log_level: 'debug'
+            @proxy = RedisClusterProxy.new @cluster, log_level: loglevel,
+                                                     valgrind: use_valgrind
             @proxy.start
             $main_proxy = @proxy
         end

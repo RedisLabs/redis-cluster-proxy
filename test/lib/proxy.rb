@@ -27,7 +27,7 @@ class RedisClusterProxy
 
     attr_reader :cluster, :entry_point, :pid, :logfile, :port
 
-    def initialize(cluster, port: nil, verbose: false, **opts)
+    def initialize(cluster, port: nil, verbose: false, valgrind: false, **opts)
         @cluster = cluster
         @port = port || find_available_port(17777)
         @cluster.start if !@cluster.instances
@@ -46,6 +46,11 @@ class RedisClusterProxy
         ts = Time.now.strftime('%Y%m%d-%H%M%S')
         @logfile = File.join(RedisProxyTestCase::LOGDIR,
                              "redis-cluster-proxy-#{ts}.log")
+        @valgrind = (valgrind == true)
+        if @valgrind
+            @valgrind_logfile = File.join(RedisProxyTestCase::LOGDIR,
+                                          "valgrind-#{ts}.log")
+        end
         @verbose = verbose
     end
 
@@ -86,6 +91,12 @@ class RedisClusterProxy
         log cmd, :gray if @verbose
         log "Starting proxy to 127.0.0.1:#{entry_port} on port #{@port}...",
             :gray
+        if @valgrind
+            log "Valgrind mode, valgrind logfile at: '#{@valgrind_logfile}'",
+                :magenta
+            cmd = "valgrind -v --leak-check=full " +
+                  "--log-file=\"#{@valgrind_logfile}\" #{cmd}"
+        end
         STDOUT.flush
         @pid = Process.spawn cmd, out: @logfile, err: @logfile
         $test_proxies ||= []
