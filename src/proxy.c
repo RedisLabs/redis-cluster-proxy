@@ -346,29 +346,11 @@ int multiCommand(void *r) {
         }
         if (c->multi_request != NULL) freeRequest(c->multi_request);
         c->multi_transaction = 1;
-        c->multi_request = createRequest(c);
-        if (c->multi_request == NULL) {
-            freeClient(c);
-            return PROXY_COMMAND_HANDLED;
-        }
-        /* Create a deferred MULTI request to be sent later just before
+        /* Defer the MULTI request to be sent later just before
          * the first query of the transaction, since it's not possibile
          * to determine the target node in this moment. */
-        c->multi_request->buffer =
-            sdscat(c->multi_request->buffer, "*1\r\n$5\r\nMULTI\r\n");
-        c->current_request = NULL;
+        c->multi_request = req;
         c->multi_request->owned_by_client = 1;
-        if (listLength(c->requests_to_process) > 0) {
-            clientRequest *first = listFirst(c->requests_to_process)->value;
-            listIter li;
-            listNode *ln;
-            listRewind(c->requests_to_process, &li);
-            while ((ln = listNext(&li))) {
-                clientRequest *r2p = ln->value;
-                r2p->id++;
-            }
-            c->multi_request->id = first->id;
-        }
     } else return PROXY_COMMAND_UNHANDLED;
     addReplyString(c, "OK", req->id);
     return PROXY_COMMAND_HANDLED;
@@ -2144,7 +2126,7 @@ int processRequest(clientRequest *req, int *parsing_status) {
                     goto invalid_request;
                 /* The client's min_reply_id must be also set to this first
                  * query inside the transaction, since the 'multi_request'
-                 * request rely will be skipped. */
+                 * request reply will be skipped. */
                 req->client->min_reply_id = req->id;
             }
         }
