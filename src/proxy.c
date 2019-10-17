@@ -206,7 +206,7 @@ static sds proxySubCommandConfig(clientRequest *r, sds option, sds value,
     if (opt == &(config.loglevel)) {
         if (value != NULL) {
             int i, level = -1;
-            for (i = 0; i < LOGLEVEL_ERROR; i++) {
+            for (i = 0; i <= LOGLEVEL_ERROR; i++) {
                 if (!strcasecmp(value, redisProxyLogLevels[i])) {
                     level = i;
                     break;
@@ -443,7 +443,7 @@ static int parseOptions(int argc, char **argv) {
         } else if (!strcmp("--log-level", arg) && !lastarg) {
             char *level_name = argv[++i];
             int j = 0, level = -1;
-            for (; j < LOGLEVEL_ERROR; j++) {
+            for (; j <= LOGLEVEL_ERROR; j++) {
                 if (!strcasecmp(level_name, redisProxyLogLevels[j])) {
                     level = j;
                     break;
@@ -451,7 +451,7 @@ static int parseOptions(int argc, char **argv) {
             }
             if (level < 0) {
                 fprintf(stderr, "Invalid log level '%s', valid levels:\n", arg);
-                for (j = 0; j < LOGLEVEL_ERROR; j++) {
+                for (j = 0; j <= LOGLEVEL_ERROR; j++) {
                     if (j > 0) fprintf(stderr, ", ");
                     fprintf(stderr, "%s", redisProxyLogLevels[j]);
                 }
