@@ -10,6 +10,10 @@ $datalen = [1]#[1, 4096]
 $pipeline = 2
 $disconnect_every = 8
 
+if $options[:max_keys] && $numkeys > $options[:max_keys]
+    $numkeys = $options[:max_keys]
+end
+
 $datalen.each{|len|
 
     test "SET #{$numkeys} keys (#{len} byte(s))" do

@@ -3,10 +3,16 @@ require 'hiredis'
 
 setup &RedisProxyTestCase::GenericSetup
 
+$options ||= {}
 $numkeys = 5000
 $numlists = $numkeys / 10
-$numclients = 10
+$numclients = $options[:clients] || 10
 $datalen = [1, 4096]
+
+if $options[:max_keys] && $numkeys > $options[:max_keys]
+    $numkeys = $options[:max_keys]
+    $numlists = $numkeys / 10
+end
 
 $datalen.each{|len|
 
@@ -55,7 +61,7 @@ $datalen.each{|len|
         spawn_clients($numclients){|client, idx|
             (0...$numlists).each{|n|
                 log_test_update "key #{n + 1}/#{$numlists}"
-                values = (0...10).map{|vn| 
+                values = (0...10).map{|vn|
                     val = vn.to_s * len
                     val = "#{n}:#{vn}"
                 }

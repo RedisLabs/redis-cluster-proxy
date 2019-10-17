@@ -20,6 +20,10 @@ $numclients = 10
 $node_down_every = 8
 #$node_down_for = 4
 
+if $options[:max_keys] && $numkeys > $options[:max_keys]
+    $numkeys = $options[:max_keys]
+end
+
 require 'thread'
 
 def is_down_err(reply)
