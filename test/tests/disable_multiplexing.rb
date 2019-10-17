@@ -26,8 +26,11 @@ cleanup {
 }
 
 $numkeys = 500
-$numclients = 10
+$numclients = $options[:clients] || 10
 #$node_down_for = 4
+if $options[:max_keys] && $numkeys > $options[:max_keys]
+    $numkeys = $options[:max_keys]
+end
 
 require 'thread'
 
