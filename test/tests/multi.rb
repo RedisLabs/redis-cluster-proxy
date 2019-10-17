@@ -4,8 +4,12 @@ require 'hiredis'
 setup &RedisProxyTestCase::GenericSetup
 
 $numkeys = 100
-$numclients = 10
+$numclients = $options[:clients] || 10
 $datalen = [1, 4096]
+
+if $options[:max_keys] && $numkeys > $options[:max_keys]
+    $numkeys = $options[:max_keys]
+end
 
 $datalen.each{|len|
 
