@@ -16,7 +16,7 @@ cleanup {
 }
 
 $numkeys = 50
-$numclients = 10
+$numclients = $options[:clients] || 10
 $node_down_every = 8
 #$node_down_for = 4
 

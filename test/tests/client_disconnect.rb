@@ -5,7 +5,7 @@ setup &RedisProxyTestCase::GenericSetup
 
 $numkeys = 5000
 $numlists = $numkeys / 10
-$numclients = 10
+$numclients = $options[:clients] || 10
 $datalen = [1]#[1, 4096]
 $pipeline = 2
 $disconnect_every = 8
