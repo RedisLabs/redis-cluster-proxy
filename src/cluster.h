@@ -24,6 +24,10 @@
 #include <hiredis.h>
 
 #define CLUSTER_SLOTS 16384
+#define CLUSTER_RECONFIG_ERR        -1
+#define CLUSTER_RECONFIG_ENDED      0
+#define CLUSTER_RECONFIG_WAIT       1
+#define CLUSTER_RECONFIG_STARTED    2
 #define getClusterNodeContext(node) (node->connection->context)
 #define isClusterNodeConnected(node) (node->connection->connected)
 
@@ -61,9 +65,13 @@ typedef struct redisCluster {
     int thread_id;
     list *nodes;
     rax  *slots_map;
+    rax *requests_to_reprocess;
+    int is_reconfiguring;
+    int broken;
 } redisCluster;
 
 redisCluster *createCluster(int thread_id);
+int resetCluster(redisCluster *cluster);
 void freeCluster(redisCluster *cluster);
 int fetchClusterConfiguration(redisCluster *cluster, char *ip, int port,
                               char *hostsocket);
@@ -73,4 +81,7 @@ clusterNode *searchNodeBySlot(redisCluster *cluster, int slot);
 clusterNode *getNodeByKey(redisCluster *cluster, char *key, int keylen,
                           int *getslot);
 clusterNode *getFirstMappedNode(redisCluster *cluster);
+int startClusterReconfiguration(redisCluster *cluster);
+void clusterAddRequestToReprocess(redisCluster *cluster, void *r);
+void clusterRemoveRequestToReprocess(redisCluster *cluster, void *r);
 #endif /* __REDIS_CLUSTER_PROXY_CLUSTER_H__ */

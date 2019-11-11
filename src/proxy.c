@@ -41,9 +41,9 @@
 #define EL_INSTALL_HANDLER_FAIL 9999
 #define REQ_STATUS_UNKNOWN      -1
 #define PARSE_STATUS_INCOMPLETE -1
-#define UNDEFINED_SLOT          -1
 #define PARSE_STATUS_ERROR      0
 #define PARSE_STATUS_OK         1
+#define UNDEFINED_SLOT          -1
 
 #define MAX_ACCEPTS             1000
 #define NET_IP_STR_LEN          46
@@ -53,6 +53,9 @@
 
 #define QUEUE_TYPE_SENDING      1
 #define QUEUE_TYPE_PENDING      2
+
+#define ERROR_CLUSTER_RECONFIG \
+    "Failed to fetch cluster configuration"
 
 #define UNUSED(V) ((void) V)
 
@@ -67,6 +70,8 @@
 #define getFirstRequestPending(node, isempty) \
     (getFirstQueuedRequest(node->connection->requests_pending,\
      isempty))
+#define REQID_PRINTF_FMT "%d:%llu:%llu"
+#define REQID_PRINTF_ARG(r) r->client->thread_id, r->client->id, r->id
 
 typedef struct proxyThread {
     int thread_id;
@@ -781,6 +786,8 @@ static void writeRepliesToClients(struct aeEventLoop *el) {
 void beforeThreadSleep(struct aeEventLoop *eventLoop) {
     proxyThread *thread = eventLoop->privdata;
     writeRepliesToClients(eventLoop);
+    if (thread->cluster->is_reconfiguring ||
+        thread->cluster->broken) return;
     listIter li;
     listNode *ln;
     listRewind(thread->cluster->nodes, &li);
@@ -1044,6 +1051,7 @@ static client *createClient(int fd, char *ip) {
     c->next_request_id = 0;
     c->min_reply_id = 0;
     c->requests_with_write_handler = 0;
+    c->requests_to_reprocess = listCreate();
     return c;
 }
 
@@ -1063,6 +1071,12 @@ static void freeAllClientRequests(client *c) {
     listIter li;
     listNode *ln;
     redisCluster *cluster = getCluster(c->thread_id);
+    listRewind(c->requests_to_reprocess, &li);
+    while ((ln = listNext(&li))) {
+        clientRequest *req = ln->value;
+        clusterRemoveRequestToReprocess(cluster, req);
+    }
+    listEmpty(c->requests_to_reprocess);
     listRewind(cluster->nodes, &li);
     while ((ln = listNext(&li))) {
         clusterNode *node = ln->value;
@@ -1107,7 +1121,7 @@ static void freeClient(client *c) {
      * they could break all other following requests in a multiplexing
      * context. */
     if (c->requests_with_write_handler > 0) return;
-    proxyLogDebug("Free client %llu\n", c->id);
+    proxyLogDebug("Freeing client %llu (thread: %d)\n", c->id, c->thread_id);
     int thread_id = c->thread_id;
     proxyThread *thread = proxy.threads[thread_id];
     assert(thread != NULL);
@@ -1126,6 +1140,7 @@ static void freeClient(client *c) {
         if (req != NULL) freeRequest(req);
     }
     listRelease(c->requests_to_process);
+    listRelease(c->requests_to_reprocess);
     if (c->unordered_replies)
         raxFreeWithCallback(c->unordered_replies, (void (*)(void*))sdsfree);
     zfree(c);
@@ -1237,8 +1252,9 @@ static int writeToCluster(aeEventLoop *el, int fd, clientRequest *req) {
         client *c = req->client;
         clusterNode *node = req->node;
         int thread_id = c->thread_id;
-        proxyLogDebug("Request %llu:%llu written to node %s:%d, adding it to "
-                      "pending requests\n", c->id, req->id,
+        proxyLogDebug("Request " REQID_PRINTF_FMT " written to node %s:%d, "
+                      "adding it to pending requests\n",
+                      REQID_PRINTF_ARG(req),
                       node->ip, node->port);
         aeDeleteFileEvent(el, fd, AE_WRITABLE);
         if (req->has_write_handler) {
@@ -1260,8 +1276,8 @@ static int writeToCluster(aeEventLoop *el, int fd, clientRequest *req) {
             freeRequest(req);
             freeClient(c);
         } else if (!enqueuePendingRequest(req)) {
-            proxyLogDebug("Could not enqueue pending request %llu:%llu\n",
-                          req->client->id, req->id);
+            proxyLogDebug("Could not enqueue pending request %d:%llu:%llu\n",
+                          REQID_PRINTF_ARG(req));
             addReplyError(req->client, "Could not enqueue request", req->id);
             freeRequest(req);
             return 0;
@@ -1293,6 +1309,9 @@ void onClusterNodeDisconnection(clusterNode *node) {
         int thread_id = node->cluster->thread_id;
         aeEventLoop *el = proxy.threads[thread_id]->loop;
         aeDeleteFileEvent(el, ctx->fd, AE_WRITABLE | AE_READABLE);
+        redisCluster *cluster = node->cluster;
+        assert(cluster != NULL);
+        if (cluster->is_reconfiguring) return;
         sds err = sdsnew("Cluster node disconnected: ");
         err = sdscatprintf(err, "%s:%d", node->ip, node->port);
         listIter li;
@@ -1374,8 +1393,8 @@ static int parseRequest(clientRequest *req) {
     int status = req->parsing_status, lf_len = 2, len, i;
     if (status != PARSE_STATUS_INCOMPLETE) return status;
     if (config.dump_buffer) {
-        proxyLogDebug("Request %llu:%llu buffer:\n%s\n",
-                      req->client->id, req->id, req->buffer);
+        proxyLogDebug("Request " REQID_PRINTF_FMT " buffer:\n%s\n",
+                      REQID_PRINTF_ARG(req), req->buffer);
     }
     int buflen = sdslen(req->buffer);
     char *p = req->buffer + req->query_offset, *nl = NULL;
@@ -1493,8 +1512,9 @@ static int parseRequest(clientRequest *req) {
                     req->lengths[idx] = arglen;
                     if (config.dump_queries) {
                         sds tk = sdsnewlen(p, arglen);
-                        proxyLogDebug("Req. %llu:%llu ARGV[%d]: '%s'\n",
-                                      req->client->id, req->id, idx, tk);
+                        proxyLogDebug("Req. " REQID_PRINTF_FMT
+                                      " ARGV[%d]: '%s'\n",
+                                      REQID_PRINTF_ARG(req), idx, tk);
                         sdsfree(tk);
                     }
                     req->pending_bulks--;
@@ -1599,10 +1619,11 @@ static clusterNode *getRequestNode(clientRequest *req, sds *err) {
 
 void freeRequest(clientRequest *req) {
     if (req == NULL) return;
-    proxyLogDebug("Free Request %llu:%llu\n", req->client->id, req->id);
+    if (req->need_reprocessing) return;
+    proxyLogDebug("Free Request " REQID_PRINTF_FMT "\n",REQID_PRINTF_ARG(req));
     if (req->has_write_handler && req->written > 0) {
-        proxyLogDebug("Request %llu:%llu is still writting, cannot free "
-                      "it now...\n", req->client->id, req->id);
+        proxyLogDebug("Request " REQID_PRINTF_FMT " is still writting, "
+                      "cannot free it now...\n", REQID_PRINTF_ARG(req));
         return;
     }
     if (req->buffer != NULL) sdsfree(req->buffer);
@@ -1633,6 +1654,10 @@ void freeRequest(clientRequest *req) {
      * itself. */
     listNode *ln = listSearchKey(req->client->requests_to_process, req);
     if (ln) ln->value = NULL;
+    ln = listSearchKey(req->client->requests_to_reprocess, req);
+    if (ln) listDelNode(req->client->requests_to_reprocess, ln);
+    redisCluster *cluster = getCluster(req->client->thread_id);
+    if (cluster) clusterRemoveRequestToReprocess(cluster, req);
     if (config.dump_queues)
         dumpQueue(req->node, req->client->thread_id, QUEUE_TYPE_PENDING);
     zfree(req);
@@ -1726,8 +1751,10 @@ static clientRequest *createRequest(client *c) {
     /* TODO: this could lead to issues in reply sequencing */
     if (c->next_request_id >= UINT64_MAX)
         c->next_request_id = 0;
-
-    proxyLogDebug("Created Request %llu:%llu\n", req->client->id, req->id);
+    req->need_reprocessing = 0;
+    req->parsed = 0;
+    proxyLogDebug("Created Request " REQID_PRINTF_FMT  "\n",
+                  REQID_PRINTF_ARG(req));
     return req;
 alloc_failure:
     proxyLogErr("ERROR: Failed to allocate request!\n");
@@ -1796,8 +1823,8 @@ static int sendRequestToCluster(clientRequest *req, sds *errmsg)
         }
         req->has_write_handler = 1;
         req->client->requests_with_write_handler++;
-        proxyLogDebug("Write handler installed into request %llu:%llu for "
-                      "node %s:%d\n", req->client->id, req->id,
+        proxyLogDebug("Write handler installed into request " REQID_PRINTF_FMT
+                      " for node %s:%d\n", REQID_PRINTF_ARG(req),
                       req->node->ip, req->node->port);
         return 1;
     } else if (!isClusterNodeConnected(req->node)) {
@@ -1833,8 +1860,8 @@ static int sendRequestToCluster(clientRequest *req, sds *errmsg)
         }
         req->has_write_handler = 1;
         req->client->requests_with_write_handler++;
-        proxyLogDebug("Write handler installed into request %llu:%llu for "
-                      "node %s:%d\n", req->client->id, req->id,
+        proxyLogDebug("Write handler installed into request " REQID_PRINTF_FMT
+                      " for node %s:%d\n", REQID_PRINTF_ARG(req),
                       req->node->ip, req->node->port);
     }
     return 1;
@@ -1856,16 +1883,29 @@ static clientRequest *handleNextRequestToCluster(clusterNode *node) {
 }
 
 
-static int processRequest(clientRequest *req) {
-    int status = parseRequest(req);
-    if (status == PARSE_STATUS_ERROR) return 0;
-    else if (status == PARSE_STATUS_INCOMPLETE) return 1;
+int processRequest(clientRequest *req) {
+    if (!req->parsed) {
+        int status = parseRequest(req);
+        if (status == PARSE_STATUS_ERROR) return 0;
+        else if (status == PARSE_STATUS_INCOMPLETE) return 1;
+        req->parsed = 1;
+    }
     client *c = req->client;
     if (req == c->current_request) c->current_request = NULL;
     if (req->id < c->min_reply_id) c->min_reply_id = req->id;
-    proxyLogDebug("Processing request %llu:%llu\n", c->id, req->id);
+    redisCluster *cluster = getCluster(c->thread_id);
+    assert(cluster != NULL);
     sds command_name = NULL;
     sds errmsg = NULL;
+    if (cluster->broken) {
+        errmsg = sdsnew(ERROR_CLUSTER_RECONFIG);
+        goto invalid_request;
+    } else if (cluster->is_reconfiguring) {
+        clusterAddRequestToReprocess(cluster, req);
+        return 1;
+    }
+    proxyLogDebug("Processing request " REQID_PRINTF_FMT  "\n",
+                  REQID_PRINTF_ARG(req));
     if (req->argc == 0) {
         proxyLogDebug("Request with zero arguments\n");
         errmsg = sdsnew("Invalid request");
@@ -1904,7 +1944,8 @@ static int processRequest(clientRequest *req) {
     if (node == NULL) {
         if (errmsg == NULL)
             errmsg = sdsnew("Failed to get node for query");
-        proxyLogDebug("%s %llu:%llu\n", errmsg, c->id, req->id);
+        proxyLogDebug("%s %d:%llu:%llu\n", errmsg, c->thread_id,
+                      c->id, req->id);
         goto invalid_request;
     }
     if (!enqueueRequestToSend(req)) goto invalid_request;
@@ -1950,7 +1991,8 @@ void readQuery(aeEventLoop *el, int fd, void *privdata, int mask){
             return;
         }
     } else if (nread == 0) {
-        proxyLogDebug("Client %llu from %s closed connection\n", c->id, c->ip);
+        proxyLogDebug("Client %llu from %s closed connection (thread: %d)\n",
+                      c->id, c->ip, c->thread_id);
         freeClient(c);
         return;
     }
@@ -1978,7 +2020,8 @@ void readQuery(aeEventLoop *el, int fd, void *privdata, int mask){
 static void acceptHandler(int fd, char *ip) {
     client *c = createClient(fd, ip);
     if (c == NULL) return;
-    proxyLogDebug("Client %llu connected from %s\n", c->id, ip);
+    proxyLogDebug("Client %llu connected from %s (thread: %d)\n",
+                  c->id, ip, c->thread_id);
     proxyThread *thread = proxy.threads[c->thread_id];
     assert(thread != NULL);
     if (!awakeThreadForNewClient(thread, c)) {
@@ -2019,6 +2062,7 @@ static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
     while (ctx->reader->len > 0) {
         int ok =
             (__hiredisReadReplyFromBuffer(ctx->reader, &_reply) == REDIS_OK);
+        int do_break = 0;
         if (!ok) {
             proxyLogErr("Error: %s\n", ctx->errstr);
             errmsg = "Failed to get reply";
@@ -2042,35 +2086,96 @@ static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
             listDelNode(queue, ln);
             goto consume_buffer;
         }
-        proxyLogDebug("Reply read complete for request %llu:%llu, %s%s\n",
-                      req->client->id, req->id, errmsg ? " ERR: " : "OK!",
+        proxyLogDebug("Reply read complete for request " REQID_PRINTF_FMT
+                      ", %s%s\n", REQID_PRINTF_ARG(req),
+                      errmsg ? " ERR: " : "OK!",
                       errmsg ? errmsg : "");
         dequeuePendingRequest(req);
+        redisCluster *cluster = getCluster(req->client->thread_id);
+        assert(cluster != NULL);
+        int is_cluster_err = 0;
+        if (reply->type == REDIS_REPLY_ERROR) {
+            assert(reply->str != NULL);
+            /* In case of ASK|MOVED reply the cluster need to be
+             * reconfigured.
+             * In this case we suddenly set `cluster->is_reconfiguring` and
+             * we add the request to the clusters' `requests_to_reprocess`
+             * pool (the request will be also added to a
+             * `requests_to_reprocess` list on the client). */
+            if (strstr(reply->str, "ASK") == reply->str ||
+                strstr(reply->str, "MOVED") == reply->str) {
+                proxyLogDebug("Cluster configuration changed! "
+                              "(request " REQID_PRINTF_FMT ")\n",
+                              REQID_PRINTF_ARG(req));
+                cluster->is_reconfiguring = 1;
+                is_cluster_err = 1;
+                clusterAddRequestToReprocess(cluster, req);
+                /* We directly jump to `consume_buffer` since we won't
+                 * reply to the client now, but after the reconfiguration
+                 * ends. */
+                goto consume_buffer;
+            }
+        }
         if (errmsg != NULL) addReplyError(req->client, errmsg, req->id);
         else {
-            proxyLogDebug("Writing reply for request %llu:%llu to client "
-                          "buffer...\n", req->client->id, req->id);
+            proxyLogDebug("Writing reply for request " REQID_PRINTF_FMT
+                          " to client buffer...\n", REQID_PRINTF_ARG(req));
             char *obuf = ctx->reader->buf;
             /*size_t len = ctx->reader->len;*/
             size_t len = ctx->reader->pos;
             if (len > ctx->reader->len) len = ctx->reader->len;
             if (config.dump_buffer) {
                 sds rstr = sdsnewlen(obuf, len);
-                proxyLogDebug("\nReply for request %llu:%llu:\n%s\n",
-                              req->client->id, req->id, rstr);
+                proxyLogDebug("\nReply for request " REQID_PRINTF_FMT
+                             ":\n%s\n", REQID_PRINTF_ARG(req), rstr);
                 sdsfree(rstr);
             }
             addReplyRaw(req->client, obuf, len, req->id);
         }
 consume_buffer:
         if (config.dump_queues) dumpQueue(node, thread_id, QUEUE_TYPE_PENDING);
+        /* If cluster has been set is reconfiguring state, we call the
+         * startClusterReconfiguration function. */
+        if (cluster->is_reconfiguring) {
+            int reconfig_status = startClusterReconfiguration(cluster);
+            do_break = (reconfig_status == CLUSTER_RECONFIG_ENDED);
+            if (!do_break) {
+                /* If reconfiguration failed, reply the error to the client,
+                 * elsewhere we're still waiting for all requests pending
+                 * to finish before reconfigration actually starts.
+                 * In the latter case, we don't do anything. */
+                if (reconfig_status == CLUSTER_RECONFIG_ERR) {
+                    proxyLogErr("Cluster reconfiguration failed! (thread %d)\n",
+                                thread_id);
+                    if (req) {
+                        addReplyError(req->client,
+                                      ERROR_CLUSTER_RECONFIG,
+                                      req->id);
+                    }
+                    do_break = 1;
+                }
+            } else {
+                /* Reconfiguration ended with success. If reply was ASK or
+                 * MOVED, the request has been enqueued again and, since
+                 * need_reprocessing is now 0, we set it to NULL in order to
+                 * avoid freeing it.
+                 * For all other requests, their reply has been added so
+                 * they can be freed, but since their node was related to
+                 * the old configuration and it has now been freed,
+                 * we just set their node to NULL. */
+                if (is_cluster_err) req = NULL;
+                else req->node = NULL;
+            }
+            if (do_break) goto clean;
+        }
         /* Consume reader buffer */
         sdsrange(ctx->reader->buf, ctx->reader->pos, -1);
         ctx->reader->pos = 0;
         ctx->reader->len = sdslen(ctx->reader->buf);
+clean:
         freeReplyObject(reply);
         if (req) freeRequest(req);
-        if (!ok) break;
+        if (!ok || do_break) break;
     }
     return replies;
 }

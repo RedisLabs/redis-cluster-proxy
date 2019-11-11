@@ -75,7 +75,11 @@ rescue Exception => e
     STDERR.puts e.backtrace.join("\n").yellow
     RedisProxyTestCase::exceptions << e
 ensure
-    final_cleanup
+    begin
+        final_cleanup
+    rescue Exception => e
+        # ignore remaining thread expections
+    end
 end
 duration = Time.now.to_f - started
 
