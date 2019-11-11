@@ -19,6 +19,7 @@ require 'redis'
 require 'hiredis'
 
 $redis_proxy_test_libdir ||= File.expand_path(File.dirname(__FILE__))
+load File.join($redis_proxy_test_libdir, 'crc16_slottable.rb')
 load File.join($redis_proxy_test_libdir, 'log.rb')
 load File.join($redis_proxy_test_libdir, 'helpers.rb')
 load File.join($redis_proxy_test_libdir, 'cluster.rb')
@@ -84,21 +85,26 @@ class RedisProxyTestCase
     def run
         log "TESTING #{@name.gsub(/_+/, ' ').upcase}", :cyan
         @started = Time.now.to_f
+        failed_setup = false
         if @setup
             begin
                 instance_eval(&@setup)
             rescue AssertionFailure => message
                 message ||= 'assertion failure'
                 log message.red
-                return false
+                #return false
+                failed_setup = true
             rescue Exception => e
                 on_exception(e)
-                return false
+                failed_setup = true
+                #return false
             end
         end
-        @tests.each{|test|
-            run_test(test) 
-        }
+        if !failed_setup
+            @tests.each{|test|
+                run_test(test)
+            }
+        end
         if @cleanup
             begin
                 instance_eval(&@cleanup)
@@ -136,6 +142,9 @@ class RedisProxyTestCase
         rescue AssertionFailure => message
             test[:failed] = failed = true
             test[:failure] = message if message
+        rescue Exception => e
+            test[:failed] = false
+            on_exception(e)
         ensure
             duration = Time.now.to_f - started
             test[:duration] = duration
@@ -157,6 +166,7 @@ class RedisProxyTestCase
     end
 
     def spawn_clients(num, proxy: nil, &block)
+        #Thread.abort_on_exception = true
         proxy ||= (@proxy || $main_proxy)
         if !proxy
             log("WARN: missing 'proxy'", :yellow)
@@ -168,6 +178,7 @@ class RedisProxyTestCase
                 r = Redis.new port: proxy.port
                 block.call(r, tidx)
             }
+            #t.abort_on_exception = true
             threads << t
         }
         threads.each{|t| t.join}
@@ -211,7 +222,8 @@ class RedisProxyTestCase
     end
 
     def assert_not_redis_err(reply, message = nil)
-        message ||= "#{reply.to_s} is a redis error"
+        message ||=
+        "Expected valid reply, but redis replied with error:\n'#{reply.to_s}'\n"
         assert(!reply.is_a?(Redis::CommandError), message)
     end
 

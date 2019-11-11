@@ -24,6 +24,8 @@ class RedisCluster
 
     RedisClusterHashSlots = 16384
     DefaultNodeTimeout = 200000000
+    MigrateDefaultPipeline = 10
+    MigrateDefaultTimeout = 60000
 
     attr_reader :port, :dirs, :instances, :nodes, :node_by_id, :node_by_port,
                 :node_for_slot, :masters
@@ -362,6 +364,77 @@ class RedisCluster
         #"unixsocket \"#{File.join(path, 'redis.sock')}\"\n" +
         "daemonize yes\n" +
         "dir \"#{path}\"\n"
+    end
+
+    def move_slot(slot, target, pipeline: nil, timeout: nil, update: true,
+                  results: nil)
+        pipeline ||= MigrateDefaultPipeline
+        timeout ||= MigrateDefaultTimeout
+        if (source = @node_for_slot[slot.to_i])
+            if !target
+                @masters.each{|master|
+                    next if master == source
+                    target = master
+                    break
+                }
+                if !target
+                    results[:error] = "Failed to find a target node" if results
+                    return false
+                end
+            end
+            if !source[:name] || !target[:name]
+                results[:error] = "Missing name in source or target" if results
+                return false
+            end
+            res = redis_command target,
+                "cluster setslot #{slot} importing #{source[:name]}"
+            if res.strip.index('(error)') == 0
+                results[:error] = "SETSLOT (importing): #{res.strip}" if results
+                return false
+            end
+            res = redis_command source,
+                "cluster setslot #{slot} migrating #{target[:name]}"
+            if res.strip.index('(error)') == 0
+                results[:error] = "SETSLOT (migrating): #{res.strip}" if results
+                return false
+            end
+            migrated = 0
+            while true
+                res = redis_command source,
+                    "cluster getkeysinslot #{slot} #{pipeline}"
+                if res.strip.index('(error)') == 0
+                    results[:error] = "GETKEYSINSLOT: #{res.strip}" if results
+                    return false
+                end
+                keys = res.split
+                break if keys.length == 0
+                res = redis_command source,
+                    "migrate #{target[:ip]} #{target[:port]} \"\" 0 " +
+                    "#{timeout} keys #{keys.join(' ')}"
+                if res.strip.index('(error)') == 0
+                    results[:error] = "MIGRATE: #{res.strip}" if results
+                    return false
+                end
+                migrated += keys.length
+            end
+            @masters.each{|master|
+                res = redis_command master,
+                        "cluster setslot #{slot} node #{target[:name]}"
+                if res.strip.index('(error)') == 0
+                    results[:error] = "SETSLOT (owner): #{res.strip}" if results
+                    return false
+                end
+            }
+            if update
+                update_cluster
+            end
+            true
+        else
+            if results
+                results[:error] = "Failed to find source for slot: #{slot}"
+            end
+            false
+        end
     end
 
     def RedisCluster::slot_for_key(key)

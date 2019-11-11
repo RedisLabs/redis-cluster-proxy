@@ -2,9 +2,17 @@ require 'redis'
 require 'hiredis'
 
 setup {
+    use_valgrind = $options[:valgrind] == true
+    loglevel = $options[:log_level] || 'debug'
+    dump_queues = $options[:dump_queues]
+    dump_queries = $options[:dump_queries]
     @aux_cluster = RedisCluster.new
     @aux_cluster.restart
-    @aux_proxy = RedisClusterProxy.new @aux_cluster, log_level: 'debug'
+    @aux_proxy = RedisClusterProxy.new @aux_cluster,
+                                       log_level: loglevel,
+                                       dump_queries: dump_queries,
+                                       dump_queues: dump_queues,
+                                       valgrind: use_valgrind
     @aux_proxy.start
 }
 
@@ -61,7 +69,7 @@ test "GET #{$numkeys} keys (Node down every #{$node_down_every})" do
             end
             if ((n + 1) % $node_down_every) == 0
                 down_node_mutex.synchronize{
-                    if !down_node      
+                    if !down_node
                         down_node = @aux_cluster.stop_random_master(quiet: true)
                         down_node_thread = idx
                         down_at = n

@@ -59,6 +59,8 @@ typedef struct clientRequest{
     size_t written;
     int parsing_status;
     int has_write_handler;
+    int need_reprocessing;
+    int parsed;
 } clientRequest;
 
 typedef struct {
@@ -92,8 +94,10 @@ typedef struct client {
     list *requests_to_process;       /* Requests not completely parsed */
     int requests_with_write_handler; /* Number of request that are still
                                       * being writing to cluster */
+    list *requests_to_reprocess;
 } client;
 
+int processRequest(clientRequest *req);
 void freeRequest(clientRequest *req);
 void freeRequestList(list *request_list);
 void onClusterNodeDisconnection(clusterNode *node);

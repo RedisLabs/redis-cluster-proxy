@@ -129,6 +129,13 @@ redisCluster *createCluster(int thread_id) {
         zfree(cluster);
         return NULL;
     }
+    cluster->requests_to_reprocess = raxNew();
+    if (cluster->requests_to_reprocess == NULL) {
+        freeCluster(cluster);
+        return NULL;
+    }
+    cluster->is_reconfiguring = 0;
+    cluster->broken = 0;
     return cluster;
 }
 
@@ -166,9 +173,22 @@ static void freeClusterNodes(redisCluster *cluster) {
     listRelease(cluster->nodes);
 }
 
-void freeCluster(redisCluster *cluster) {
-    raxFree(cluster->slots_map);
+int resetCluster(redisCluster *cluster) {
+    if (cluster->slots_map) raxFree(cluster->slots_map);
     freeClusterNodes(cluster);
+    cluster->slots_map = raxNew();
+    cluster->nodes = listCreate();
+    if (!cluster->slots_map) return 0;
+    if (!cluster->nodes) return 0;
+    return 1;
+}
+
+void freeCluster(redisCluster *cluster) {
+    proxyLogDebug("Free cluster\n");
+    if (cluster->slots_map) raxFree(cluster->slots_map);
+    freeClusterNodes(cluster);
+    if (cluster->requests_to_reprocess)
+        raxFree(cluster->requests_to_reprocess);
     zfree(cluster);
 }
 
@@ -448,7 +468,6 @@ int fetchClusterConfiguration(redisCluster *cluster, char *ip, int port,
 cleanup:
     redisFree(ctx);
     if (friends) listRelease(friends);
-    if (!success) freeCluster(cluster);
     return success;
 }
 
@@ -488,4 +507,134 @@ clusterNode *getFirstMappedNode(redisCluster *cluster) {
     if (raxNext(&iter)) node = (clusterNode *) iter.data;
     raxStop(&iter);
     return node;
+}
+
+/* Reconfigure the cluster. Wait until all request pending or still writing to
+ * cluster have finished and the fetch the cluster configuration again.
+ * Return values:
+ *      CLUSTER_RECONFIG_WAIT: there are requests pendng or writing
+ *                             to cluster, so reconfiguration will start
+ *                             after these queues are empty.
+ *      CLUSTER_RECONFIG_STARTED: reconfiguration has started
+ *      CLUSTER_RECONFIG_ERR: some error occurred during reconfiguration.
+ *                            In this case clsuter->broken is set to 1.
+ *      CLUSTER_RECONFIG_ENDED: reconfiguration ended with success. */
+int startClusterReconfiguration(redisCluster *cluster) {
+    if (cluster->broken) return CLUSTER_RECONFIG_ERR;
+    int status = CLUSTER_RECONFIG_WAIT;
+    listIter li;
+    listNode *ln;
+    int requests_to_wait = 0;
+    listRewind(cluster->nodes, &li);
+    sds ip = NULL;
+    int port = 0;
+    /* Count all requests_pending or request_to_send that are still
+     * writing to cluster. */
+    while ((ln = listNext(&li))) {
+        clusterNode *node = ln->value;
+        if (!ip) {
+            ip = sdsnew(node->ip);
+            port = node->port;
+        }
+        if (node->is_replica) continue;
+        redisClusterConnection *conn = node->connection;
+        if (conn == NULL) continue;
+        requests_to_wait += listLength(conn->requests_pending);
+        listIter rli;
+        listNode *rln;
+        listRewind(conn->requests_to_send, &rli);
+        while ((rln = listNext(&rli))) {
+            clientRequest *req = rln->value;
+            if (req->has_write_handler) requests_to_wait++;
+            else {
+                /* All requests to send that aren't writing to cluster
+                 * are directly added to request_to_reprocess and removed
+                 * from the `requests_to_send` queue. */
+                clusterAddRequestToReprocess(cluster, req);
+                listDelNode(conn->requests_to_send, rln);
+            }
+        }
+    }
+    proxyLogDebug("Cluster reconfiguration: still waiting for %d requests\n",
+                  requests_to_wait);
+    cluster->is_reconfiguring = 1;
+    /* If the are requests pending or writing to cluster, just return
+     * CLUSTER_RECONFIG_WAIT status. */
+    if (requests_to_wait) goto final;
+    status = CLUSTER_RECONFIG_STARTED;
+    /* Start the reconfiguration. */
+    proxyLogDebug("Reconfiguring cluster (thread: %d)\n", cluster->thread_id);
+    if (!resetCluster(cluster)) {
+        proxyLogErr("Failed to reset cluster!\n");
+        status = CLUSTER_RECONFIG_ERR;
+        goto final;
+    }
+    proxyLogDebug("Reconfiguring cluster from node %s:%d (thread: %d)\n",
+                  ip, port, cluster->thread_id);
+    if (!fetchClusterConfiguration(cluster, ip, port, NULL)) {
+        proxyLogErr("Failed to fetch cluster configuration! (thread: %d)\n",
+                    cluster->thread_id);
+        status = CLUSTER_RECONFIG_ERR;
+        goto final;
+    }
+    /* Re-process all the requests that were moved to
+     * `cluster->requests_to_reprocess` */
+    raxIterator iter;
+    raxStart(&iter, cluster->requests_to_reprocess);
+    if (!raxSeek(&iter, "^", NULL, 0)) {
+        raxStop(&iter);
+        status = CLUSTER_RECONFIG_ERR;
+        proxyLogErr("Failed to reset 'cluster->requests_to_reprocess' "
+                    "(thread: %d)\n", cluster->thread_id);
+        goto final;
+    }
+    cluster->is_reconfiguring = 0;
+    proxyLogDebug("Reprocessing cluster requests (thread: %d)\n",
+                  cluster->thread_id);
+    while (raxNext(&iter)) {
+        clientRequest *req = (clientRequest *) iter.data;
+        req->need_reprocessing = 0;
+        if (raxRemove(cluster->requests_to_reprocess, iter.key, iter.key_len,
+             NULL)) raxSeek(&iter,">",iter.key,iter.key_len);
+        listNode *ln = listSearchKey(req->client->requests_to_reprocess, req);
+        if (ln) listDelNode(req->client->requests_to_reprocess, ln);
+        processRequest(req);
+    }
+    raxStop(&iter);
+    proxyLogDebug("Cluster reconfiguration ended (thread: %d)\n",
+                  cluster->thread_id);
+    status = CLUSTER_RECONFIG_ENDED;
+final:
+    if (ip) sdsfree(ip);
+    if (status == CLUSTER_RECONFIG_ERR) cluster->broken = 1;
+    return status;
+}
+
+/* Add the request to `cluster->requests_to_reprocess` rax. Also add it
+ * to the client's `requests_to_reprocess` list.
+ * The request's node will also be set to NULL (since the current configuration
+ * will be reset) and `need_reprocessing` will be set to 1.
+ * The `written` count will be also set to 0, since the request must be
+ * written to the cluster again when the new cluster's configuration will be
+ * available. */
+void clusterAddRequestToReprocess(redisCluster *cluster, void *r) {
+    clientRequest *req = r;
+    req->need_reprocessing = 1;
+    req->node = NULL;
+    req->slot = -1;
+    req->written = 0;
+    sds id = sdscatprintf(sdsempty(), "%lld:%lld", req->client->id, req->id);
+    raxInsert(cluster->requests_to_reprocess, (unsigned char *) id,
+              sdslen(id), req, NULL);
+    listAddNodeTail(req->client->requests_to_reprocess, req);
+    sdsfree(id);
+}
+
+void clusterRemoveRequestToReprocess(redisCluster *cluster, void *r) {
+    clientRequest *req = r;
+    req->need_reprocessing = 0;
+    sds id = sdscatprintf(sdsempty(), "%lld:%lld", req->client->id, req->id);
+    raxRemove(cluster->requests_to_reprocess, (unsigned char *) id,
+              sdslen(id), NULL);
+    sdsfree(id);
 }
