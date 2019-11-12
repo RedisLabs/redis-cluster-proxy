@@ -1123,7 +1123,7 @@ static void freeClient(client *c) {
     while ((ln = listNext(&li))) {
         clientRequest *req = ln->value;
         listDelNode(c->requests_to_process, ln);
-        freeRequest(req);
+        if (req != NULL) freeRequest(req);
     }
     listRelease(c->requests_to_process);
     if (c->unordered_replies)
@@ -1628,8 +1628,11 @@ void freeRequest(clientRequest *req) {
         ln = listSearchKey(conn->requests_pending, req);
         if (ln) ln->value = NULL;
     }
+    /* If request is inside requests_to_process, just set the list's node
+     * value to NULL since we could be inside an interation of the list
+     * itself. */
     listNode *ln = listSearchKey(req->client->requests_to_process, req);
-    if (ln) listDelNode(req->client->requests_to_process, ln);
+    if (ln) ln->value = NULL;
     if (config.dump_queues)
         dumpQueue(req->node, req->client->thread_id, QUEUE_TYPE_PENDING);
     zfree(req);
@@ -1959,17 +1962,13 @@ void readQuery(aeEventLoop *el, int fd, void *privdata, int mask){
         while (listLength(c->requests_to_process) > 0) {
             listNode *ln = listFirst(c->requests_to_process);
             req = ln->value;
-            /* If the request to process is the already processed request,
-             * delete it from requests_to_process and just skip it. */
-            if (req == processed_req) {
-                listDelNode(c->requests_to_process, ln);
-                continue;
-            }
-            if (!processRequest(req)) freeClient(c);
+            listDelNode(c->requests_to_process, ln);
+            if (req == processed_req) continue;
+            else if (req == NULL) continue;
             else {
-                if (req->parsing_status == PARSE_STATUS_INCOMPLETE) break;
+                if (!processRequest(req)) freeClient(c);
                 else {
-                    listDelNode(c->requests_to_process, ln);
+                    if (req->parsing_status == PARSE_STATUS_INCOMPLETE) break;
                 }
             }
         }
