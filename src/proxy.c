@@ -554,7 +554,7 @@ int parseOptions(int argc, char **argv) {
                 exit(1);
             }
             config.loglevel = level;
-        } else if (!strcmp("--help", arg)) {
+        } else if (!strcmp("--help", arg) || !strcmp("-h", arg)) {
             printHelp();
             exit(0);
         } else {
