@@ -599,7 +599,7 @@ int updateCluster(redisCluster *cluster) {
              NULL)) raxSeek(&iter,">",iter.key,iter.key_len);
         listNode *ln = listSearchKey(req->client->requests_to_reprocess, req);
         if (ln) listDelNode(req->client->requests_to_reprocess, ln);
-        processRequest(req);
+        processRequest(req, NULL);
     }
     raxStop(&iter);
     proxyLogDebug("Cluster reconfiguration ended (thread: %d)\n",

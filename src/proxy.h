@@ -97,7 +97,7 @@ typedef struct client {
     list *requests_to_reprocess;
 } client;
 
-int processRequest(clientRequest *req);
+int processRequest(clientRequest *req, int *parsing_status);
 void freeRequest(clientRequest *req);
 void freeRequestList(list *request_list);
 void onClusterNodeDisconnection(clusterNode *node);
