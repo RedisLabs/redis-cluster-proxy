@@ -1893,28 +1893,13 @@ int processRequest(clientRequest *req) {
     client *c = req->client;
     if (req == c->current_request) c->current_request = NULL;
     if (req->id < c->min_reply_id) c->min_reply_id = req->id;
-    redisCluster *cluster = getCluster(c->thread_id);
-    assert(cluster != NULL);
     sds command_name = NULL;
     sds errmsg = NULL;
-    if (cluster->broken) {
-        errmsg = sdsnew(ERROR_CLUSTER_RECONFIG);
-        goto invalid_request;
-    } else if (cluster->is_updating) {
-        clusterAddRequestToReprocess(cluster, req);
-        return 1;
-    }
     proxyLogDebug("Processing request " REQID_PRINTF_FMT  "\n",
                   REQID_PRINTF_ARG(req));
     if (req->argc == 0) {
         proxyLogDebug("Request with zero arguments\n");
         errmsg = sdsnew("Invalid request");
-        goto invalid_request;
-    }
-    /* Multi command requests are currently unsupported. */
-    if (req->num_commands > 1) {
-        errmsg = sdsnew("Multi-command requests are not currently supported");
-        proxyLogDebug("Multi-command requests are not currently supported\n");
         goto invalid_request;
     }
     command_name = getRequestCommand(req);
@@ -1938,6 +1923,15 @@ int processRequest(clientRequest *req) {
     req->command = cmd;
     if (cmd->handle && cmd->handle(req) == PROXY_COMMAND_HANDLED) {
         if (command_name) sdsfree(command_name);
+        return 1;
+    }
+    redisCluster *cluster = getCluster(c->thread_id);
+    assert(cluster != NULL);
+    if (cluster->broken) {
+        errmsg = sdsnew(ERROR_CLUSTER_RECONFIG);
+        goto invalid_request;
+    } else if (cluster->is_updating) {
+        clusterAddRequestToReprocess(cluster, req);
         return 1;
     }
     clusterNode *node = getRequestNode(req, &errmsg);
