@@ -327,6 +327,9 @@ static sds genInfoString(sds section) {
 int genericBlockingCommand(void *r){
     clientRequest *req = r;
     client *c = req->client;
+    redisCluster *cluster = getCluster(c);
+    if (cluster && (cluster->broken || cluster->is_updating))
+        return PROXY_COMMAND_UNHANDLED;
     if (!disableMultiplexingForClient(c)) {
         freeClient(c);
         return PROXY_COMMAND_HANDLED;
@@ -1808,7 +1811,7 @@ void freeRequest(clientRequest *req) {
     if (ln) ln->value = NULL;
     ln = listSearchKey(req->client->requests_to_reprocess, req);
     if (ln) listDelNode(req->client->requests_to_reprocess, ln);
-    redisCluster *cluster = getCluster(req->client->thread_id);
+    redisCluster *cluster = getCluster(req->client);
     if (cluster) clusterRemoveRequestToReprocess(cluster, req);
     if (config.dump_queues)
         dumpQueue(req->node, req->client->thread_id, QUEUE_TYPE_PENDING);
@@ -2095,7 +2098,7 @@ int processRequest(clientRequest *req, int *parsing_status) {
         if (command_name) sdsfree(command_name);
         return 1;
     }
-    redisCluster *cluster = getCluster(c->thread_id);
+    redisCluster *cluster = getCluster(c);
     assert(cluster != NULL);
     if (cluster->broken) {
         errmsg = sdsnew(ERROR_CLUSTER_RECONFIG);
@@ -2286,7 +2289,7 @@ static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
                       errmsg ? " ERR: " : "OK!",
                       errmsg ? errmsg : "");
         dequeuePendingRequest(req);
-        redisCluster *cluster = getCluster(req->client->thread_id);
+        redisCluster *cluster = getCluster(req->client);
         assert(cluster != NULL);
         int is_cluster_err = 0;
         if (reply->type == REDIS_REPLY_ERROR) {
