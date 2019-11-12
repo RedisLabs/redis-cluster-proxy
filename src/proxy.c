@@ -417,6 +417,7 @@ final:
 /* Proxy functions */
 
 static void dumpQueue(clusterNode *node, int thread_id, int type) {
+    if (node == NULL) return;
     redisClusterConnection *conn = node->connection;
     if (conn == NULL) return;
     list *queue = NULL;
