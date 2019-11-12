@@ -1856,8 +1856,9 @@ static clientRequest *handleNextRequestToCluster(clusterNode *node) {
 }
 
 
-static int processRequest(clientRequest *req) {
+static int processRequest(clientRequest *req, int *parsing_status) {
     int status = parseRequest(req);
+    if (parsing_status != NULL) *parsing_status = status;
     if (status == PARSE_STATUS_ERROR) return 0;
     else if (status == PARSE_STATUS_INCOMPLETE) return 1;
     client *c = req->client;
@@ -1956,8 +1957,10 @@ void readQuery(aeEventLoop *el, int fd, void *privdata, int mask){
     }
     sdsIncrLen(req->buffer, nread);
     /*TODO: support max query buffer length */
-    if (!processRequest(req)) freeClient(c);
+    int parsing_status = PARSE_STATUS_OK;
+    if (!processRequest(req, &parsing_status)) freeClient(c);
     else {
+        if (parsing_status == PARSE_STATUS_INCOMPLETE) return;
         clientRequest *processed_req = req;
         while (listLength(c->requests_to_process) > 0) {
             listNode *ln = listFirst(c->requests_to_process);
@@ -1966,9 +1969,9 @@ void readQuery(aeEventLoop *el, int fd, void *privdata, int mask){
             if (req == processed_req) continue;
             else if (req == NULL) continue;
             else {
-                if (!processRequest(req)) freeClient(c);
+                if (!processRequest(req, &parsing_status)) freeClient(c);
                 else {
-                    if (req->parsing_status == PARSE_STATUS_INCOMPLETE) break;
+                    if (parsing_status == PARSE_STATUS_INCOMPLETE) break;
                 }
             }
         }
