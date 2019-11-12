@@ -72,5 +72,38 @@ $datalen.each{|len|
                 log_same_line('')
             }
         end
+
     }
+
+    test "PIPELINE HANDLED COMMANDS (GET,PROXY)" do
+        spawn_clients($numclients){|client, idx|
+            numkeys = 10
+            (0...numkeys).each{|n|
+                log_test_update "key #{n + 1}/#{numkeys}"
+                pipeline = [
+                    [:get, "k:#{n}"], [:proxy, 'PING']
+                ]
+                val = n.to_s * len
+                expected = [val, 'PONG']
+                begin
+                    reply = client.pipelined {
+                        pipeline.each{|qry|
+                            cmd, arg = qry
+                            client.send cmd, arg
+                        }
+                    }
+                rescue Redis::CommandError => cmderr
+                    reply = cmderr
+                end
+                errmsg = pipeline.map{|qry| qry.join(' ')}.join(', ').upcase
+                errmsg << ": expected " +
+                         "#{expected.inspect}, " +
+                         "got #{reply.inspect}"
+                assert_not_redis_err(reply)
+                assert_equal(reply, expected, errmsg)
+            }
+            log_same_line('')
+        }
+    end
 }
+
