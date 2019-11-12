@@ -134,7 +134,7 @@ redisCluster *createCluster(int thread_id) {
         freeCluster(cluster);
         return NULL;
     }
-    cluster->is_reconfiguring = 0;
+    cluster->is_updating = 0;
     cluster->broken = 0;
     return cluster;
 }
@@ -509,8 +509,9 @@ clusterNode *getFirstMappedNode(redisCluster *cluster) {
     return node;
 }
 
-/* Reconfigure the cluster. Wait until all request pending or still writing to
- * cluster have finished and the fetch the cluster configuration again.
+/* Update the cluster's configuration. Wait until all request pending or
+ * requests still writing to the cluster have finished and then fetch the
+ * cluster configuration again.
  * Return values:
  *      CLUSTER_RECONFIG_WAIT: there are requests pendng or writing
  *                             to cluster, so reconfiguration will start
@@ -519,7 +520,7 @@ clusterNode *getFirstMappedNode(redisCluster *cluster) {
  *      CLUSTER_RECONFIG_ERR: some error occurred during reconfiguration.
  *                            In this case clsuter->broken is set to 1.
  *      CLUSTER_RECONFIG_ENDED: reconfiguration ended with success. */
-int startClusterReconfiguration(redisCluster *cluster) {
+int updateCluster(redisCluster *cluster) {
     if (cluster->broken) return CLUSTER_RECONFIG_ERR;
     int status = CLUSTER_RECONFIG_WAIT;
     listIter li;
@@ -557,7 +558,7 @@ int startClusterReconfiguration(redisCluster *cluster) {
     }
     proxyLogDebug("Cluster reconfiguration: still waiting for %d requests\n",
                   requests_to_wait);
-    cluster->is_reconfiguring = 1;
+    cluster->is_updating = 1;
     /* If the are requests pending or writing to cluster, just return
      * CLUSTER_RECONFIG_WAIT status. */
     if (requests_to_wait) goto final;
@@ -588,7 +589,7 @@ int startClusterReconfiguration(redisCluster *cluster) {
                     "(thread: %d)\n", cluster->thread_id);
         goto final;
     }
-    cluster->is_reconfiguring = 0;
+    cluster->is_updating = 0;
     proxyLogDebug("Reprocessing cluster requests (thread: %d)\n",
                   cluster->thread_id);
     while (raxNext(&iter)) {

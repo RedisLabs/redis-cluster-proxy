@@ -786,7 +786,7 @@ static void writeRepliesToClients(struct aeEventLoop *el) {
 void beforeThreadSleep(struct aeEventLoop *eventLoop) {
     proxyThread *thread = eventLoop->privdata;
     writeRepliesToClients(eventLoop);
-    if (thread->cluster->is_reconfiguring ||
+    if (thread->cluster->is_updating ||
         thread->cluster->broken) return;
     listIter li;
     listNode *ln;
@@ -1311,7 +1311,7 @@ void onClusterNodeDisconnection(clusterNode *node) {
         aeDeleteFileEvent(el, ctx->fd, AE_WRITABLE | AE_READABLE);
         redisCluster *cluster = node->cluster;
         assert(cluster != NULL);
-        if (cluster->is_reconfiguring) return;
+        if (cluster->is_updating) return;
         sds err = sdsnew("Cluster node disconnected: ");
         err = sdscatprintf(err, "%s:%d", node->ip, node->port);
         listIter li;
@@ -1901,7 +1901,7 @@ int processRequest(clientRequest *req, int *parsing_status) {
     if (cluster->broken) {
         errmsg = sdsnew(ERROR_CLUSTER_RECONFIG);
         goto invalid_request;
-    } else if (cluster->is_reconfiguring) {
+    } else if (cluster->is_updating) {
         clusterAddRequestToReprocess(cluster, req);
         return 1;
     }
@@ -2101,7 +2101,7 @@ static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
             assert(reply->str != NULL);
             /* In case of ASK|MOVED reply the cluster need to be
              * reconfigured.
-             * In this case we suddenly set `cluster->is_reconfiguring` and
+             * In this case we suddenly set `cluster->is_updating` and
              * we add the request to the clusters' `requests_to_reprocess`
              * pool (the request will be also added to a
              * `requests_to_reprocess` list on the client). */
@@ -2110,7 +2110,7 @@ static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
                 proxyLogDebug("Cluster configuration changed! "
                               "(request " REQID_PRINTF_FMT ")\n",
                               REQID_PRINTF_ARG(req));
-                cluster->is_reconfiguring = 1;
+                cluster->is_updating = 1;
                 is_cluster_err = 1;
                 clusterAddRequestToReprocess(cluster, req);
                 /* We directly jump to `consume_buffer` since we won't
@@ -2139,8 +2139,8 @@ consume_buffer:
         if (config.dump_queues) dumpQueue(node, thread_id, QUEUE_TYPE_PENDING);
         /* If cluster has been set is reconfiguring state, we call the
          * startClusterReconfiguration function. */
-        if (cluster->is_reconfiguring) {
-            int reconfig_status = startClusterReconfiguration(cluster);
+        if (cluster->is_updating) {
+            int reconfig_status = updateCluster(cluster);
             do_break = (reconfig_status == CLUSTER_RECONFIG_ENDED);
             if (!do_break) {
                 /* If reconfiguration failed, reply the error to the client,

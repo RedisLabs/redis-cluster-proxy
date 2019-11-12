@@ -22,6 +22,7 @@
 #include "adlist.h"
 #include "rax.h"
 #include <hiredis.h>
+#include <time.h>
 
 #define CLUSTER_SLOTS 16384
 #define CLUSTER_RECONFIG_ERR        -1
@@ -66,7 +67,7 @@ typedef struct redisCluster {
     list *nodes;
     rax  *slots_map;
     rax *requests_to_reprocess;
-    int is_reconfiguring;
+    int is_updating;
     int broken;
 } redisCluster;
 
@@ -81,7 +82,7 @@ clusterNode *searchNodeBySlot(redisCluster *cluster, int slot);
 clusterNode *getNodeByKey(redisCluster *cluster, char *key, int keylen,
                           int *getslot);
 clusterNode *getFirstMappedNode(redisCluster *cluster);
-int startClusterReconfiguration(redisCluster *cluster);
+int updateCluster(redisCluster *cluster);
 void clusterAddRequestToReprocess(redisCluster *cluster, void *r);
 void clusterRemoveRequestToReprocess(redisCluster *cluster, void *r);
 #endif /* __REDIS_CLUSTER_PROXY_CLUSTER_H__ */
