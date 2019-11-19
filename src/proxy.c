@@ -2300,8 +2300,9 @@ static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
              * we add the request to the clusters' `requests_to_reprocess`
              * pool (the request will be also added to a
              * `requests_to_reprocess` list on the client). */
-            if (strstr(reply->str, "ASK") == reply->str ||
-                strstr(reply->str, "MOVED") == reply->str) {
+            if ((strstr(reply->str, "ASK") == reply->str ||
+                strstr(reply->str, "MOVED") == reply->str) &&
+                !req->client->multi_transaction) {
                 proxyLogDebug("Cluster configuration changed! "
                               "(request " REQID_PRINTF_FMT ")\n",
                               REQID_PRINTF_ARG(req));
