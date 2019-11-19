@@ -147,6 +147,7 @@ redisCluster *createCluster(int thread_id) {
         return NULL;
     }
     cluster->is_updating = 0;
+    cluster->update_required = 0;
     cluster->broken = 0;
     return cluster;
 }
@@ -723,6 +724,7 @@ int updateCluster(redisCluster *cluster) {
         goto final;
     }
     cluster->is_updating = 0;
+    cluster->update_required = 0;
     proxyLogDebug("Reprocessing cluster requests (thread: %d)\n",
                   cluster->thread_id);
     while (raxNext(&iter)) {
