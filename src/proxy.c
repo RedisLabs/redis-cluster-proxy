@@ -2301,18 +2301,22 @@ static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
              * pool (the request will be also added to a
              * `requests_to_reprocess` list on the client). */
             if ((strstr(reply->str, "ASK") == reply->str ||
-                strstr(reply->str, "MOVED") == reply->str) &&
-                !req->client->multi_transaction) {
+                strstr(reply->str, "MOVED") == reply->str)){
                 proxyLogDebug("Cluster configuration changed! "
                               "(request " REQID_PRINTF_FMT ")\n",
                               REQID_PRINTF_ARG(req));
-                cluster->is_updating = 1;
-                is_cluster_err = 1;
-                clusterAddRequestToReprocess(cluster, req);
-                /* We directly jump to `consume_buffer` since we won't
-                 * reply to the client now, but after the reconfiguration
-                 * ends. */
-                goto consume_buffer;
+                cluster->update_required = 1;
+                /* Automatic cluster update is posticipated when the client
+                 * is under a MULTI transaction. */
+                if (!req->client->multi_transaction) {
+                    cluster->is_updating = 1;
+                    is_cluster_err = 1;
+                    clusterAddRequestToReprocess(cluster, req);
+                    /* We directly jump to `consume_buffer` since we won't
+                     * reply to the client now, but after the reconfiguration
+                     * ends. */
+                    goto consume_buffer;
+                }
             }
         }
         if (errmsg != NULL) addReplyError(req->client, errmsg, req->id);
@@ -2338,6 +2342,7 @@ static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
                 req->client->multi_request = NULL;
             }
             req->client->multi_transaction_node = NULL;
+            if (cluster->update_required) cluster->is_updating = 1;
         }
 consume_buffer:
         if (config.dump_queues) dumpQueue(node, thread_id, QUEUE_TYPE_PENDING);

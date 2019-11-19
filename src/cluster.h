@@ -70,6 +70,7 @@ typedef struct redisCluster {
     rax  *slots_map;
     rax *requests_to_reprocess;
     int is_updating;
+    int update_required;
     int broken;
     struct redisCluster *duplicated_from;
     list *duplicates;
