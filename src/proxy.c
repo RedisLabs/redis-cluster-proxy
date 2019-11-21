@@ -1881,7 +1881,7 @@ static int duplicateRequestForAllMasters(clientRequest *req) {
     /* TODO: use private slots_map if multiplexing is disabled. */
     listIter li;
     listNode *ln;
-    redisCluster *cluster = getCluster(req->client->thread_id);
+    redisCluster *cluster = getCluster(req->client);
     listRewind(cluster->nodes, &li);
     clientRequest *cur = req->client->current_request;
     while ((ln = listNext(&li)) != NULL) {
@@ -1931,8 +1931,9 @@ static int splitMultiSlotRequest(clientRequest *req, int idx) {
     clientRequest *new = NULL;
     int offset = req->offsets[idx], original_argc = req->argc, success = 1,
                  len, llen, diff, i;
-    proxyLogDebug("Splitting multi-slot request %llu:%llu at index %d "
-                  "(offset: %d)\n", req->client->id, req->id, idx, offset);
+    proxyLogDebug("Splitting multi-slot request " REQID_PRINTF_FMT
+                  " at index %d (offset: %d)\n",
+                  REQID_PRINTF_ARG(req), idx, offset);
     req->argc = idx;
     /* Keep a pointer to the original buffer. */
     sds oldbuf = req->buffer;
@@ -2007,8 +2008,9 @@ static int splitMultiSlotRequest(clientRequest *req, int idx) {
     listAddNodeHead(parent->child_requests, new);
     if (new->id > parent->max_child_reply_id)
         parent->max_child_reply_id = new->id;
-    proxyLogDebug("Added child request %llu:%llu to parent %llu:%llu\n",
-                  new->client->id, new->id, parent->client->id, parent->id);
+    proxyLogDebug("Added child request " REQID_PRINTF_FMT
+                  " to parent " REQID_PRINTF_FMT "\n",
+                  REQID_PRINTF_ARG(new), REQID_PRINTF_ARG(parent));
     if (config.dump_buffer) {
         proxyLogDebug("Req. %llu:%llu buffer:\n%s\n", req->client->id, req->id, 
                       req->buffer);
@@ -2032,14 +2034,17 @@ cleanup:
 
 static clusterNode *getRequestNode(clientRequest *req, sds *err) {
     clusterNode *node = NULL;
-    redisCluster *cluster = getCluster(req->client);
-    int slot = UNDEFINED_SLOT, last_slot = UNDEFINED_SLOT;
     int first_key = req->command->first_key,
         last_key = req->command->last_key,
         key_step = req->command->key_step, i;
-    redisCluster *cluster = getCluster(req->client->thread_id);
+    redisCluster *cluster = getCluster(req->client);
+    int slot = UNDEFINED_SLOT, last_slot = UNDEFINED_SLOT;
     if (req->argc == 1) {
-        if (req->command->handleReply != NULL) {
+        if (req->client->multi_transaction &&
+            req->client->multi_transaction_node) {
+            node = req->node = req->client->multi_transaction_node;
+            return node;
+        } else if (req->command->handleReply != NULL) {
             if (!duplicateRequestForAllMasters(req)) {
                 if (err) *err = sdsnew("Failed to create multiple requests");
                 req->node = NULL;
@@ -2587,13 +2592,18 @@ void acceptTcpHandler(aeEventLoop *el, int fd, void *privdata, int mask)
     }
 }
 
-static void addChildRequestReply(clientRequest *req, char *replybuf, int len) {
+/* Add the reply received by request `*req` to the `child_replies` rax.
+ * When all child requests received their replies, call the command's
+ * reply handler (handleReply), and free all the requests (both parent and
+ * children).
+ * Return 1 if all replies were completed, elsewhere 0. */
+static int addChildRequestReply(clientRequest *req, char *replybuf, int len) {
     clientRequest *parent = req->parent_request;
     /* If the request has no parent, then the request itself is the parent. */
     if (parent == NULL) parent = req;
     assert(parent->child_replies != NULL);
-    proxyLogDebug("Adding child reply for %llu:%llu\n", req->client->id,
-                  req->id);
+    proxyLogDebug("Adding child reply for " REQID_PRINTF_FMT "\n",
+                  REQID_PRINTF_ARG(req));
     uint64_t be_id = htonu64(req->id); /* Big-endian request ID */
     sds reply = sdsnewlen(replybuf, len);
     raxInsert(parent->child_replies, (unsigned char *) &be_id,
@@ -2601,9 +2611,11 @@ static void addChildRequestReply(clientRequest *req, char *replybuf, int len) {
     /* Check if all the requests (all child requests plus the parent request)
      * received the reply. */
     uint64_t numrequests = listLength(parent->child_requests) + 1;
-    if (raxSize(parent->child_replies) == numrequests) {
-        proxyLogDebug("All %d child requests for %llu:%llu received replies\n",
-                      numrequests, req->client->id, req->id);
+    int completed = (raxSize(parent->child_replies) == numrequests);
+    if (completed) {
+        proxyLogDebug("All %d child requests of " REQID_PRINTF_FMT
+                      " received replies\n",
+                      numrequests, REQID_PRINTF_ARG(req));
         redisCommandDef *cmd = parent->command;
         assert(cmd != NULL);
         if (cmd->handleReply != NULL) {
@@ -2611,6 +2623,7 @@ static void addChildRequestReply(clientRequest *req, char *replybuf, int len) {
         }
         freeRequest(parent);
     }
+    return completed;
 }
 
 static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
@@ -2633,7 +2646,7 @@ static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
         if (ok && reply == NULL) break;
         replies++;
         clientRequest *req = getFirstRequestPending(node, NULL);
-        int free_reply = 1;
+        int free_req = 1;
         /* If request is NULL, it's a ghost request that is a NULL
          * placeholder in place of a request created by a freed client
          * (ie. a disconnected client). In this case, just dequeue the list
@@ -2705,8 +2718,15 @@ static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
                 sdsfree(rstr);
             }
             if (req->child_requests != NULL || req->parent_request != NULL) {
-                addChildRequestReply(req, obuf, len);
-                free_reply = 0;
+                free_req = 0;
+                /* Add the child/parent reply. If all child requests and their
+                 * parente received their replies, all requests have been
+                 * already freed. So directly jump to consume_buffer in the
+                 * latter case. */
+                if (addChildRequestReply(req, obuf, len)) {
+                    req = NULL;
+                    goto consume_buffer;
+                }
             } else {
                 proxyLogDebug("Writing reply for request %llu:%llu to client "
                               "buffer...\n", req->client->id, req->id);
@@ -2764,7 +2784,7 @@ consume_buffer:
         ctx->reader->len = sdslen(ctx->reader->buf);
 clean:
         freeReplyObject(reply);
-        if (req && free_reply) freeRequest(req);
+        if (req && free_req) freeRequest(req);
         if (!ok || do_break) break;
     }
     return replies;
