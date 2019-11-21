@@ -2161,7 +2161,7 @@ consume_buffer:
                  * the old configuration and it has now been freed,
                  * we just set their node to NULL. */
                 if (is_cluster_err) req = NULL;
-                else req->node = NULL;
+                else if (req) req->node = NULL;
             }
             if (do_break) goto clean;
         }
