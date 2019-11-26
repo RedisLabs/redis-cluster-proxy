@@ -227,6 +227,17 @@ class RedisProxyTestCase
         assert(!reply.is_a?(Redis::CommandError), message)
     end
 
+    def assert_class(obj, cls, message = nil)
+        if !cls.is_a? Class
+            raise "assert_class(obj,cls,message): cls is expected to be a "+
+                  "Ruby Class."
+            return false
+        end
+        message ||= "Object is expected to be a #{cls.to_s}, but it's a " +
+            "#{obj.class.to_s}"
+        assert(obj.is_a?(cls), message)
+    end
+
     def log_test_update(message, test = nil)
         test ||= @current_test
         log_same_line("[  ] #{test[:name]} #{message}")

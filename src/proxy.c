@@ -207,6 +207,9 @@ static sds proxySubCommandConfig(clientRequest *r, sds option, sds value,
     } else if (strcmp("dump-replies", option) == 0) {
         is_int = 1;
         opt = &(config.dump_queues);
+    } else if (strcmp("enable-cross-slot", option) == 0) {
+        is_int = 1;
+        opt = &(config.cross_slot_enabled);
     }
     if (opt == NULL) {
         if (err) *err = sdsnew("Invalid config option");
@@ -701,6 +704,9 @@ static void printHelp(void) {
         "  --daemonize          Execute the proxy in background\n"
         "  --disable-multiplexing <opt> When should multiplexing disabled\n"
         "                               (never|auto|always) (default: auto)\n"
+        "  --enable-cross-slot  Enable cross-slot queries (warning: cross-slot"
+        "\n                       queries routed to multiple nodes cannot be"
+                                " atomic).\n"
         "  -a, --auth <passw>   Authentication password\n"
         "  --disable-colors     Disable colorized output\n"
         "  --log-level <level>  Minimum log level: (default: info)\n"
@@ -784,6 +790,8 @@ int parseOptions(int argc, char **argv) {
                         "valid options are:\nnever|auto|always\n");
                 exit(1);
             }
+        } else if (!strcmp("--enable-cross-slot", arg)) {
+            config.cross_slot_enabled = 1;
         } else if (!strcmp("--help", arg) || !strcmp("-h", arg)) {
             printHelp();
             exit(0);
@@ -916,6 +924,7 @@ static void initConfig(void) {
     config.dump_buffer = 0;
     config.dump_queues = 0;
     config.auth = NULL;
+    config.cross_slot_enabled = 0;
 }
 
 static void initProxy(void) {
@@ -2071,12 +2080,24 @@ static clusterNode *getRequestNode(clientRequest *req, sds *err) {
             last_slot = slot;
         } else {
             if (node != n || (last_slot != slot && slot != UNDEFINED_SLOT)) {
-                if (!splitMultiSlotRequest(req, i)) {
+                char *errmsg = NULL;
+                if (!config.cross_slot_enabled) {
+                    errmsg = "Cross-slot queries are disabled. They can be "
+                             "enabled by using the --enable-cross-slot option,"
+                             " or by calling "
+                             "`PROXY CONFIG SET enable-cross-slot 1`. "
+                             "WARN: cross-slot queries can break the atomicity"
+                             " of the query itself.";
+                } else if (!splitMultiSlotRequest(req, i)) {
+                    errmsg = "Failed to handle cross-slot request";
+                }
+                if (errmsg != NULL) {
                     if (err != NULL) {
                         if (*err != NULL) sdsfree(*err);
-                        *err = sdsnew("Failed to handle multislot request");
+                        *err = sdsnew(errmsg);
                     }
                     node = NULL;
+                    slot = UNDEFINED_SLOT;
                 }
                 break;
             }

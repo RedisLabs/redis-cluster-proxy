@@ -12,6 +12,43 @@ if $options[:max_keys] && $numkeys > $options[:max_keys]
     $numkeys = $options[:max_keys]
 end
 
+test "Verify cross-slot queries status" do
+    spawn_clients(1){|client, idx|
+        reply = client.proxy 'config', 'get', 'enable-cross-slot'
+        assert_not_redis_err(reply)
+        assert_class(reply, Array)
+        assert_equal(reply.length, 2, "PROXY CONFIG GET enable-cross-slot " +
+                                      "reply array should contian 2 items, " +
+                                      "but it has #{reply.length} item(s)")
+        assert_equal(reply[1].to_i, 0)
+    }
+end
+
+test "MGET while cross-slots is disabled" do
+    spawn_clients($numclients){|client, idx|
+        begin
+            reply = client.mget *(CRC16_SLOT_TABLE[0,20])
+        rescue Redis::CommandError => cmderr
+            reply = cmderr
+        end
+        assert_redis_err(reply)
+    }
+end
+
+test "Enable cross-slot queries" do
+    spawn_clients(1){|client, idx|
+        reply = client.proxy 'config', 'set', 'enable-cross-slot', '1'
+        assert_not_redis_err(reply)
+        reply = client.proxy 'config', 'get', 'enable-cross-slot'
+        assert_not_redis_err(reply)
+        assert_class(reply, Array)
+        assert_equal(reply.length, 2, "PROXY CONFIG GET enable-cross-slot " +
+                                      "reply array should contian 2 items, " +
+                                      "but it has #{reply.length} item(s)")
+        assert_equal(reply[1].to_i, 1)
+    }
+end
+
 $datalen.each{|len|
 
     $keycount.each{|keycount|
@@ -25,7 +62,7 @@ $datalen.each{|len|
                     keycount_args << ["k:#{n}", val]
                     if ((n + 1) % keycount) == 0
                         begin
-                            client.mset *keycount_args
+                            reply = client.mset *keycount_args
                         rescue Redis::CommandError => cmderr
                             reply = cmderr
                         end
