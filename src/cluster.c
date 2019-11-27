@@ -734,6 +734,25 @@ int updateCluster(redisCluster *cluster) {
              NULL)) raxSeek(&iter,">",iter.key,iter.key_len);
         listNode *ln = listSearchKey(req->client->requests_to_reprocess, req);
         if (ln) listDelNode(req->client->requests_to_reprocess, ln);
+        /* Other relatives of the requests (children or siblings) could still
+         * have their node pointing to the old (freed) node.
+         * Ensure that all relatives have their node set to NULL. */
+        list *relatives = NULL;
+        if (req->child_requests)
+            relatives = req->child_requests;
+        else if (req->parent_request) {
+            relatives = req->parent_request->child_requests;
+            req->parent_request->node = NULL;
+        }
+        if (relatives != NULL) {
+            listIter li;
+            listNode *ln;
+            listRewind(relatives, &li);
+            while ((ln = listNext(&li))) {
+                clientRequest *r = ln->value;
+                if (r) r->node = NULL;
+            }
+        }
         processRequest(req, NULL);
     }
     raxStop(&iter);

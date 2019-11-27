@@ -1987,6 +1987,7 @@ static int splitMultiSlotRequest(clientRequest *req, int idx) {
     if (!success) goto cleanup;
     req->client->current_request = cur;
     new->argc = (original_argc - req->argc) + 1;
+    new->parsed = 1;
     success = requestMakeRoomForArgs(new, new->argc);
     if (!success) goto cleanup;
     char *command_name = req->command->name;
