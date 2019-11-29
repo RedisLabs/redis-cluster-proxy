@@ -32,6 +32,8 @@ COMMAND_HANDLERS = {
     'brpop' => 'genericBlockingCommand',
     'bzpopmin' => 'genericBlockingCommand',
     'bzpopmax' => 'genericBlockingCommand',
+    'xread' => 'xreadCommand',
+    'xreadgroup' => 'xreadCommand',
 }
 REPLY_HANDLERS = {
     'mget' => 'mergeReplies',
@@ -96,6 +98,10 @@ optparse = OptionParser.new do |opts|
             $options[:flags] = true
         }
 
+        opts.on('', '--csv', 'Generate CSV list') {
+            $options[:csv] = true
+        }
+
         opts.on( '', '--help', 'Display this screen' ) do
             puts opts
             exit
@@ -128,6 +134,10 @@ if $curvers && $redis_version < $curvers
     exit 0 if ok != 'y'
 end
 
+csv = [
+    ['NAME', 'ARITY', 'FIRST KEY', 'LAST KEY', 'KEY STEP', 'UNSUPPORTED',
+     'CUSTOM', 'REPLY HANDLER', 'HANDLER']
+]
 $all_flags = %w(REDIS_COMMAND_FLAG_NONE)
 commands = $redis.command
 commands = commands.map{|c|
@@ -155,6 +165,14 @@ commands = commands.map{|c|
     end
     handler = COMMAND_HANDLERS[name] || 'NULL'
     reply_handler = REPLY_HANDLERS[name] || 'NULL'
+    if $options[:csv]
+        csv << [
+            name, arity, first_key, last_key, key_step,
+            (unsupported == 1 ? 'unsupported' : ''), '',
+            (reply_handler != 'NULL' ? reply_handler : ''),
+            (handler != 'NULL' ? handler : ''),
+        ]
+    end
     code << "#{first_key.to_i}, #{last_key.to_i}, #{key_step.to_i}, "
     code << "#{unsupported}, #{handler}, #{reply_handler}}"
     code
@@ -182,6 +200,16 @@ custom_commands = CUSTOM_COMMANDS.map{|cmd|
                                     cmd[:key_step]
     handler = COMMAND_HANDLERS[cmd[:name]] || 'NULL'
     reply_handler = REPLY_HANDLERS[cmd[:name]] || 'NULL'
+    if $options[:csv]
+        csv << [
+            cmd[:name].to_s,
+            cmd[:arity].to_i, cmd[:first_key], cmd[:last_key], cmd[:key_step],
+            '',
+            'custom',
+            (reply_handler != 'NULL' ? reply_handler : ''),
+            (handler != 'NULL' ? handler : ''),
+        ]
+    end
     code << "#{first_key.to_i}, #{last_key.to_i}, #{key_step.to_i}, "
     code << "0, #{handler}, #{reply_handler}}"
     code
@@ -281,3 +309,13 @@ outfile = File.join $path, 'commands.c'
 File.open(outfile, 'w'){|f| f.write(code)}
 puts "Code written to: #{outfile}"
 File.open(versfile, 'w'){|f| f.write($redis_version.to_s)}
+if $options[:csv]
+    require 'csv'
+    csvfile = File.join $path, 'commands.csv'
+    CSV.open(csvfile, "wb") do |csv_obj|
+        csv.each{|l|
+            csv_obj << l
+        }
+    end
+    puts "CSV written to: #{csvfile}"
+end

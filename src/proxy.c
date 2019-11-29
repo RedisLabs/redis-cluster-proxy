@@ -341,6 +341,34 @@ int genericBlockingCommand(void *r){
     return PROXY_COMMAND_UNHANDLED;
 }
 
+int xreadCommand(void *r) {
+    clientRequest *req = r;
+    int i, blocking = 0;
+    for (i = 1; i < req->argc; i++) {
+        if (i >= req->offsets_size) break;
+        int offset = req->offsets[i];
+        int len = req->lengths[i];
+        assert(((size_t) (offset + len)) < sdslen(req->buffer));
+        char *arg = req->buffer + offset;
+        blocking = (
+            memcmp(arg, "block", len) == 0 ||
+            memcmp(arg, "BLOCK", len) == 0
+        );
+        if (blocking) break;
+    }
+    if (blocking) {
+        client *c = req->client;
+        redisCluster *cluster = getCluster(c);
+        if (cluster && (cluster->broken || cluster->is_updating))
+            return PROXY_COMMAND_UNHANDLED;
+        if (!disableMultiplexingForClient(c)) {
+            freeClient(c);
+            return PROXY_COMMAND_HANDLED;
+        }
+    }
+    return PROXY_COMMAND_UNHANDLED;
+}
+
 int multiCommand(void *r) {
     clientRequest *req = r;
     client *c = req->client;
