@@ -206,6 +206,7 @@ commands = commands.map{|c|
             name, arity, first_key, last_key, key_step,
             (unsupported == 1 ? 'unsupported' : ''), '',
             proxy_flags,
+            (get_keys != 'NULL' ? get_keys : ''),
             (reply_handler != 'NULL' ? reply_handler : ''),
             (handler != 'NULL' ? handler : ''),
         ]
@@ -254,6 +255,7 @@ custom_commands = CUSTOM_COMMANDS.map{|cmd|
             '',
             'custom',
             0,
+            (get_keys != 'NULL' ? get_keys : ''),
             (reply_handler != 'NULL' ? reply_handler : ''),
             (handler != 'NULL' ? handler : ''),
         ]
