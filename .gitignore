@@ -10,4 +10,4 @@ test/tmp/
 commands_cur_version.txt
 utils/commands.c
 utils/commands.h
-utils/commands.csv
+utils/*.csv

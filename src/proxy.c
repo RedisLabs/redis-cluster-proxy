@@ -288,11 +288,11 @@ static sds genInfoString(sds section) {
                     "config_file:%s\r\n",
                     REDIS_CLUSTER_PROXY_VERSION,
                     name.sysname, name.release, name.machine,
-    #ifdef __GNUC__
+#ifdef __GNUC__
                     __GNUC__,__GNUC_MINOR__,__GNUC_PATCHLEVEL__,
-    #else
+#else
                     0,0,0,
-    #endif
+#endif
                     (long) getpid(),
                     config.num_threads,
                     config.port,
@@ -658,6 +658,98 @@ int sumReplies(void *_reply, void *_req) {
     addReplyInt(req->client, tot, req->id);
     req->client->min_reply_id = req->max_child_reply_id + 1;
     return 1;
+}
+
+/* Get Keys Callbacks */
+
+int zunionInterGetKeys(void *r, int *first_key, int *last_key, int *key_step,
+                       int **skip, int *skiplen, char **err)
+{
+    int numkeys = 0;
+    clientRequest *req = r;
+    assert(skip != NULL);
+    assert(skiplen != NULL);
+    if (req->argc < 4) {
+        if (err) *err = "Wrong number of arguments";
+        return -1;
+    }
+    if (req->offsets_size < 4) {
+        if (err) *err = "Invalid request format";
+        return -1;
+    }
+    *skip = zmalloc(sizeof(int));
+    if (skip == NULL) {
+        if (err) *err = "Failed to alloc memory";
+        return -1;
+    }
+    *skiplen = 1;
+    /* Skip "num-keys" argument (index 2) */
+    (*skip)[0] = 2;
+    *first_key = 1; /* DESTKEY */
+    /* Get "num-keys" argument value. */
+    sds numkeys_s = sdsnewlen(req->buffer + req->offsets[2],
+                              req->lengths[2]);
+    numkeys = atoi(numkeys_s);
+    sdsfree(numkeys_s);
+    *last_key = 2 + numkeys;
+    if (*last_key <= 2) {
+        if (err) *err = "Invalid request format";
+        return -1;
+    }
+    *key_step = 1;
+    numkeys += 1;
+    return numkeys;
+}
+
+int xreadGetKeys(void *r, int *first_key, int *last_key, int *key_step,
+                 int **skip, int *skiplen, char **err)
+{
+    int numkeys = 0, i;
+    clientRequest *req = r;
+    assert(skip != NULL);
+    assert(skiplen != NULL);
+    if (req->argc < 4) {
+        if (err) *err = "Wrong number of arguments";
+        return -1;
+    }
+    if (req->offsets_size < 4) {
+        if (err) *err = "Invalid request format";
+        return -1;
+    }
+    int streams_pos = -1;
+    for (i = 1; i < req->argc; i++) {
+        char *arg = req->buffer + req->offsets[i];
+        int len = req->lengths[i];
+        if (!memcmp(arg, "block", len) ||
+            !memcmp(arg, "BLOCK", len) ||
+            !memcmp(arg, "count", len) ||
+            !memcmp(arg, "COUNT", len))
+        {
+            i++;
+        } else if (!memcmp(arg, "group", len) ||
+                   !memcmp(arg, "GROUP", len))
+        {
+            i += 2;
+        } else if (!memcmp(arg, "streams", len) ||
+                   !memcmp(arg, "STREAMS", len))
+        {
+            streams_pos = i;
+            break;
+        } else break;
+    }
+    if (streams_pos != -1) numkeys = req->argc - streams_pos - 1;
+    if (streams_pos == -1 || numkeys == 0 || numkeys % 2 != 0)
+        goto syntax_err;
+    numkeys /= 2; /* We have half the keys as there are arguments because
+                     there are also the IDs, one per key. */
+    if (numkeys <= 0) goto syntax_err;
+    *first_key = streams_pos + 1;
+    *last_key = *first_key + (numkeys - 1);
+    *key_step = 1;
+    return numkeys;
+syntax_err:
+    if (err) *err = "Syntax error";
+    return -1;
 }
 
 /* Proxy functions */
@@ -2090,7 +2182,22 @@ static clusterNode *getRequestNode(clientRequest *req, sds *err) {
             }
             return req->node;
         } else {
-            if (err != NULL) *err = sdsnew("Unsupported command");
+            if (err != NULL)
+                *err = sdsnew("Cannot execute this command with no arguments");
+            req->node = NULL;
+            return NULL;
+        }
+    }
+    int *skip = NULL;
+    int skiplen = 0;
+    if (req->command->get_keys) {
+        char *keys_err = NULL;
+        int numkeys = req->command->get_keys(req, &first_key, &last_key,
+            &key_step, &skip, &skiplen, &keys_err);
+        if (numkeys < 0) {
+            if (err != NULL)
+                *err = sdsnew(keys_err ? keys_err : "Failed to get keys");
+            if (skip != NULL) zfree(skip);
             req->node = NULL;
             return NULL;
         }
@@ -2100,7 +2207,14 @@ static clusterNode *getRequestNode(clientRequest *req, sds *err) {
     if (last_key < 0) last_key = req->argc + last_key;
     if (last_key < first_key) last_key = first_key;
     if (key_step < 1) key_step = 1;
+    int skipped_count = 0;
     for (i = first_key; i <= last_key; i += key_step) {
+        if (skip != NULL && skipped_count < skiplen) {
+            if (i == skip[skipped_count]) {
+                skipped_count++;
+                continue;
+            }
+        }
         char *key = req->buffer + req->offsets[i];
         clusterNode *n = getNodeByKey(cluster, key, req->lengths[i], &slot);
         if (n == NULL) break;
@@ -2117,6 +2231,11 @@ static clusterNode *getRequestNode(clientRequest *req, sds *err) {
                              "`PROXY CONFIG SET enable-cross-slot 1`. "
                              "WARN: cross-slot queries can break the atomicity"
                              " of the query itself.";
+                } else if (req->command->proxy_flags &
+                           CMDFLAG_MULTISLOT_UNSUPPORTED)
+                {
+                    errmsg = "Cross-slot queries are not supported for this "
+                             "command.";
                 } else if (!splitMultiSlotRequest(req, i)) {
                     errmsg = "Failed to handle cross-slot request";
                 }
@@ -2132,6 +2251,7 @@ static clusterNode *getRequestNode(clientRequest *req, sds *err) {
             }
         }
     }
+    if (skip != NULL) zfree(skip);
     req->node = node;
     req->slot = slot;
     return node;

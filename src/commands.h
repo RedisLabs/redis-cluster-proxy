@@ -24,8 +24,24 @@
 #define PROXY_COMMAND_HANDLED      1
 #define PROXY_COMMAND_UNHANDLED    0
 
+#define CMDFLAG_MULTISLOT_UNSUPPORTED 1 << 0
+
 typedef int redisClusterProxyCommandHandler(void *request);
 typedef int redisClusterProxyReplyHandler(void *reply, void *request);
+
+/* Callback used to get key indices in some special commands, returns
+ * the number of keys or -1 if some error occurs.
+ * Arguments:
+ *     *req: pointer to the request
+ *     *first_key, *last_key, *key_step: pointers to keys indices/step
+ *     **skip: pointer to an array of indices (must be allocated and
+ *             freed outside) that must be skipped.
+ *     *skiplen: used to indicate the length of *skip array
+ *     **err: used for an eventual error message (when -1 is returned)
+ */
+typedef int redisClusterGetKeysCallback(void *req, int *first_key,
+   int *last_key, int *key_step, int **skip, int *skiplen, char **err);
+
 
 typedef struct redisCommandDef {
     char *name;
@@ -33,7 +49,9 @@ typedef struct redisCommandDef {
     int first_key;
     int last_key;
     int key_step;
+    int proxy_flags;
     int unsupported;
+    redisClusterGetKeysCallback     *get_keys;
     redisClusterProxyCommandHandler *handle;
     redisClusterProxyReplyHandler   *handleReply;
 } redisCommandDef;

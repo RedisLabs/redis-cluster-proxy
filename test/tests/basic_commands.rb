@@ -4,7 +4,7 @@ require 'hiredis'
 setup &RedisProxyTestCase::GenericSetup
 
 $options ||= {}
-$numkeys = 5000
+$numkeys = 2500
 $numlists = $numkeys / 10
 $numclients = $options[:clients] || 10
 $datalen = [1, 4096]

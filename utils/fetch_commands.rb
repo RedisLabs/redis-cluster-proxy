@@ -43,6 +43,12 @@ REPLY_HANDLERS = {
     'exists' => 'sumReplies',
     'del' => 'sumReplies'
 }
+GET_KEYS_PROC = {
+    'zunionstore' => 'zunionInterGetKeys',
+    'zinterstore' => 'zunionInterGetKeys',
+    'xread' => 'xreadGetKeys',
+    'xreadgroup' => 'xreadGetKeys',
+}
 CUSTOM_COMMANDS = [
     {
         name: 'proxy',
@@ -50,6 +56,24 @@ CUSTOM_COMMANDS = [
         arity: -2,
     }
 ]
+
+PROXY_FLAGS = {
+    MULTISLOT_UNSUPPORTED: '1 << 0',
+}
+
+PROXY_COMMANDS_FLAGS = {
+    MULTISLOT_UNSUPPORTED: {
+        'zunionstore' => true,
+        'zinterstore' => true,
+        'sunionstore' => true,
+        'sinterstore' => true,
+        'sdiffstore' => true,
+        'xread' => true,
+        'xreadgroup' => true
+    }
+}
+
+CMDFLAG_PRFX = "CMDFLAG"
 
 class Version
 
@@ -136,7 +160,7 @@ end
 
 csv = [
     ['NAME', 'ARITY', 'FIRST KEY', 'LAST KEY', 'KEY STEP', 'UNSUPPORTED',
-     'CUSTOM', 'REPLY HANDLER', 'HANDLER']
+     'CUSTOM', 'PROXY FLAGS', 'GET KEYS CALLBACK', 'REPLY HANDLER', 'HANDLER']
 ]
 $all_flags = %w(REDIS_COMMAND_FLAG_NONE)
 commands = $redis.command
@@ -156,25 +180,47 @@ commands = commands.map{|c|
             flags = flags.join(' | ')
         end
     end
+    proxy_flags = []
+    PROXY_FLAGS.each{|flag, val|
+        flag_commands = PROXY_COMMANDS_FLAGS[flag]
+        next if !flag_commands
+        proxy_flags << "#{CMDFLAG_PRFX}_#{flag}" if flag_commands[name]
+    }
+    if proxy_flags.length > 0
+        proxy_flags = proxy_flags.join(' | ')
+    else
+        proxy_flags = 0
+    end
     unsupported = (UNSUPPORTED_COMMANDS.include?(name) ? 1 : 0)
     code =  "    {#{name.inspect}, #{arity.to_i},"
     if $options[:flags]
-        code << "\n     #{flags},    \n"
+        code << "\n     #{flags},\n    "
     else
         code << ' '
     end
     handler = COMMAND_HANDLERS[name] || 'NULL'
     reply_handler = REPLY_HANDLERS[name] || 'NULL'
+    get_keys = GET_KEYS_PROC[name] || 'NULL'
     if $options[:csv]
         csv << [
             name, arity, first_key, last_key, key_step,
             (unsupported == 1 ? 'unsupported' : ''), '',
+            proxy_flags,
             (reply_handler != 'NULL' ? reply_handler : ''),
             (handler != 'NULL' ? handler : ''),
         ]
     end
-    code << "#{first_key.to_i}, #{last_key.to_i}, #{key_step.to_i}, "
-    code << "#{unsupported}, #{handler}, #{reply_handler}}"
+    code << "#{first_key.to_i}, #{last_key.to_i}, #{key_step.to_i},"
+    if proxy_flags != 0
+        if code[-1, 1] == ' '
+            code.chop!
+        end
+        code << "\n     #{proxy_flags},\n     "
+    else
+        code << " 0, "
+    end
+    code << "#{unsupported}, "
+    code << "#{get_keys}, #{handler}, #{reply_handler}}"
     code
 }
 custom_commands = CUSTOM_COMMANDS.map{|cmd|
@@ -200,18 +246,20 @@ custom_commands = CUSTOM_COMMANDS.map{|cmd|
                                     cmd[:key_step]
     handler = COMMAND_HANDLERS[cmd[:name]] || 'NULL'
     reply_handler = REPLY_HANDLERS[cmd[:name]] || 'NULL'
+    get_keys = GET_KEYS_PROC[cmd[:name]] || 'NULL'
     if $options[:csv]
         csv << [
             cmd[:name].to_s,
             cmd[:arity].to_i, cmd[:first_key], cmd[:last_key], cmd[:key_step],
             '',
             'custom',
+            0,
             (reply_handler != 'NULL' ? reply_handler : ''),
             (handler != 'NULL' ? handler : ''),
         ]
     end
     code << "#{first_key.to_i}, #{last_key.to_i}, #{key_step.to_i}, "
-    code << "0, #{handler}, #{reply_handler}}"
+    code << "0, 0, #{get_keys}, #{handler}, #{reply_handler}}"
     code
 }
 
@@ -222,8 +270,23 @@ if cur_year > COPY_START_YEAR
 end
 header = File.read(File.join($path, 'src_header.h'))
 header.gsub! '$CP_YEAR', copy_year
-handler_def = "typedef int redisClusterProxyCommandHandler(void *request);\n" +
-    "typedef int redisClusterProxyReplyHandler(void *reply, void *request);"
+handler_def =
+    "typedef int redisClusterProxyCommandHandler(void *request);\n" +
+    "typedef int redisClusterProxyReplyHandler(void *reply, void *request);\n" +
+    "\n" +
+    "/* Callback used to get key indices in some special commands, returns\n" +
+    " * the number of keys or -1 if some error occurs.\n" +
+    " * Arguments:\n" +
+    " *     *req: pointer to the request\n" +
+    " *     *first_key, *last_key, *key_step: pointers to keys indices/step\n"+
+    " *     **skip: pointer to an array of indices (must be allocated and\n" +
+    " *             freed outside) that must be skipped.\n" +
+    " *     *skiplen: used to indicate the length of *skip array\n"+
+    " *     **err: used for an eventual error message (when -1 is returned)\n"+
+    " */\n" +
+    "typedef int redisClusterGetKeysCallback(void *req, int *first_key,\n" +
+    "   int *last_key, int *key_step, int **skip, int *skiplen, " +
+    "char **err);\n";
 struct = <<EOS
 typedef struct redisCommandDef {
     char *name;
@@ -232,7 +295,9 @@ typedef struct redisCommandDef {
     int first_key;
     int last_key;
     int key_step;
+    int proxy_flags;
     int unsupported;
+    redisClusterGetKeysCallback     *get_keys;
     redisClusterProxyCommandHandler *handle;
     redisClusterProxyReplyHandler   *handleReply;
 } redisCommandDef;
@@ -252,6 +317,10 @@ code = header + "\n\n" +
 code << "#include <stdlib.h>\n\n"
 code << "#define PROXY_COMMAND_HANDLED      1\n"
 code << "#define PROXY_COMMAND_UNHANDLED    0\n\n"
+PROXY_FLAGS.each{|flag, val|
+    code << "#define #{CMDFLAG_PRFX}_#{flag} #{val}\n"
+    code << "\n" if flag == PROXY_FLAGS.keys.last
+}
 if $options[:flags]
     code << $all_flags.map{|flag|
         if flag_idx == 0
@@ -294,6 +363,17 @@ if REPLY_HANDLERS.length > 0
     }
     code << "\n"
 end
+if GET_KEYS_PROC.length > 0
+    code << "/* Get Keys Callbacks */\n"
+    added = {}
+    GET_KEYS_PROC.each{|cmdname, func|
+        next if added[func]
+        code << "int #{func}(void *req, int *first_key, int *last_key,\n" +
+                "   int *key_step, int **skip, int *skiplen, char **err);\n"
+        added[func] = true
+    }
+    code << "\n"
+end
 code << "struct redisCommandDef redisCommandTable[#{tot_commands}] = {\n"
 code << commands.join(",\n")
 if custom_commands.length > 0
@@ -311,7 +391,7 @@ puts "Code written to: #{outfile}"
 File.open(versfile, 'w'){|f| f.write($redis_version.to_s)}
 if $options[:csv]
     require 'csv'
-    csvfile = File.join $path, 'commands.csv'
+    csvfile = File.join $path, 'proxy_commands.csv'
     CSV.open(csvfile, "wb") do |csv_obj|
         csv.each{|l|
             csv_obj << l
