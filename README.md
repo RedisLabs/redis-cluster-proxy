@@ -13,8 +13,8 @@ So, these are the main features of Redis Cluster Proxy:
 - Multithreaded
 - Both multiplexing and private connection models supported
 - Query execution and reply order are guaranteed even in multiplexing contexts
-- Automatic cluster configuration update after `ASK|MOVED` errors: when those kinds of error replies occur, the proxy automatically updates its internal representation of the cluster by fetching an updated configuration of it and remapping of all the slots. All queries are re-executed after the update is completed, so that from the client's point-of-view everything flows as normal (the clients don't receive the ASK|MOVED error: they will directly receive the replies after the cluster configuration has been updated).
-- Cross-slot/Cross-node queries: many commands involving more keys belonging to different slots (or even different cluster nodes) are supported. Those commands will split the query into multiple queries that will be routed to different slots/nodes. Reply handling for those commands is specific.  Some commands, such as `MGET`, will merge all the replies as if they were a single reply. Other commands such as `MSET` or `DEL` will sum the result of all the replies. Since those commands actually break the atomicity of the query, they'll be made optional (disabled by default). 
+- Automatic cluster configuration update after `ASK|MOVED` errors: when those kinds of error replies occur, the proxy automatically updates its internal representation of the cluster by fetching an updated configuration of it and remapping  all the slots. All queries are re-executed after the update is completed, so that, from the client's point-of-view, everything flows as normal (the clients don't receive the ASK|MOVED error: they will directly receive the replies after the cluster configuration has been updated).
+- Cross-slot/Cross-node queries: many commands involving more keys belonging to different slots (or even different cluster nodes) are supported. Those commands will split the query into multiple queries that will be routed to different slots/nodes. Reply handling for those commands is specific.  Some commands, such as `MGET`, will merge all the replies as if they were a single reply. Other commands such as `MSET` or `DEL` will sum the result of all the replies. Since those commands actually break the atomicity of the query, they'll be made optional (disabled by default). See below for more info.
 - Some commands with no specific node/slot such as `DBSIZE` are delivered to all the nodes and the replies will be map-reduced in order to give a sum of all the values replied.
 - Additional `PROXY` command that can be used to perform some proxy-specific actions.
 
@@ -77,19 +77,19 @@ By default, Redis Cluster Port will listen on port 7777, but you can change it w
 
 You can change the number of threads using the `--threads` option.
 
-You can use a configuration file instead of passing arguments by using the `-c` options, ie:
+You can also use a configuration file instead of passing arguments by using the `-c` options, ie:
 
 `redis-cluster-proxy -c /path/to/my/proxy.conf 127.0.0.1:7000`
 
 After launching it, you can connect to the proxy as if it were a normal Redis server (however make sure to understand the current limitations).
 
-You can then connect to Redis Cluster Proxy as if it were a notmal Redis instance, using the client you prefer, ie:
+You can then connect to Redis Cluster Proxy using the client you prefer, ie:
 
 `redis-cli -p 7777`
 
 # Enabling Cross-slots queries
 
-Cross-slots queries are queries using keys belonging to different slots of even different nodes.
+Cross-slots queries are queries using keys belonging to different slots or even different nodes.
 Since their execution is not guaranteed to be atomic (so, they can actually break the atomic design of many Redis commands), they are disabled by default.
 Anyway, if you don't mind about atomicity and you want this feature, you can turn them on when you launch the proxy by using the `--enable-cross-slot`, or by setting `enable-cross-slot yes` into your config file. You can also activate this feature while the proxy is running by using the special `PROXY` command (see below).
 
@@ -101,8 +101,8 @@ The `PROXY` command will allow to get specific info or perform actions that are 
 
 - PROXY CONFIG GET|SET option [value]
 
-  Can be used to get or set a specific option of the proxy, where the options
-  are the same used as the command line arguments (without the `--` prefix) or specified in the config file.
+  It can be used to get or set a specific option of the proxy, where the options
+  are the same used in the command line arguments (without the `--` prefix) or specified in the config file.
   Not all the options can be changed (some of them, ie. `threads`, are read-only).
   
   Examples:
@@ -126,7 +126,7 @@ The `PROXY` command will allow to get specific info or perform actions that are 
 
 - PROXY INFO
 
-  Returns info specific for the cluster, in a similar fashion of the `INFO` command in Redis.
+  Returns info specific to the cluster, in a similar fashion of the `INFO` command in Redis.
 
 - PROXY COMMAND [UNSUPPORTED|CROSSSLOTS-UNSUPPORTED]
 
@@ -135,7 +135,7 @@ The `PROXY` command will allow to get specific info or perform actions that are 
   The returned reply is a nested Array: every command will be an item of the 
   top-level array and it will be an array itself, containing the following 
   items: command name, arity, first key, last key, key step, supported.
-  The latest item ("supported") indicates whether the command is currently 
+  The last item ("supported") indicates whether the command is currently 
   supported by the proxy.
 
   The optional third argument can be used to specify a filter, in this case:
