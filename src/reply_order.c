@@ -30,8 +30,8 @@ int appendUnorderedRepliesToBuffer(client *c) {
     raxStart(&iter, c->unordered_replies);
     uint64_t min_id = htonu64(c->min_reply_id);
     if (!raxSeek(&iter, ">=", (unsigned char*) &min_id, sizeof(min_id))) {
-        proxyLogDebug("Failed to seek client %llu unordered requests >= "
-                      "%llu.\n", c->id, c->min_reply_id);
+        proxyLogDebug("Failed to seek client %ld unordered requests >= "
+                      "%ld.\n", c->id, c->min_reply_id);
         raxStop(&iter);
         return -1;
     }

@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <inttypes.h>
 #include <assert.h>
 #include <hiredis.h>
 #include <netinet/in.h>
@@ -778,7 +779,8 @@ void clusterAddRequestToReprocess(redisCluster *cluster, void *r) {
     req->node = NULL;
     req->slot = -1;
     req->written = 0;
-    sds id = sdscatprintf(sdsempty(), "%lld:%lld", req->client->id, req->id);
+    char *fmt = "%" PRId64 ":%" PRId64;
+    sds id = sdscatprintf(sdsempty(), fmt, req->client->id, req->id);
     raxInsert(cluster->requests_to_reprocess, (unsigned char *) id,
               sdslen(id), req, NULL);
     listAddNodeTail(req->client->requests_to_reprocess, req);
@@ -788,7 +790,8 @@ void clusterAddRequestToReprocess(redisCluster *cluster, void *r) {
 void clusterRemoveRequestToReprocess(redisCluster *cluster, void *r) {
     clientRequest *req = r;
     req->need_reprocessing = 0;
-    sds id = sdscatprintf(sdsempty(), "%lld:%lld", req->client->id, req->id);
+    char *fmt = "%" PRId64 ":%" PRId64;
+    sds id = sdscatprintf(sdsempty(), fmt, req->client->id, req->id);
     raxRemove(cluster->requests_to_reprocess, (unsigned char *) id,
               sdslen(id), NULL);
     sdsfree(id);

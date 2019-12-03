@@ -23,12 +23,14 @@
 #include "endianconv.h"
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include <stdlib.h>
 #include <errno.h>
 #include <signal.h>
 #include <assert.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <sys/stat.h>
 #include <sys/utsname.h>
 
@@ -75,7 +77,7 @@
 #define getFirstRequestPending(node, isempty) \
     (getFirstQueuedRequest(node->connection->requests_pending,\
      isempty))
-#define REQID_PRINTF_FMT "%d:%llu:%llu"
+#define REQID_PRINTF_FMT "%d:%" PRId64 ":%" PRId64
 #define REQID_PRINTF_ARG(r) r->client->thread_id, r->client->id, r->id
 
 typedef struct proxyThread {
@@ -312,7 +314,7 @@ static sds genInfoString(sds section) {
         if (sections++) info = sdscat(info,"\r\n");
         info = sdscatprintf(info,
                      "#Clients\r\n"
-                     "connected_clients:%llu\r\n",
+                     "connected_clients:%" PRId64 "\r\n",
                      proxy.numclients
         );
     }
@@ -863,7 +865,7 @@ static void dumpQueue(clusterNode *node, int thread_id, int type) {
         if (i++ > 0) msg = sdscat(msg, ", ");
         clientRequest *req = ln->value;
         if (req == NULL) msg = sdscat(msg, "NULL");
-        else msg = sdscatprintf(msg, "%llu:%llu", req->client->id, req->id);
+        else msg = sdscatprintf(msg, REQID_PRINTF_FMT, REQID_PRINTF_ARG(req));
     }
     msg = sdscat(msg, "]\n");
     proxyLogDebug(msg);
@@ -1256,7 +1258,7 @@ static int processThreadPipeBufferForNewClients(proxyThread *thread) {
         c = (client *) *pc;
         aeEventLoop *el = thread->loop;
         listAddNodeTail(thread->clients, c);
-        proxyLogDebug("Client %llu added to thread %d\n",
+        proxyLogDebug("Client %" PRId64 " added to thread %d\n",
                       c->id, c->thread_id);
         errno = 0;
         if (!installIOHandler(el, c->fd, AE_READABLE, readQuery, c, 0)) {
@@ -1293,6 +1295,7 @@ static void readThreadPipe(aeEventLoop *el, int fd, void *privdata, int mask) {
     }
     thread->msgbuffer = sdscatlen(thread->msgbuffer, buf, nread);
     processed = processThreadPipeBufferForNewClients(thread);
+    UNUSED(processed);
 }
 
 static void printClusterConfiguration(redisCluster *cluster) {
@@ -1531,7 +1534,7 @@ static client *createClient(int fd, char *ip) {
  * request queues. */
 static int disableMultiplexingForClient(client *c) {
     if (c->cluster != NULL) return 1;
-    proxyLogDebug("Disabling multiplexing for client %llu\n", c->id);
+    proxyLogDebug("Disabling multiplexing for client %" PRId64 "\n", c->id);
     proxyThread *thread = proxy.threads[c->thread_id];
     c->cluster = duplicateCluster(thread->cluster);
     if (c->cluster == NULL) return 0;
@@ -1644,7 +1647,8 @@ static void freeClient(client *c) {
      * they could break all other following requests in a multiplexing
      * context. */
     if (c->requests_with_write_handler > 0) return;
-    proxyLogDebug("Freeing client %llu (thread: %d)\n", c->id, c->thread_id);
+    proxyLogDebug("Freeing client %" PRId64 " (thread: %d)\n",
+                  c->id, c->thread_id);
     int thread_id = c->thread_id;
     proxyThread *thread = proxy.threads[thread_id];
     assert(thread != NULL);
@@ -1802,7 +1806,8 @@ static int writeToCluster(aeEventLoop *el, int fd, clientRequest *req) {
             freeRequest(req);
             freeClient(c);
         } else if (!enqueuePendingRequest(req)) {
-            proxyLogDebug("Could not enqueue pending request %d:%llu:%llu\n",
+            proxyLogDebug("Could not enqueue pending request "
+                          REQID_PRINTF_FMT "\n",
                           REQID_PRINTF_ARG(req));
             addReplyError(req->client, "Could not enqueue request", req->id);
             freeRequest(req);
@@ -2177,6 +2182,7 @@ static int splitMultiSlotRequest(clientRequest *req, int idx) {
         if (*(oldbuf + offset) == '$') break;
     }
     success = (offset >= 0);
+    sds newbuf = NULL;
     if (!success) goto cleanup;
     /* Trim the buffer up to the offset. */
     req->buffer = sdsnewlen(req->buffer, offset);
@@ -2196,7 +2202,7 @@ static int splitMultiSlotRequest(clientRequest *req, int idx) {
     if (!success) goto cleanup;
     llen = (p - req->buffer);
     /* Create a new query header containing the updated argument count */
-    sds newbuf = sdscatfmt(sdsempty(), "*%I", req->argc);
+    newbuf = sdscatfmt(sdsempty(), "*%I", req->argc);
     diff = sdslen(newbuf) - llen;
     sdsrange(req->buffer, llen, -1);
     newbuf = sdscatfmt(newbuf, "%S", req->buffer);
@@ -2248,15 +2254,17 @@ static int splitMultiSlotRequest(clientRequest *req, int idx) {
                   " to parent " REQID_PRINTF_FMT "\n",
                   REQID_PRINTF_ARG(new), REQID_PRINTF_ARG(parent));
     if (config.dump_buffer) {
-        proxyLogDebug("Req. %llu:%llu buffer:\n%s\n", req->client->id, req->id, 
+        proxyLogDebug("Req. " REQID_PRINTF_FMT " buffer:\n%s\n",
+                      REQID_PRINTF_ARG(req),
                       req->buffer);
-        proxyLogDebug("Req. %llu:%llu buffer:\n%s\n", new->client->id, new->id, 
+        proxyLogDebug("Req. " REQID_PRINTF_FMT " buffer:\n%s\n",
+                      REQID_PRINTF_ARG(new),
                       new->buffer);
     }
 cleanup:
     if (!success) {
-        proxyLogDebug("Failed to split multiple request %llu:%llu\n",
-                      req->client->id, req->id);
+        proxyLogDebug("Failed to split multiple request " REQID_PRINTF_FMT "\n",
+                      REQID_PRINTF_ARG(req));
         if (oldbuf && oldbuf != req->buffer) sdsfree(oldbuf);
         if (newbuf) sdsfree(newbuf);
         if (new != NULL) {
@@ -2738,8 +2746,8 @@ int processRequest(clientRequest *req, int *parsing_status) {
     if (node == NULL) {
         if (errmsg == NULL)
             errmsg = sdsnew("Failed to get node for query");
-        proxyLogDebug("%s %d:%llu:%llu\n", errmsg, c->thread_id,
-                      c->id, req->id);
+        proxyLogDebug("%s " REQID_PRINTF_FMT "\n", errmsg,
+                      REQID_PRINTF_ARG(req));
         goto invalid_request;
     }
     /* In we are under a MULTI transaction and there's no target node yet
@@ -2821,7 +2829,8 @@ void readQuery(aeEventLoop *el, int fd, void *privdata, int mask){
             return;
         }
     } else if (nread == 0) {
-        proxyLogDebug("Client %llu from %s closed connection (thread: %d)\n",
+        proxyLogDebug("Client %" PRId64 " from %s closed connection "
+                      "(thread: %d)\n",
                       c->id, c->ip, c->thread_id);
         freeClient(c);
         return;
@@ -2852,7 +2861,7 @@ void readQuery(aeEventLoop *el, int fd, void *privdata, int mask){
 static void acceptHandler(int fd, char *ip) {
     client *c = createClient(fd, ip);
     if (c == NULL) return;
-    proxyLogDebug("Client %llu connected from %s (thread: %d)\n",
+    proxyLogDebug("Client %" PRId64 " connected from %s (thread: %d)\n",
                   c->id, ip, c->thread_id);
     proxyThread *thread = proxy.threads[c->thread_id];
     assert(thread != NULL);
@@ -2931,7 +2940,8 @@ static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
     while (ctx->reader->len > 0) {
         int ok =
             (__hiredisReadReplyFromBuffer(ctx->reader, &_reply) == REDIS_OK);
-        int do_break = 0;
+        int do_break = 0, is_cluster_err = 0;
+        redisCluster *cluster = NULL;
         if (!ok) {
             proxyLogErr("Error: %s\n", ctx->errstr);
             errmsg = "Failed to get reply";
@@ -2968,9 +2978,8 @@ static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
                       errmsg ? " ERR: " : "OK!",
                       errmsg ? errmsg : "");
         dequeuePendingRequest(req);
-        redisCluster *cluster = getCluster(req->client);
+        cluster = getCluster(req->client);
         assert(cluster != NULL);
-        int is_cluster_err = 0;
         if (reply->type == REDIS_REPLY_ERROR) {
             assert(reply->str != NULL);
             /* In case of ASK|MOVED reply the cluster need to be
@@ -3023,8 +3032,9 @@ static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
                     goto consume_buffer;
                 }
             } else {
-                proxyLogDebug("Writing reply for request %llu:%llu to client "
-                              "buffer...\n", req->client->id, req->id);
+                proxyLogDebug("Writing reply for request " REQID_PRINTF_FMT
+                              " to client buffer...\n",
+                              REQID_PRINTF_ARG(req));
                 addReplyRaw(req->client, obuf, len, req->id);
             }
         }
@@ -3041,7 +3051,7 @@ consume_buffer:
         if (config.dump_queues) dumpQueue(node, thread_id, QUEUE_TYPE_PENDING);
         /* If cluster has been set is reconfiguring state, we call the
          * startClusterReconfiguration function. */
-        if (cluster->is_updating) {
+        if (cluster && cluster->is_updating) {
             int reconfig_status = updateCluster(cluster);
             do_break = (reconfig_status == CLUSTER_RECONFIG_ENDED);
             if (!do_break) {
@@ -3138,6 +3148,7 @@ static void readClusterReply(aeEventLoop *el, int fd,
         /* Exit, since an error occurred. */
         return;
     } else replies = processClusterReplyBuffer(ctx, node, thread_id);
+    UNUSED(replies);
     if (errmsg != NULL) sdsfree(errmsg);
 }
 

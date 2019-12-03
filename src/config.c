@@ -17,6 +17,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include "config.h"
 #include "sds.h"
 #include "zmalloc.h"

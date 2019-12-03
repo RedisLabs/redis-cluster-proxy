@@ -38,8 +38,11 @@ def is_down_err(reply)
     return false if !reply
     reply = reply.to_s
     reply = reply.downcase
-    (!reply['cluster node disconnected'].nil? ||
-    !reply['could not connect to node'].nil?)
+    (
+        !reply['cluster node disconnected'].nil? ||
+        !reply['could not connect to node'].nil? ||
+        !reply['error writing to cluster'].nil?
+    )
 end
 
 down_node_mutex = Mutex.new

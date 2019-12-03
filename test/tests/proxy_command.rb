@@ -3,7 +3,7 @@ setup &RedisProxyTestCase::GenericSetup
 test "PROXY CONFIG GET" do
     conf = {
         'threads' => 8,
-        'max-clients' => 10000
+        #'max-clients' => 10000
     }
     conf.each{|opt, val| 
         reply = $main_proxy.proxy('config', 'get', opt.to_s)
