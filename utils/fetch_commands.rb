@@ -22,7 +22,14 @@ require 'optparse'
 
 $path = File.expand_path(File.dirname(__FILE__))
 COPY_START_YEAR = 2019
-UNSUPPORTED_COMMANDS = %w(subscribe psubscribe)
+UNSUPPORTED_COMMANDS = %w(
+    subscribe psubscribe debug role migrate acl shutdown info wait
+    slaveof replconf time unwatch monitor config latency unsubscribe
+    scan replicaof pfselftest lastslave slowlog 
+    publish cluster sync command readwrite asking
+    script randomkey module pfdebug pubsub
+    hello memory psync client readonly punsubscribe
+)
 COMMAND_HANDLERS = {
     'proxy' => 'proxyCommand',
     'multi' => 'multiCommand',
@@ -34,6 +41,10 @@ COMMAND_HANDLERS = {
     'bzpopmax' => 'genericBlockingCommand',
     'xread' => 'xreadCommand',
     'xreadgroup' => 'xreadCommand',
+    'post' => 'securityWarningCommand',
+    'host:' => 'securityWarningCommand',
+    'ping' => 'pingCommand',
+    #'randomkey' => 'randomKeyCommand',
 }
 REPLY_HANDLERS = {
     'mget' => 'mergeReplies',
@@ -41,13 +52,25 @@ REPLY_HANDLERS = {
     'dbsize' => 'sumReplies',
     'touch' => 'sumReplies',
     'exists' => 'sumReplies',
-    'del' => 'sumReplies'
+    'del' => 'sumReplies',
+    'unlink' => 'sumReplies',
+    'auth' => 'getFirstMultipleReply',
+    'echo' => 'getFirstMultipleReply', # proxy echoCommand ?
+    'flushdb' => 'getFirstMultipleReply',
+    'flushall' => 'getFirstMultipleReply',
+    'lolwut' => 'getFirstMultipleReply',
+    'save' => 'getFirstMultipleReply',
+    'bgsave' => 'getFirstMultipleReply',
+    'keys' => 'mergeReplies',
 }
 GET_KEYS_PROC = {
     'zunionstore' => 'zunionInterGetKeys',
     'zinterstore' => 'zunionInterGetKeys',
     'xread' => 'xreadGetKeys',
     'xreadgroup' => 'xreadGetKeys',
+    'sort' => 'sortGetKeys',
+    'eval' => 'evalGetKeys',
+    'evalsha' => 'evalGetKeys',
 }
 CUSTOM_COMMANDS = [
     {
@@ -59,6 +82,7 @@ CUSTOM_COMMANDS = [
 
 PROXY_FLAGS = {
     MULTISLOT_UNSUPPORTED: '1 << 0',
+    DUPLICATE: '1 << 1',
 }
 
 PROXY_COMMANDS_FLAGS = {
@@ -70,6 +94,9 @@ PROXY_COMMANDS_FLAGS = {
         'sdiffstore' => true,
         'xread' => true,
         'xreadgroup' => true
+    },
+    DUPLICATE: {
+        'keys' => true
     }
 }
 
@@ -167,6 +194,7 @@ commands = $redis.command
 commands = commands.map{|c|
     name, arity, flags, first_key, last_key, key_step = c
     name = name.downcase
+    cmdflags = flags.dup
     if $options[:flags]
         flags = flags.map.each{|flag|
             flag_name =
@@ -192,6 +220,7 @@ commands = commands.map{|c|
         proxy_flags = 0
     end
     unsupported = (UNSUPPORTED_COMMANDS.include?(name) ? 1 : 0)
+    unsupported = true if !unsupported && cmdflags.include?('pubsub')
     code =  "    {#{name.inspect}, #{arity.to_i},"
     if $options[:flags]
         code << "\n     #{flags},\n    "

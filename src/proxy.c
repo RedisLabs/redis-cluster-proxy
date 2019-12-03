@@ -57,9 +57,12 @@
 
 #define ERROR_CLUSTER_RECONFIG \
     "Failed to fetch cluster configuration"
+#define ERROR_COMMAND_UNSUPPORTED_CROSSSLOT \
+    "Cross-slot queries are not supported for this command."
 
 #define UNUSED(V) ((void) V)
 
+#define getThread(c) (proxy.threads[c->thread_id])
 #define getCluster(c) \
     (c->cluster ? c->cluster : proxy.threads[c->thread_id]->cluster)
 #define enqueueRequestToSend(req) (enqueueRequest(req, QUEUE_TYPE_SENDING))
@@ -82,6 +85,7 @@ typedef struct proxyThread {
     redisCluster *cluster;
     aeEventLoop *loop;
     list *clients;
+    list *unlinked_clients;
     list *pending_messages;
     uint64_t next_client_id;
     sds msgbuffer;
@@ -96,6 +100,7 @@ static proxyThread *createProxyThread(int index);
 static void freeProxyThread(proxyThread *thread);
 static void *execProxyThread(void *ptr);
 static client *createClient(int fd, char *ip);
+static void unlinkClient(client *c);
 static void freeClient(client *c);
 static clientRequest *createRequest(client *c);
 void readQuery(aeEventLoop *el, int fd, void *privdata, int mask);
@@ -335,7 +340,7 @@ int genericBlockingCommand(void *r){
     if (cluster && (cluster->broken || cluster->is_updating))
         return PROXY_COMMAND_UNHANDLED;
     if (!disableMultiplexingForClient(c)) {
-        freeClient(c);
+        unlinkClient(c);
         return PROXY_COMMAND_HANDLED;
     }
     return PROXY_COMMAND_UNHANDLED;
@@ -362,11 +367,27 @@ int xreadCommand(void *r) {
         if (cluster && (cluster->broken || cluster->is_updating))
             return PROXY_COMMAND_UNHANDLED;
         if (!disableMultiplexingForClient(c)) {
-            freeClient(c);
+            unlinkClient(c);
             return PROXY_COMMAND_HANDLED;
         }
     }
     return PROXY_COMMAND_UNHANDLED;
+}
+
+int securityWarningCommand(void *r) {
+    clientRequest *req = r;
+    proxyLogWarn("Possible SECURITY ATTACK detected. It looks like somebody "
+        "is sending POST or Host: commands to Redis. This is likely due to an "
+        "attacker attempting to use Cross Protocol Scripting to compromise "
+        "your Redis instance. Connection aborted.\n");
+    unlinkClient(req->client);
+    return PROXY_COMMAND_HANDLED;
+}
+
+int pingCommand(void *r) {
+    clientRequest *req = r;
+    addReplyString(req->client, "PONG", req->id);
+    return PROXY_COMMAND_HANDLED;
 }
 
 int multiCommand(void *r) {
@@ -376,7 +397,7 @@ int multiCommand(void *r) {
         /* Disable multiplexing for the requesting client and create a
          * private cluster connection for it. */
         if (!disableMultiplexingForClient(c)) {
-            freeClient(c);
+            unlinkClient(c);
             return PROXY_COMMAND_HANDLED;
         }
         if (c->multi_request != NULL) freeRequest(c->multi_request);
@@ -588,6 +609,8 @@ final:
     return ok;
 }
 
+/* Reply with the first reply within multiple replies from multiple queries.
+ * If there's at least an error within the replies, reply with the error. */
 int getFirstMultipleReply(void *_reply, void *_req) {
     UNUSED(_reply);
     clientRequest *req = _req;
@@ -607,11 +630,10 @@ int getFirstMultipleReply(void *_reply, void *_req) {
             /* Reply is an error, reply the error and exit. */
             addReplyRaw(req->client, child_reply, sdslen(child_reply),
                         req->id);
-            raxStop(&iter);
-            return 1;
+            first = child_reply;
+            break;
         }
-        first = child_reply;
-        break;
+        if (first == NULL) first = child_reply;
     }
     raxStop(&iter);
     if (first) {
@@ -678,7 +700,7 @@ int zunionInterGetKeys(void *r, int *first_key, int *last_key, int *key_step,
         return -1;
     }
     *skip = zmalloc(sizeof(int));
-    if (skip == NULL) {
+    if (*skip == NULL) {
         if (err) *err = "Failed to alloc memory";
         return -1;
     }
@@ -706,8 +728,8 @@ int xreadGetKeys(void *r, int *first_key, int *last_key, int *key_step,
 {
     int numkeys = 0, i;
     clientRequest *req = r;
-    assert(skip != NULL);
-    assert(skiplen != NULL);
+    UNUSED(skip);
+    UNUSED(skiplen);
     if (req->argc < 4) {
         if (err) *err = "Wrong number of arguments";
         return -1;
@@ -750,6 +772,72 @@ int xreadGetKeys(void *r, int *first_key, int *last_key, int *key_step,
 syntax_err:
     if (err) *err = "Syntax error";
     return -1;
+}
+
+int sortGetKeys(void *r, int *first_key, int *last_key, int *key_step,
+                int **skip, int *skiplen, char **err)
+{
+    int numkeys = 0, storepos = -1, i;
+    clientRequest *req = r;
+    assert(skip != NULL);
+    assert(skiplen != NULL);
+    if (req->argc < 2) {
+        if (err) *err = "Wrong number of arguments";
+        return -1;
+    }
+    if (req->offsets_size < 2) {
+        if (err) *err = "Invalid request format";
+        return -1;
+    }
+    *first_key = 1;
+    *key_step = 1;
+    *skiplen = 0;
+    for (i = 2; i < req->argc; i++) {
+        char *arg = req->buffer + req->offsets[i];
+        int len = req->lengths[i];
+        if (!memcmp(arg, "store", len) ||
+            !memcmp(arg, "STORE", len))
+        {
+            storepos = i;
+            break;
+        }
+    }
+    if (storepos == -1) *last_key = *first_key;
+    else {
+        *last_key = storepos + 1;
+        *skiplen = storepos - *first_key;
+        *skip = zmalloc(*skiplen * sizeof(int));
+        if (*skip == NULL) {
+            if (err) *err = "Failed to alloc memory";
+            return -1;
+        }
+        for (i = 2; i <= storepos; i++) (*skip)[i - 2] = i;
+    }
+    return numkeys;
+}
+
+int evalGetKeys(void *r, int *first_key, int *last_key, int *key_step,
+                int **skip, int *skiplen, char **err)
+{
+    int numkeys = 0;
+    UNUSED(skip);
+    UNUSED(skiplen);
+    clientRequest *req = r;
+    if (req->argc < 3) {
+        if (err) *err = "Wrong number of arguments";
+        return -1;
+    }
+    if (req->offsets_size < 3) {
+        if (err) *err = "Invalid request format";
+        return -1;
+    }
+    sds numkeys_s = sdsnewlen(req->buffer + req->offsets[2], req->lengths[2]);
+    numkeys = atoi(numkeys_s);
+    *first_key = 3;
+    *last_key = 3 + numkeys;
+    *key_step = 1;
+    sdsfree(numkeys_s);
+    return numkeys;
 }
 
 /* Proxy functions */
@@ -1149,7 +1237,12 @@ void beforeThreadSleep(struct aeEventLoop *eventLoop) {
         clusterNode *node = ln->value;
         handleNextRequestToCluster(node);
     }
-    /* TODO: Also flush private clusters' requests. */
+    listRewind(thread->unlinked_clients, &li);
+    while ((ln = listNext(&li))) {
+        client *c = ln->value;
+        listDelNode(thread->unlinked_clients, ln);
+        if (c != NULL) freeClient(c);
+    }
 }
 
 static int processThreadPipeBufferForNewClients(proxyThread *thread) {
@@ -1254,38 +1347,34 @@ static proxyThread *createProxyThread(int index) {
                                    config.entry_node_port,
                                    config.entry_node_socket)) {
         proxyLogErr("ERROR: Failed to fetch cluster configuration!\n");
+        freeProxyThread(thread);
         return NULL;
     }
     if (is_first) printClusterConfiguration(thread->cluster);
     thread->clients = listCreate();
-    if (thread->clients == NULL) {
-        freeProxyThread(thread);
-        return NULL;
-    }
+    if (thread->clients == NULL) goto fail;
+    thread->unlinked_clients = listCreate();
+    if (thread->unlinked_clients == NULL) goto fail;
     thread->pending_messages = listCreate();
-    if (thread->pending_messages == NULL) {
-        freeProxyThread(thread);
-        return NULL;
-    }
+    if (thread->pending_messages == NULL) goto fail;
     listSetFreeMethod(thread->pending_messages, zfree);
     int loopsize = proxy.min_reserved_fds +
                    listLength(thread->cluster->nodes) +
                    (config.maxclients / config.num_threads) + 1;
     thread->loop = aeCreateEventLoop(loopsize);
-    if (thread->loop == NULL) {
-        freeProxyThread(thread);
-        return NULL;
-    }
+    if (thread->loop == NULL) goto fail;
     thread->loop->privdata = thread;
     aeSetBeforeSleepProc(thread->loop, beforeThreadSleep);
     /*aeCreateTimeEvent(thread->loop, 1, proxyThreadCron, NULL,NULL);*/
     if (aeCreateFileEvent(thread->loop, thread->io[THREAD_IO_READ],
                           AE_READABLE, readThreadPipe, thread) == AE_ERR) {
-        freeProxyThread(thread);
-        return NULL;
+        goto fail;
     }
     thread->msgbuffer = sdsempty();
     return thread;
+fail:
+    if (thread) freeProxyThread(thread);
+    return NULL;
 }
 
 static void handlePendingAwakeMessages(aeEventLoop *el, int fd, void *privdata,
@@ -1361,6 +1450,17 @@ static void freeProxyThread(proxyThread *thread) {
         listRelease(thread->clients);
         thread->clients = NULL;
     }
+    if (thread->unlinked_clients != NULL) {
+        listIter li;
+        listNode *ln;
+        listRewind(thread->unlinked_clients, &li);
+        while ((ln = listNext(&li)) != NULL) {
+            client *c = ln->value;
+            freeClient(c);
+        }
+        listRelease(thread->unlinked_clients);
+        thread->unlinked_clients = NULL;
+    }
     if (thread->pending_messages != NULL) {
         listRelease(thread->pending_messages);
     }
@@ -1414,7 +1514,7 @@ static client *createClient(int fd, char *ip) {
     c->multi_transaction_node = NULL;
     if (config.disable_multiplexing == CFG_DISABLE_MULTIPLEXING_ALWAYS) {
         if (!disableMultiplexingForClient(c)) {
-            freeClient(c);
+            unlinkClient(c);
             return NULL;
         }
     }
@@ -1476,6 +1576,7 @@ static int disableMultiplexingForClient(client *c) {
 }
 
 static void unlinkClient(client *c) {
+    if (c->status == CLIENT_STATUS_UNLINKED) return;
     if (c->fd) {
         aeEventLoop *el = getClientLoop(c);
         if (el != NULL) {
@@ -1484,6 +1585,8 @@ static void unlinkClient(client *c) {
             close(c->fd);
         }
     }
+    proxyThread *thread = getThread(c);
+    listAddNodeTail(thread->unlinked_clients, c);
     c->status = CLIENT_STATUS_UNLINKED;
 }
 
@@ -1535,7 +1638,7 @@ static void freeAllClientRequests(client *c) {
 }
 
 static void freeClient(client *c) {
-    if (c->status != CLIENT_STATUS_UNLINKED) unlinkClient(c);
+    unlinkClient(c);
     /* If the client still has requests handled by write handlers, it's not
      * possibile to free it soon, as those requests would be truncated and
      * they could break all other following requests in a multiplexing
@@ -1564,6 +1667,8 @@ static void freeClient(client *c) {
     if (c->unordered_replies)
         raxFreeWithCallback(c->unordered_replies, (void (*)(void*))sdsfree);
     if (c->cluster != NULL) freeCluster(c->cluster);
+    ln = listSearchKey(thread->unlinked_clients, c);
+    if (ln) ln->value = NULL;
     zfree(c);
     proxy.numclients--;
 }
@@ -1581,7 +1686,7 @@ static int writeToClient(client *c) {
             nwritten = 0;
         } else {
             proxyLogDebug("Error writing to client: %s", strerror(errno));
-            freeClient(c);
+            unlinkClient(c);
             return 0;
         }
     }
@@ -2007,12 +2112,13 @@ static int duplicateRequestForAllMasters(clientRequest *req) {
         req->child_replies = raxNew();
         if (req->child_replies == NULL) return 0;
     }
-    /* TODO: use private slots_map if multiplexing is disabled. */
     listIter li;
     listNode *ln;
     redisCluster *cluster = getCluster(req->client);
     listRewind(cluster->nodes, &li);
     clientRequest *cur = req->client->current_request;
+    proxyLogDebug("Duplicating request " REQID_PRINTF_FMT " for all masters\n",
+                  REQID_PRINTF_ARG(req));
     while ((ln = listNext(&li)) != NULL) {
         clusterNode *node = ln->value;
         if (node->is_replica) continue;
@@ -2202,7 +2308,23 @@ static clusterNode *getRequestNode(clientRequest *req, sds *err) {
             return NULL;
         }
     }
-    if (first_key >= req->argc) first_key = req->argc - 1;
+    if (first_key >= req->argc) {
+        /* Some commands have optional keys. In this case, route the query to
+         * the first master node. */
+        req->node = getFirstMappedNode(cluster);
+        return req->node;
+    } else if (first_key == 0) {
+        /* If there's no first key defined and  command is not flagged to be
+         * duplicated for all masters, jsut use the first master node. */
+        if (req->command->proxy_flags & CMDFLAG_DUPLICATE) {
+            if (!duplicateRequestForAllMasters(req)) {
+                if (err) *err = sdsnew("Failed to create multiple requests");
+                req->node = NULL;
+                return NULL;
+            }
+        } else req->node = getFirstMappedNode(cluster);
+        return req->node;
+    }
     if (last_key >= req->argc) last_key = req->argc - 1;
     if (last_key < 0) last_key = req->argc + last_key;
     if (last_key < first_key) last_key = first_key;
@@ -2232,10 +2354,10 @@ static clusterNode *getRequestNode(clientRequest *req, sds *err) {
                              "WARN: cross-slot queries can break the atomicity"
                              " of the query itself.";
                 } else if (req->command->proxy_flags &
-                           CMDFLAG_MULTISLOT_UNSUPPORTED)
+                           CMDFLAG_MULTISLOT_UNSUPPORTED ||
+                           req->command->handleReply == NULL)
                 {
-                    errmsg = "Cross-slot queries are not supported for this "
-                             "command.";
+                    errmsg = ERROR_COMMAND_UNSUPPORTED_CROSSSLOT;
                 } else if (!splitMultiSlotRequest(req, i)) {
                     errmsg = "Failed to handle cross-slot request";
                 }
@@ -2718,7 +2840,7 @@ void readQuery(aeEventLoop *el, int fd, void *privdata, int mask){
             if (req == processed_req) continue;
             else if (req == NULL) continue;
             else {
-                if (!processRequest(req, &parsing_status)) freeClient(c);
+                if (!processRequest(req, &parsing_status)) unlinkClient(c);
                 else {
                     if (parsing_status == PARSE_STATUS_INCOMPLETE) break;
                 }
@@ -2790,6 +2912,9 @@ static int addChildRequestReply(clientRequest *req, char *replybuf, int len) {
         assert(cmd != NULL);
         if (cmd->handleReply != NULL) {
             cmd->handleReply(NULL, parent);
+        } else {
+            addReplyError(parent->client, ERROR_COMMAND_UNSUPPORTED_CROSSSLOT,
+                          parent->id);
         }
         freeRequest(parent);
     }

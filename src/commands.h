@@ -25,6 +25,7 @@
 #define PROXY_COMMAND_UNHANDLED    0
 
 #define CMDFLAG_MULTISLOT_UNSUPPORTED 1 << 0
+#define CMDFLAG_DUPLICATE 1 << 1
 
 typedef int redisClusterProxyCommandHandler(void *request);
 typedef int redisClusterProxyReplyHandler(void *reply, void *request);
