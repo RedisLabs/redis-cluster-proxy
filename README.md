@@ -92,7 +92,8 @@ You can then connect to Redis Cluster Proxy as if it were a notmal Redis instanc
 Cross-slots queries are queries using keys belonging to different slots of even different nodes.
 Since their execution is not guaranteed to be atomic (so, they can actually break the atomic design of many Redis commands), they are disabled by default.
 Anyway, if you don't mind about atomicity and you want this feature, you can turn them on when you launch the proxy by using the `--enable-cross-slot`, or by setting `enable-cross-slot yes` into your config file. You can also activate this feature while the proxy is running by using the special `PROXY` command (see below).
-**Note**: cross-slots queries are not supported by all the commands, even if the feature is turned on (ie. you cannot use it with `EVAL` or `ZUNIONSTORE` and many other commands). In that case, you'll receive a specific error reply.
+
+**Note**: cross-slots queries are not supported by all the commands, even if the feature is turned on (ie. you cannot use it with `EVAL` or `ZUNIONSTORE` and many other commands). In that case, you'll receive a specific error reply. You can fetch a list of commands that cannot be used in cross-slots queries by using the `PROXY` command (see below).
 
 # The PROXY command
 
@@ -126,6 +127,21 @@ The `PROXY` command will allow to get specific info or perform actions that are 
 - PROXY INFO
 
   Returns info specific for the cluster, in a similar fashion of the `INFO` command in Redis.
+
+- PROXY COMMAND [UNSUPPORTED|CROSSSLOTS-UNSUPPORTED]
+
+  Returns a list of all the Redis commands handled (known) 
+  by Redis Cluster Proxy, in a similar fashion to Redis `COMMAND` function.
+  The returned reply is a nested Array: every command will be an item of the 
+  top-level array and it will be an array itself, containing the following 
+  items: command name, arity, first key, last key, key step, supported.
+  The latest item ("supported") indicates whether the command is currently 
+  supported by the proxy.
+
+  The optional third argument can be used to specify a filter, in this case:
+  - `UNSUPPORTED`: only lists unsupported commands
+  - `CROSSSLOTS-UNSUPPORTED`: only lists commands that cannot be used with 
+  cross-slots queries, even if they've been enabled in the proxy's configuration.
 
 # Current status
 

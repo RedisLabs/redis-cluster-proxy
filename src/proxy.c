@@ -263,6 +263,51 @@ static sds proxySubCommandConfig(clientRequest *r, sds option, sds value,
     return reply;
 }
 
+static void proxySubCommandConfigCommand(clientRequest *req, sds cmdtype) {
+    int only_unsupported = 0;
+    int only_crossslots_disabled = 0;
+    if (cmdtype) {
+        if (!strcasecmp("unsupported", cmdtype)) only_unsupported = 1;
+        else if (!strcasecmp("crossslots-unsupported", cmdtype))
+            only_crossslots_disabled = 1;
+        else {
+            addReplyError(req->client,
+                          "Invalid argument `TYPE` for PROXY COMMAND. "
+                          "Supported types: unsupported, "
+                          "crossslots-unsupported",
+                          req->id);
+            return;
+        }
+    }
+    if (!initReplyArray(req->client)) {
+        addReplyError(req->client, "Out of memory", req->id);
+        return;
+    }
+    int i, command_count = sizeof(redisCommandTable) / sizeof(redisCommandDef);
+    for (i = 0; i < command_count; i++) {
+        redisCommandDef *cmd = redisCommandTable + i;
+        if (only_unsupported && !cmd->unsupported) continue;
+        if (only_crossslots_disabled) {
+            int unsupported = cmd->proxy_flags & CMDFLAG_MULTISLOT_UNSUPPORTED;
+            int multi_keys = (
+                cmd->first_key > 0 &&
+                (cmd->last_key < 0 || (cmd->last_key - cmd->first_key) > 0)
+            );
+            if (multi_keys && cmd->handleReply == NULL) unsupported = 1;
+            if (!unsupported) continue;
+        }
+        sds c = sdsnew("*6\r\n");
+        c = sdscatprintf(c, "+%s\r\n", cmd->name);
+        c = sdscatfmt(c, ":%i\r\n", cmd->arity);
+        c = sdscatfmt(c, ":%i\r\n", cmd->first_key);
+        c = sdscatfmt(c, ":%i\r\n", cmd->last_key);
+        c = sdscatfmt(c, ":%i\r\n", cmd->key_step);
+        c = sdscatfmt(c, ":%i\r\n", cmd->unsupported);
+        listAddNodeTail(req->client->reply_array, c);
+    }
+    addReplyArray(req->client, req->id);
+}
+
 static sds genInfoString(sds section) {
     int default_section = (section == NULL ||
                            strcasecmp("default", section) == 0);
@@ -529,6 +574,16 @@ int proxyCommand(void *r) {
         addReplyBulkString(req->client, infostr, req->id);
         sdsfree(infostr);
         if (section != NULL) sdsfree(section);
+    } else if (strcasecmp("command", subcmd) == 0) {
+        sds cmdtype = NULL;
+        if (req->argc > 2) {
+            assert(req->offsets_size >= 2);
+            int offset = req->offsets[2];
+            int len = req->lengths[2];
+            cmdtype = sdsnewlen(req->buffer + offset, len);
+        }
+        proxySubCommandConfigCommand(req, cmdtype);
+        if (cmdtype) sdsfree(cmdtype);
     } else {
         err = sdsnew("Unsupported subcommand ");
         err = sdscatfmt(err, "'%S' for command PROXY", subcmd);
