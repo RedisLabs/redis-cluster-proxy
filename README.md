@@ -2,9 +2,21 @@
 
 Redis Cluster Proxy is a proxy for [Redis](https://redis.io/) Clusters.
 Redis has the ability to run in Cluster mode, where a set of Redis instances will take care of failover and partitioning. This special mode requires to use special clients understanding the Cluster protocol: by using this Proxy instead the Cluster is abstracted away, and you can talk with a set of instances composing a Redis Cluster like if they were a single instance.
-Redis Cluster Proxy is multi-threaded and it currently uses a multiplexing communication model because the project is currently an alpha, so Redis features that require specific connections per client are yet not supported.
-In the future, multiplexing will be automatically disabled for specific cases: connections will start multiplexed. Once a given client calls certain redis commands like MULTI, or blocking commands, the Proxy will create a set of private connections for such specific client. In this way clients just sending trivial commands like GETs and SETs will
+Redis Cluster Proxy is multi-threaded and it currently uses, by default, a multiplexing communication model so that every thread has its own connection to the cluster that is shared to all clients belonging to the thread itself.
+Anyway, in some special cases (ie. `MULTI` transactions or blocking commands), the multiplexing gets disabled and the client will have its own cluster connection.
+In this way clients just sending trivial commands like GETs and SETs will
 not require a private set of connections to the Redis Cluster.
+
+So, these are the main features of Redis Cluster Proxy:
+
+- Routing: every query is automatically routed to the correct node of the cluster
+- Multithreaded
+- Both multiplexing and private connection models supported
+- Query execution and reply order are guaranteed even in multiplexing contexts
+- Automatic cluster configuration update after `ASK|MOVED` errors: when those kinds of error replies occur, the proxy automatically updates its internal representation of the cluster by fetching an updated configuration of it and remapping of all the slots. All queries are re-executed after the update is completed, so that from the client's point-of-view everything flows as normal (the clients don't receive the ASK|MOVED error: they will directly receive the replies after the cluster configuration has been updated).
+- Cross-slot/Cross-node queries: many commands involving more keys belonging to different slots (or even different cluster nodes) are supported. Those commands will split the query into multiple queries that will be routed to different slots/nodes. Reply handling for those commands is specific.  Some commands, such as `MGET`, will merge all the replies as if they were a single reply. Other commands such as `MSET` or `DEL` will sum the result of all the replies. Since those commands actually break the atomicity of the query, they'll be made optional (disabled by default). 
+- Some commands with no specific node/slot such as `DBSIZE` are delivered to all the nodes and the replies will be map-reduced in order to give a sum of all the values replied.
+- Additional `PROXY` command that can be used to perform some proxy-specific actions.
 
 # Build
 
@@ -35,6 +47,14 @@ And, finally, if you want to launch tests, just type:
 
 As you can see, the make syntax (but also the output style) is the same used in Redis, so it will be familiar to Redis users.
 
+# Install
+
+In order to install Redis Cluster Proxy into /usr/local/bin just use:
+
+`% make install`
+
+You can use make PREFIX=/some/other/directory install if you wish to use a different destination.
+
 # Usage
 
 Redis Cluster Proxy attaches itself to an already running Redis cluster.
@@ -57,30 +77,55 @@ By default, Redis Cluster Port will listen on port 7777, but you can change it w
 
 You can change the number of threads using the `--threads` option.
 
+You can use a configuration file instead of passing arguments by using the `-c` options, ie:
+
+`redis-cluster-proxy -c /path/to/my/proxy.conf 127.0.0.1:7000`
+
 After launching it, you can connect to the proxy as if it were a normal Redis server (however make sure to understand the current limitations).
 
-# Install
+You can then connect to Redis Cluster Proxy as if it were a notmal Redis instance, using the client you prefer, ie:
 
-In order to install Redis Cluster Proxy into /usr/local/bin just use:
+`redis-cli -p 7777`
 
-`% make install`
+# Enabling Cross-slots queries
 
-You can use make PREFIX=/some/other/directory install if you wish to use a different destination.
+Cross-slots queries are queries using keys belonging to different slots of even different nodes.
+Since their execution is not guaranteed to be atomic (so, they can actually break the atomic design of many Redis commands), they are disabled by default.
+Anyway, if you don't mind about atomicity and you want this feature, you can turn them on when you launch the proxy by using the `--enable-cross-slot`, or by setting `enable-cross-slot yes` into your config file. You can also activate this feature while the proxy is running by using the special `PROXY` command (see below).
+**Note**: cross-slots queries are not supported by all the commands, even if the feature is turned on (ie. you cannot use it with `EVAL` or `ZUNIONSTORE` and many other commands). In that case, you'll receive a specific error reply.
 
-# Supported features and commands
+# The PROXY command
 
-Redis Cluster Proxy currently supports only single-key commands, so you're free to use commands like GET, SET, LPUSH, RPUSH, LRANGE, SADD, ZADD, ZRANGE, HSET, HMSET, HGET, HGETALL and so on. You can obviously use commands like DEL as long as they're used with a single key. Multi-key/slot commands will be supported soon.
+The `PROXY` command will allow to get specific info or perform actions that are specific to the proxy. The command has various subcommands, here's a little list:
 
-Furthermore, you cannot use commands with no keys that require interaction with a single cluster's instance, such as DBSIZE, PING, CONFIG, and so on.
-More complex commands such as MULTI/EXEC/DISCARD or blocking commands are not supported and will be supported in the future.
+- PROXY CONFIG GET|SET option [value]
 
-Pipelined queries are fully supported.
+  Can be used to get or set a specific option of the proxy, where the options
+  are the same used as the command line arguments (without the `--` prefix) or specified in the config file.
+  Not all the options can be changed (some of them, ie. `threads`, are read-only).
+  
+  Examples:
 
-# Features that are still to be implemented in the next versions
+  ```
+  PROXY CONFIG GET threads
+  PROXY CONFIG SET log-level debug
+  PROXT CONFIG SET enable-cross-slot 1
+  ```
+- PROXY MULTIPLEXING STATUS|OFF
 
-- Multi key and multi slot/node commands
-- Blocking commands and transactions (MULTI/EXEC)
-- Automatic redirection and reconfiguration in case of cluster configuration change (ie after a resharding).
+  Get the status of multiplexing connection model for the calling client,
+  or disable multiplexing by activating a private connection for the client.
+  Examples:
+
+  ```
+  -> PROXY MULTIPLEXING STATUS
+  -> Reply: "on"
+  -> PROXY MULTIPLEXING off
+  ```
+
+- PROXY INFO
+
+  Returns info specific for the cluster, in a similar fashion of the `INFO` command in Redis.
 
 # Current status
 
