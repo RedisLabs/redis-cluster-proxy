@@ -97,9 +97,11 @@ test "GET #{$numkeys} keys (Node down every #{$node_down_every})" do
                 }  
             end
             is_down = false
+            is_down_node = false
             down_node_mutex.synchronize{
-                is_down = (down_node != nil &&
-                           (node_for_key[:port] == down_node[:port]) &&
+                is_down_node = (down_node != nil &&
+                                (node_for_key[:port] == down_node[:port]))
+                is_down = (is_down_node &&
                            !@aux_cluster.is_instance_running?(down_node))
             }
             reply = redis_command client, :get, key
@@ -109,8 +111,10 @@ test "GET #{$numkeys} keys (Node down every #{$node_down_every})" do
                 assert_redis_err(reply)
                 assert(is_down_err(reply), err)
             else
-                assert_not_redis_err(reply)
-                assert_equal(reply, val)
+                if is_down_node && !is_down_err(reply)
+                    assert_not_redis_err(reply)
+                    assert_equal(reply, val)
+                end
             end
         }
     }
