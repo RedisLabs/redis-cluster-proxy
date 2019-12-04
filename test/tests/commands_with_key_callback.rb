@@ -71,4 +71,19 @@ $datalen.each{|len|
         }
     end
 
+    test "EVAL (clients=#{$numclients})" do
+        spawn_clients($numclients){|client, idx|
+            numkeys = 3
+            keys = (1..numkeys).map{|n|
+                "K:{#{tag}}:#{n}"
+            }
+            script = "return {#{(1..numkeys).map{|n|
+                "KEYS[#{n}]"
+            }.join(',')}}"
+            reply = client.eval script, keys
+            assert_not_redis_err(reply)
+            assert_equal(keys, reply)
+        }
+    end
+
 }
