@@ -27,6 +27,7 @@ opts =RedisProxyTestUtils::OptionParser.new help_banner_arguments: '[TESTS]' do
 
     option   '',   '--proxy-threads NUM', 'Number of proxy threads'
     option   '',   '--benchmark-threads NUM', 'Number of benchmark threads'
+    option   '',   '--benchmark-pipeline NUM', 'Pipeline queries'
     option '-r',   '--repeat NUM', 'Repeat tests multiple times'
     option '-o',   '--output PATH', 'Output results to a file'
     option   '',   '--csv', 'Set output format to CSV'
@@ -179,7 +180,8 @@ proxy_threads.each{|pthreads|
             log "BENCHMARK THREADS: #{bthreads}",nil,:bold if bthreads
             repeat.times{
                 out = redis_benchmark($main_proxy.port, $tests, r: 10,
-                                      threads: bthreads)
+                                      threads: bthreads,
+                                      P: $options[:benchmark_pipeline])
                 if !$?.success?
                     raise out
                 end
