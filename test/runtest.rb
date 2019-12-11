@@ -41,7 +41,7 @@ $tests = ARGV
 if $tests.length == 0
     $tests = %w(basic basic_commands commands_with_key_callback pipeline 
                 multislot client_disconnect node_down proxy_command 
-                disable_multiplexing multi cluster_errors 
+                disable_multiplexing auth multi cluster_errors 
                 cluster_errors_multislot)
 end
 

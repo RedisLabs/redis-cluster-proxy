@@ -41,6 +41,8 @@ typedef struct redisClusterConnection {
     list *requests_pending;
     int connected;
     int has_read_handler;
+    int authenticating;
+    int authenticated;
 } redisClusterConnection;
 
 typedef struct clusterNode {
@@ -74,7 +76,7 @@ typedef struct redisCluster {
     int broken;
     struct redisCluster *duplicated_from;
     list *duplicates;
-    void *owner; /* Can be the client in case of private clister */
+    void *owner; /* Can be the client in case of private cluster */
 } redisCluster;
 
 redisCluster *createCluster(int thread_id);
@@ -92,4 +94,5 @@ clusterNode *getFirstMappedNode(redisCluster *cluster);
 int updateCluster(redisCluster *cluster);
 void clusterAddRequestToReprocess(redisCluster *cluster, void *r);
 void clusterRemoveRequestToReprocess(redisCluster *cluster, void *r);
+int clusterNodeAuth(clusterNode *node, char *auth, char **err);
 #endif /* __REDIS_CLUSTER_PROXY_CLUSTER_H__ */

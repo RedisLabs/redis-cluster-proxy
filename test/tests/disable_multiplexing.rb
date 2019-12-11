@@ -122,7 +122,9 @@ test "SET #{numkeys} keys (clients=#{$numclients})" do
     }
 end
 
-test "GET #{numkeys} keys (clients=#{$numclients}, multiplex=off)" do
+test "GET #{numkeys} keys (clients=#{$numclients}, multiplex=off, pipeline)" do
+    log_test_update ''
+    STDOUT.flush
     spawn_clients($numclients, proxy: $aux_proxy){|client, idx|
         expected = ['OK']
         keys = (0...numkeys).map{|n|

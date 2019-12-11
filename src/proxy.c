@@ -21,6 +21,7 @@
 #include "zmalloc.h"
 #include "protocol.h"
 #include "endianconv.h"
+#include "util.h"
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
@@ -994,7 +995,7 @@ int parseOptions(int argc, char **argv) {
         char *arg = argv[i];
         if ((!strcmp("-p", arg) || !strcmp("--port", arg)) && !lastarg)
             config.port = atoi(argv[++i]);
-        else if ((!strcmp(argv[i],"-a") || !strcmp("--auth", arg))&& !lastarg)
+        else if ((!strcmp(argv[i],"-a") || !strcmp("--auth", arg)) && !lastarg)
             config.auth = argv[++i];
         else if (!strcmp("--disable-colors", arg))
             config.use_colors = 0;
@@ -1216,6 +1217,7 @@ static void initProxy(void) {
     proxyLogInfo("Starting %d threads...\n", config.num_threads);
     for (i = 0; i < config.num_threads; i++) {
         proxyLogDebug("Creating thread %d...\n", i);
+        proxy.threads[i] = NULL;
         proxy.threads[i] = createProxyThread(i);
         if (proxy.threads[i] == NULL) {
             fprintf(stderr, "FATAL: failed to create thread %d.\n", i);
@@ -1386,6 +1388,7 @@ static proxyThread *createProxyThread(int index) {
     int is_first = (index == 0);
     proxyThread *thread = zmalloc(sizeof(*thread));
     if (thread == NULL) return NULL;
+    thread->loop = NULL;
     if (pipe(thread->io) == -1) {
         proxyLogErr("ERROR: failed to open pipe for thread!\n");
         zfree(thread);
@@ -1589,7 +1592,8 @@ static client *createClient(int fd, char *ip) {
  * request queues. */
 static int disableMultiplexingForClient(client *c) {
     if (c->cluster != NULL) return 1;
-    proxyLogDebug("Disabling multiplexing for client %" PRId64 "\n", c->id);
+    proxyLogDebug("Disabling multiplexing for client %d:%" PRId64 "\n",
+                  c->thread_id, c->id);
     proxyThread *thread = proxy.threads[c->thread_id];
     c->cluster = duplicateCluster(thread->cluster);
     if (c->cluster == NULL) return 0;
@@ -1627,8 +1631,22 @@ static int disableMultiplexingForClient(client *c) {
                 if (req->client == c) c->pending_multiplex_requests++;
             }
         }
+        int count = listLength(node->connection->requests_to_send);
+        if (count > 0) {
+            proxyLogDebug("Moved %d request(s) to private connection to %s:%d "
+                          "owned by client %d:%" PRId64 "\n",
+                          count,
+                          node->ip, node->port,
+                          c->thread_id, c->id);
+        }
         if (c->pending_multiplex_requests == 0)
             handleNextRequestToCluster(node);
+        else {
+            proxyLogDebug("Client %d:%" PRId64 " has %d pending requests to "
+                          " node %s:%d on the multiplexing context\n",
+                          c->thread_id, c->id, c->pending_multiplex_requests,
+                          node->ip, node->port);
+        }
     }
     return 1;
 }
@@ -1773,6 +1791,15 @@ static void writeToClusterHandler(aeEventLoop *el, int fd, void *privdata,
     redisContext *ctx = getClusterNodeContext(node);
     if (ctx == NULL) return;
     clientRequest *req = getFirstRequestToSend(node, NULL);
+    if (node->connection->authenticating) {
+        if (redisBufferWrite(ctx, NULL) == REDIS_ERR) {
+            if (req != NULL) {
+                addReplyError(req->client, "AUTH failed", req->id);
+                freeRequest(req);
+            }
+        }
+        return;
+    }
     if (ctx->err) {
         proxyLogErr("Failed to connect to node %s:%d\n", node->ip, node->port);
         if (req != NULL) {
@@ -1802,7 +1829,35 @@ static void writeToClusterHandler(aeEventLoop *el, int fd, void *privdata,
                           "for node %s:%d\n", node->ip, node->port);
         }
     }
+    if (!isClusterNodeConnected(node)) {
+        if (node->cluster->owner) {
+            client *c = node->cluster->owner;
+            proxyLogDebug("Connected to node %s:%d (private connection "
+                          "for client %d:%" PRId64 "\n",
+                          node->ip, node->port, c->thread_id, c->id);
+        } else {
+            proxyLogDebug("Connected to node %s:%d (thread %d)\n",
+                          node->ip, node->port, node->cluster->thread_id);
+        }
+    }
     node->connection->connected = 1;
+    if (config.auth && !node->connection->authenticated &&
+        !node->connection->authenticating)
+    {
+        char *autherr = NULL;
+        if (!clusterNodeAuth(node, config.auth, &autherr)) {
+            if (autherr) {
+                proxyLogDebug("AUTH: %s\n", autherr);
+                if (req) {
+                    addReplyError(req->client, autherr, req->id);
+                    freeRequest(req);
+                }
+                zfree(autherr);
+            }
+            node->connection->authenticating = 1;
+            return;
+        }
+    }
     if (req == NULL) return;
     writeToCluster(el, fd, req);
 }
@@ -1869,8 +1924,17 @@ static int writeToCluster(aeEventLoop *el, int fd, clientRequest *req) {
             return 0;
         }
         if (config.dump_queues) dumpQueue(node, thread_id, QUEUE_TYPE_PENDING);
-        proxyLogDebug("Still have %d request(s) to send\n",
-                      listLength(node->connection->requests_to_send));
+        if (!node->cluster->owner) {
+            proxyLogDebug("Still have %d request(s) to send to node %s:%d "
+                          " on thread %d\n",
+                          listLength(node->connection->requests_to_send),
+                          node->ip, node->port, node->cluster->thread_id);
+        } else if (node->cluster->owner == c) {
+            proxyLogDebug("Still have %d request(s) to send to node %s:%d "
+                          "on private connection owned by %d:%" PRId64 "\n",
+                          listLength(node->connection->requests_to_send),
+                          node->ip, node->port, c->thread_id, c->id);
+        }
         /* Try to send the next available request to send, if one. */
         handleNextRequestToCluster(node);
     }
@@ -1893,8 +1957,10 @@ void onClusterNodeDisconnection(clusterNode *node) {
     redisContext *ctx = connection->context;
     if (ctx != NULL && ctx->fd >= 0) {
         int thread_id = node->cluster->thread_id;
-        aeEventLoop *el = proxy.threads[thread_id]->loop;
-        aeDeleteFileEvent(el, ctx->fd, AE_WRITABLE | AE_READABLE);
+        aeEventLoop *el = NULL;
+        proxyThread *thread = proxy.threads[thread_id];
+        if (thread != NULL && (el = thread->loop))
+            aeDeleteFileEvent(el, ctx->fd, AE_WRITABLE | AE_READABLE);
         redisCluster *cluster = node->cluster;
         assert(cluster != NULL);
         if (cluster->is_updating) return;
@@ -1977,6 +2043,8 @@ static int requestMakeRoomForArgs(clientRequest *req, int argc) {
 
 static int parseRequest(clientRequest *req) {
     int status = req->parsing_status, lf_len = 2, len, i;
+    proxyLogDebug("Parsing request " REQID_PRINTF_FMT ", status: %d\n",
+                  REQID_PRINTF_ARG(req), status);
     if (status != PARSE_STATUS_INCOMPLETE) return status;
     if (config.dump_buffer) {
         proxyLogDebug("Request " REQID_PRINTF_FMT " buffer:\n%s\n",
@@ -1996,8 +2064,9 @@ static int parseRequest(clientRequest *req) {
                 if (req->num_commands > 0) {/*TODO: make it configuable */
                     /* Multiple commands, split into multiple requests */
                     proxyLogDebug("Multiple commands %d, "
-                                  "splitting request...\n",
-                                  req->num_commands);
+                                  "splitting request " REQID_PRINTF_FMT "...\n",
+                                  req->num_commands,
+                                  REQID_PRINTF_ARG(req));
                     client *c = req->client;
                     /* Truncate current request buffer */
                     req->query_offset = p - req->buffer;
@@ -2731,11 +2800,15 @@ static clientRequest *handleNextRequestToCluster(clusterNode *node) {
 }
 
 /* Check whether a client with private connection (multiplexing disabled) still
- * has pending requests in the multiplexed context. After all peinding requests
+ * has pending requests in the multiplexed context. After all pending requests
  * have been consumed, start sending requests to the private connection. */
 static void checkForMultiplexingRequestsToBeConsumed(clientRequest *req) {
     if (req->client->cluster != NULL && !req->owned_by_client) {
         if (--req->client->pending_multiplex_requests <= 0) {
+            proxyLogDebug("Client %d:" PRId64 " has no more pending requests "
+                          "on the multiplexing context. Sending requests "
+                          "to the private cluster\n",
+                          req->client->thread_id, req->client->id);
             listIter li;
             listNode *ln;
             listRewind(req->client->cluster->nodes, &li);
@@ -2743,6 +2816,11 @@ static void checkForMultiplexingRequestsToBeConsumed(clientRequest *req) {
                 clusterNode *node = ln->value;
                 handleNextRequestToCluster(node);
             }
+        } else {
+            proxyLogDebug("Client %d:" PRId64 " still has %d pending requests "
+                          "on the multiplexing context.\n",
+                          req->client->thread_id, req->client->id,
+                          req->client->pending_multiplex_requests);
         }
     }
 }
@@ -3140,9 +3218,7 @@ consume_buffer:
             if (do_break) goto clean;
         }
         /* Consume reader buffer */
-        sdsrange(ctx->reader->buf, ctx->reader->pos, -1);
-        ctx->reader->pos = 0;
-        ctx->reader->len = sdslen(ctx->reader->buf);
+        consumeRedisReaderBuffer(ctx);
 clean:
         freeReplyObject(reply);
         if (req && free_req) freeRequest(req);
@@ -3196,12 +3272,42 @@ static void readClusterReply(aeEventLoop *el, int fd,
             listNode *first = listFirst(queue);
             if (first) listDelNode(queue, first);
         }
+        if (node->connection->authenticating) {
+            node->connection->authenticating = 0;
+            node->connection->authenticated = 0;
+        }
         if (node_disconnected) {
             proxyLogDebug(errmsg);
             clusterNodeDisconnect(node);
         }
         sdsfree(errmsg);
         /* Exit, since an error occurred. */
+        return;
+    } else if (node->connection->authenticating) {
+        /* Read the reply for the AUTH command sent to the node */
+        void *r = NULL;
+        int ok = (__hiredisReadReplyFromBuffer(ctx->reader, &r) != REDIS_ERR);
+        redisReply *authreply = r;
+        if (!ok) {
+            proxyLogErr("Failed to get reply for the AUTH command to node "
+                        "%s:%d. Error: '%s'\n",
+                        node->ip, node->port,
+                        ctx->err ? ctx->errstr : "");
+            node->connection->authenticating = 0;
+            node->connection->authenticated = 0;
+            clusterNodeDisconnect(node);
+        } else if (authreply) {
+            if (authreply->type != REDIS_REPLY_ERROR) {
+                node->connection->authenticating = 0;
+                node->connection->authenticated = 1;
+            } else {
+                node->connection->authenticating = 0;
+                node->connection->authenticated = 0;
+            }
+            consumeRedisReaderBuffer(ctx);
+            handleNextRequestToCluster(node);
+        }
+        if (authreply) freeReplyObject(authreply);
         return;
     } else replies = processClusterReplyBuffer(ctx, node, thread_id);
     UNUSED(replies);

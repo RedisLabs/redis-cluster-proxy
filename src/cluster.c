@@ -29,6 +29,7 @@
 #include "logger.h"
 #include "config.h"
 #include "proxy.h"
+#include "util.h"
 
 #define CLUSTER_NODE_KEEPALIVE_INTERVAL 15
 #define CLUSTER_PRINT_REPLY_ERROR(n, err) \
@@ -83,6 +84,8 @@ static redisClusterConnection *createClusterConnection(void) {
     conn->context = NULL;
     conn->has_read_handler = 0;
     conn->connected = 0;
+    conn->authenticating = 0;
+    conn->authenticated = 0;
     conn->requests_pending = listCreate();
     if (conn->requests_pending == NULL) {
         zfree(conn);
@@ -372,18 +375,6 @@ redisContext *clusterNodeConnect(clusterNode *node) {
      * commands. At the same time this improves the detection of real
      * errors. */
     anetKeepAlive(NULL, ctx->fd, CLUSTER_NODE_KEEPALIVE_INTERVAL);
-    if (config.auth) {
-        redisReply *reply = redisCommand(ctx, "AUTH %s", config.auth);
-        int ok = clusterCheckRedisReply(node, reply, NULL);
-        if (reply != NULL) freeReplyObject(reply);
-        if (!ok) {
-            proxyLogErr("Failed to authenticate to %s:%d\n", node->ip,
-                        node->port);
-            redisFree(ctx);
-            node->connection->context = NULL;
-            return NULL;
-        }
-    }
     node->connection->context = ctx;
     return ctx;
 }
@@ -408,7 +399,7 @@ void mapSlot(redisCluster *cluster, int slot, clusterNode *node) {
 int clusterNodeLoadInfo(redisCluster *cluster, clusterNode *node, list *friends,
                         redisContext *ctx)
 {
-    int success = 1, free_ctx = 0;
+    int success = 1;
     redisReply *reply =  NULL;
     if (ctx == NULL) {
         ctx = redisConnect(node->ip, node->port);
@@ -418,7 +409,20 @@ int clusterNodeLoadInfo(redisCluster *cluster, clusterNode *node, list *friends,
             redisFree(ctx);
             return 0;
         }
-        free_ctx = 1;
+    }
+    node->connection->context = ctx;
+    node->connection->connected = 1;
+    if (config.auth) {
+        char *autherr = NULL;
+        if (!clusterNodeAuth(node, config.auth, &autherr)) {
+            fprintf(stderr, "Failed to authenticate to node %s:%d",
+                    node->ip, node->port);
+            if (autherr != NULL) {
+                fprintf(stderr, ": %s", autherr);
+                zfree(autherr);
+            }
+            fprintf(stderr, "\n");
+        }
     }
     reply = redisCommand(ctx, "CLUSTER NODES");
     success = (reply != NULL);
@@ -556,7 +560,7 @@ int clusterNodeLoadInfo(redisCluster *cluster, clusterNode *node, list *friends,
         }
     }
 cleanup:
-    if (free_ctx) redisFree(ctx);
+    if (ctx != NULL) consumeRedisReaderBuffer(ctx);
     freeReplyObject(reply);
     return success;
 }
@@ -601,7 +605,6 @@ int fetchClusterConfiguration(redisCluster *cluster, char *ip, int port,
         listAddNodeTail(cluster->nodes, friend);
     }
 cleanup:
-    redisFree(ctx);
     if (friends) listRelease(friends);
     return success;
 }
@@ -795,4 +798,31 @@ void clusterRemoveRequestToReprocess(redisCluster *cluster, void *r) {
     raxRemove(cluster->requests_to_reprocess, (unsigned char *) id,
               sdslen(id), NULL);
     sdsfree(id);
+}
+
+/* Try to send an AUTH command to the specified node. The string dereferenced
+ * from the `**err` argument should be freed outside. */
+int clusterNodeAuth(clusterNode *node, char *auth, char **err) {
+    proxyLogDebug("Authenticating to node %s:%d\n", node->ip, node->port);
+    redisContext *ctx = getClusterNodeContext(node);
+    char *errmsg = NULL;
+    if (err != NULL) *err = NULL;
+    if (!ctx) {
+        errmsg = "AUTH failed: no connection";
+        goto fail;
+    }
+    redisReply *reply = redisCommand(ctx, "AUTH %s", auth);
+    int ok = clusterCheckRedisReply(node, reply, err);
+    if (reply != NULL) freeReplyObject(reply);
+    if (!ok) goto fail;
+    node->connection->authenticating = 0;
+    node->connection->authenticated = 1;
+    return 1;
+fail:
+    if (err != NULL && errmsg != NULL && *err == NULL) {
+        int errlen = strlen(errmsg);
+        *err = zmalloc(errlen + 1);
+        if (*err) strncpy(*err, errmsg, errlen);
+    }
+    return 0;
 }

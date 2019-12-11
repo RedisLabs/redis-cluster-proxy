@@ -143,7 +143,7 @@ class RedisProxyTestCase
             test[:failed] = failed = true
             test[:failure] = message if message
         rescue Exception => e
-            test[:failed] = false
+            test[:failed] = failed = true
             on_exception(e)
         ensure
             duration = Time.now.to_f - started

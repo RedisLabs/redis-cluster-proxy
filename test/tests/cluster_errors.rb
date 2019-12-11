@@ -144,7 +144,6 @@ $datalen.each_with_index{|len, lidx|
                         assert(ok, "Cluster is broken:\n#{check}")
                         log_same_line ''
                     }
-                    sleep 0.01#DELME
                 end
             else
                 living_threads_mutex.synchronize{

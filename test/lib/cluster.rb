@@ -32,13 +32,14 @@ class RedisCluster
     attr_accessor :verbose
 
     def initialize(masters_count: 3, replicas: 1,
-                   node_timeout: DefaultNodeTimeout, verbose: true)
+                   node_timeout: DefaultNodeTimeout, verbose: true, passw: nil)
         @masters_count = masters_count
         @replicas_count = replicas
         @node_timeout = node_timeout
         @verbose = verbose
         @num_instances = @masters_count + (@replicas_count * @masters_count)
         @ports = find_available_ports(18000, @num_instances)
+        @passw = passw
         if @ports.length < @num_instances
             raise "Could not find available ports from 18000 for the cluster!"
         end
@@ -91,7 +92,7 @@ class RedisCluster
     def stop
         return if !@instances
         if @verbose
-            log("Stopping #{@instances.length} cluster nodes...", :gray) 
+            log("Stopping #{@instances.length} cluster nodes...", :gray)
         end
         @instances.each{|instance|
             next if !is_instance_running?(instance)
@@ -154,7 +155,7 @@ class RedisCluster
                       fatal: true)
         port = instance[:port]
         save_action = (save ? 'save' : 'nosave')
-        cmd = "#{@redis_cli} -p #{port} shutdown #{save_action}"
+        cmd = "#{redis_cli_cmd(port)} shutdown #{save_action}"
         print("Stopping cluster node #{port}...".gray) if @verbose
         `#{cmd}`
         while is_instance_running?(port)
@@ -199,7 +200,7 @@ class RedisCluster
         elsif instance.is_a? Fixnum
             port = instance
         end
-        `#{@redis_cli} -p #{port} ping 2>/dev/null`.strip.downcase == 'pong'
+        `#{redis_cli_cmd(port)} ping 2>/dev/null`.strip.downcase == 'pong'
     end
 
     def create_cluster
@@ -218,8 +219,14 @@ class RedisCluster
         end
         log "Creating cluster with #{@instances.length} instances...", :gray
         redis_cli_version = match[0]
+        if !@passw
+            authopt = ''
+        else
+            authopt = " -a #{@passw}"
+        end
         if redis_cli_version.split('.')[0].to_i >= 5
-            cmd = "#{@redis_cli} --cluster create " + @instances.map{|instance|
+            cmd = "#{@redis_cli}#{authopt} --cluster create " +
+            @instances.map{|instance|
                 "127.0.0.1:#{instance[:port]}"
             }.join(' ') + " --cluster-replicas #{@replicas_count}"
             ok = shell_exec cmd, auto_answer: :yes, return_value: :status
@@ -346,16 +353,25 @@ class RedisCluster
         node
     end
 
+    def redis_cli_cmd(port)
+        rcli = "#{@redis_cli} -p #{port}"
+        if @passw
+            rcli << " -a #{@passw}"
+        end
+        rcli
+    end
+
     def redis_command(instance, command)
         if instance.is_a? Fixnum
             port = instance
         else
             port = instance[:port]
         end
-        `#{@redis_cli} -p #{port} #{command}`
+        `#{redis_cli_cmd(port)} #{command}`
     end
 
     def config_for(port, path)
+        cfg =
         "port #{port}\n" +
         "cluster-enabled yes\n" +
         "cluster-config-file \"nodes.conf\"\n" +
@@ -364,6 +380,11 @@ class RedisCluster
         #"unixsocket \"#{File.join(path, 'redis.sock')}\"\n" +
         "daemonize yes\n" +
         "dir \"#{path}\"\n"
+        if @passw && !@passw.strip.empty?
+            cfg << "requirepass #{@passw}\n"
+            cfg << "masterauth #{@passw}\n"
+        end
+        cfg
     end
 
     def move_slot(slot, target, pipeline: nil, timeout: nil, update: true,
