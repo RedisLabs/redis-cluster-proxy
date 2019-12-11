@@ -2907,6 +2907,7 @@ void readQuery(aeEventLoop *el, int fd, void *privdata, int mask){
                 if (!processRequest(req, &parsing_status)) unlinkClient(c);
                 else {
                     if (parsing_status == PARSE_STATUS_INCOMPLETE) break;
+                    processed_req = req;
                 }
             }
         }

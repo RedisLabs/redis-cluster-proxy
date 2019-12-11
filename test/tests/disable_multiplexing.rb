@@ -2,6 +2,10 @@ require 'redis'
 require 'hiredis'
 
 setup {
+    use_valgrind = $options[:valgrind] == true
+    loglevel = $options[:log_level] || 'debug'
+    dump_queues = $options[:dump_queues]
+    dump_queries = $options[:dump_queries]
     if !$main_cluster
         @cluster = RedisCluster.new
         @cluster.restart
@@ -9,7 +13,11 @@ setup {
     end
 
     if !$main_proxy
-        @proxy = RedisClusterProxy.new $main_cluster, log_level: 'debug'
+        @proxy = RedisClusterProxy.new $main_cluster,
+                                       log_level: 'debug',
+                                       dump_queries: dump_queries,
+                                       dump_queues: dump_queues,
+                                       valgrind: use_valgrind
         @proxy.start
         $main_proxy = @proxy
     end
@@ -95,5 +103,46 @@ test "GET/SET #{$numkeys} keys (Disable multiplexing on some clients)" do
                 disabled[idx] = true
             end
         }
+    }
+end
+
+numkeys = $numkeys / 10
+numkeys = 10 if numkeys < 10
+
+test "SET #{numkeys} keys (clients=#{$numclients})" do
+    spawn_clients($numclients, proxy: $aux_proxy){|client, idx|
+        (0...numkeys).each{|n|
+            log_test_update "key #{n + 1}/#{numkeys}"
+            val = n.to_s
+            key = "k:#{n}"
+            reply = redis_command client, :set, key, val
+            assert_not_redis_err(reply)
+        }
+        log_same_line ''
+    }
+end
+
+test "GET #{numkeys} keys (clients=#{$numclients}, multiplex=off)" do
+    spawn_clients($numclients, proxy: $aux_proxy){|client, idx|
+        expected = ['OK']
+        keys = (0...numkeys).map{|n|
+            key = "k:#{n}"
+            val = n.to_s
+            expected << val
+            key
+        }
+        begin
+            reply = client.pipelined{
+                client.proxy 'multiplexing', 'off'
+                keys.each{|k|
+                    client.get k
+                }
+            }
+        rescue Redis::CommandError => cmderr
+            reply = cmderr
+        end
+        assert_not_redis_err(reply)
+        assert_equal(expected, reply)
+        log_same_line ''
     }
 end
