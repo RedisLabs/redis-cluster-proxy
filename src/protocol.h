@@ -31,6 +31,7 @@ void addReplyBulkString(client *c, const char *str, uint64_t req_id);
 void addReplyInt(client *c, int64_t integer, uint64_t req_id);
 void addReplyErrorLen(client *c, const char *err, int len, uint64_t req_id);
 void addReplyError(client *c, const char *err, uint64_t req_id);
+void addReplyHelp(client *c, const char **help, uint64_t req_id);
 void addReplyRaw(client *c, const char *buf, size_t len, uint64_t req_id);
 
 #endif /* __REDIS_CLUSTER_PROXY_PROTOCOL_H__ */

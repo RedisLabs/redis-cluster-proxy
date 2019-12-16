@@ -143,6 +143,31 @@ The `PROXY` command will allow to get specific info or perform actions that are 
   - `CROSSSLOTS-UNSUPPORTED`: only lists commands that cannot be used with 
   cross-slots queries, even if they've been enabled in the proxy's configuration.
 
+- PROXY CLIENT <subcmd>
+
+  Perform client specific actions, ie:
+
+    - `PROXY CLIENT ID`
+    
+    Get current client's internal ID
+
+    - `PROXY CLIENT THREAD`
+    
+    Get current client's thread
+
+- PROXY LOG <level> MESSAGE
+
+    Log `MESSAGE` to Proxy's log, for debugging purpose.
+
+    The optional `level` can be used to define the log level:
+
+    debug, info, success, warning, error (default is `debug`)
+
+- PROXY HELP
+
+    Get help for the PROXY command
+
+
 # Current status
 
 This project is currently alpha code that is indented to be evaluated by the community in order to get suggestions and contributions. We discourage its usage in any production environment.

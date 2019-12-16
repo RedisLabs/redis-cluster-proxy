@@ -24,6 +24,7 @@
 #include "sds.h"
 
 int initReplyArray(client *c) {
+    if (c->reply_array != NULL) return 1;
     c->reply_array = listCreate();
     if (c->reply_array == NULL) return 0;
     listSetFreeMethod(c->reply_array, (void (*)(void *)) sdsfree);
@@ -42,6 +43,14 @@ void addReplyArray(client *c, uint64_t req_id) {
     c->reply_array = NULL;
     addReplyRaw(c, (const char*) r, sdslen(r), req_id);
     sdsfree(r);
+}
+
+void addReplyHelp(client *c, const char **help, uint64_t req_id) {
+    if (!initReplyArray(c)) addReplyError(c, "Out of memory", req_id);
+    const char *item = NULL;
+    int idx = 0;
+    while ((item = help[idx++])) addReplyString(c, item, req_id);
+    addReplyArray(c, req_id);
 }
 
 void addReplyStringLen(client *c, const char *str, int len, uint64_t req_id) {

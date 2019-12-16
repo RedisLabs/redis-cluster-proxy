@@ -22,6 +22,7 @@
 #include "protocol.h"
 #include "endianconv.h"
 #include "util.h"
+#include "help.h"
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
@@ -318,6 +319,11 @@ static void proxySubCommandClient(clientRequest *req, sds subcmd) {
         sdsfree(id);
     } else if (strcasecmp("thread", subcmd) == 0) {
         addReplyInt(req->client, req->client->thread_id, req->id);
+    } else if (strcasecmp("help", subcmd) == 0) {
+        addReplyHelp(req->client, proxyCommandSubcommandClientHelp, req->id);
+    } else {
+        addReplyError(req->client, "Invalid subcommand for PROXY CLIENT",
+                      req->id);
     }
 }
 
@@ -658,6 +664,8 @@ int proxyCommand(void *r) {
         proxyLog(loglvl, msg);
         sdsfree(msg);
         addReplyString(req->client, "OK", req->id);
+    } else if (strcasecmp("help", subcmd) == 0) {
+        addReplyHelp(req->client, proxyCommandHelp, req->id);
     } else {
         err = sdsnew("Unsupported subcommand ");
         err = sdscatfmt(err, "'%S' for command PROXY", subcmd);
