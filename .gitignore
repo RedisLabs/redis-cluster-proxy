@@ -11,3 +11,4 @@ commands_cur_version.txt
 utils/commands.c
 utils/commands.h
 utils/*.csv
+.DS_Store
