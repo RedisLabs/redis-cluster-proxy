@@ -80,6 +80,7 @@
      isempty))
 #define REQID_PRINTF_FMT "%d:%" PRId64 ":%" PRId64
 #define REQID_PRINTF_ARG(r) r->client->thread_id, r->client->id, r->id
+#define PROXY_CMD_LOG_MAX_LEN   4096
 
 typedef struct proxyThread {
     int thread_id;
@@ -264,7 +265,7 @@ static sds proxySubCommandConfig(clientRequest *r, sds option, sds value,
     return reply;
 }
 
-static void proxySubCommandConfigCommand(clientRequest *req, sds cmdtype) {
+static void proxySubCommandCommand(clientRequest *req, sds cmdtype) {
     int only_unsupported = 0;
     int only_crossslots_disabled = 0;
     if (cmdtype) {
@@ -307,6 +308,17 @@ static void proxySubCommandConfigCommand(clientRequest *req, sds cmdtype) {
         listAddNodeTail(req->client->reply_array, c);
     }
     addReplyArray(req->client, req->id);
+}
+
+static void proxySubCommandClient(clientRequest *req, sds subcmd) {
+    if (strcasecmp("id", subcmd) == 0) {
+        sds id = sdscatprintf(sdsempty(), "%d:%" PRId64,
+                              req->client->thread_id, req->client->id);
+        addReplyString(req->client, id, req->id);
+        sdsfree(id);
+    } else if (strcasecmp("thread", subcmd) == 0) {
+        addReplyInt(req->client, req->client->thread_id, req->id);
+    }
 }
 
 static sds genInfoString(sds section) {
@@ -583,8 +595,69 @@ int proxyCommand(void *r) {
             int len = req->lengths[2];
             cmdtype = sdsnewlen(req->buffer + offset, len);
         }
-        proxySubCommandConfigCommand(req, cmdtype);
+        proxySubCommandCommand(req, cmdtype);
         if (cmdtype) sdsfree(cmdtype);
+    } else if (strcasecmp("client", subcmd) == 0) {
+        if (req->argc < 3) {
+            err = sdsnew("Wrong number of arguments for command PROXY's "
+                         "subcommand");
+            goto final;
+        }
+        assert(req->offsets_size >= 3);
+        int offset = req->offsets[2];
+        int len = req->lengths[2];
+        sds arg = sdsnewlen(req->buffer + offset, len);
+        proxySubCommandClient(req, arg);
+        if (arg) sdsfree(arg);
+    } else if (strcasecmp("log", subcmd) == 0) {
+        int loglvl = LOGLEVEL_DEBUG;
+        sds msg = NULL;
+        /* PROXY LOG <LEVEL> <MESSAGE> */
+        if (req->argc == 4) {
+            assert(req->offsets_size >= 4);
+            int offset = req->offsets[2];
+            int len = req->lengths[2];
+            int i;
+            sds lvlname = sdsnewlen(req->buffer + offset, len);
+            loglvl = -1;
+            for (i = 0; i <= LOGLEVEL_ERROR; i++) {
+                if (strcasecmp(lvlname, redisProxyLogLevels[i]) == 0) {
+                    loglvl = i;
+                    break;
+                }
+            }
+            if (loglvl < 0) {
+                err = sdsnew("Invalid log level, valid level names: ");
+                for (i = 0; i <= LOGLEVEL_ERROR; i++) {
+                    char *sep = (i > 0 ? ", " : "");
+                    err = sdscatfmt(err, "%s%s", sep, redisProxyLogLevels[i]);
+                }
+                goto final;
+            }
+            offset = req->offsets[3];
+            len = req->lengths[3];
+            msg = sdsnewlen(req->buffer + offset, len);
+        /* PROXY LOG <MESSAGE> */
+        } else if (req->argc == 3) {
+            assert(req->offsets_size >= 3);
+            int offset = req->offsets[2];
+            int len = req->lengths[2];
+            msg = sdsnewlen(req->buffer + offset, len);
+        } else {
+            err = sdsnew("Wrong number of arguments for command PROXY's "
+                         "subcommand");
+            goto final;
+        }
+        int msglen = sdslen(msg);
+        if (msglen > PROXY_CMD_LOG_MAX_LEN) {
+            sdsfree(msg);
+            err = sdsnew("Log message too long!");
+            goto final;
+        }
+        if (msg[msglen - 1] != '\n') msg = sdscat(msg, "\n");
+        proxyLog(loglvl, msg);
+        sdsfree(msg);
+        addReplyString(req->client, "OK", req->id);
     } else {
         err = sdsnew("Unsupported subcommand ");
         err = sdscatfmt(err, "'%S' for command PROXY", subcmd);
