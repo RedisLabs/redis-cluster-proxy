@@ -197,7 +197,7 @@ class RedisCluster
     def is_instance_running?(instance)
         if instance.is_a? Hash
             port = instance[:port]
-        elsif instance.is_a? Fixnum
+        elsif instance.is_a? Integer
             port = instance
         end
         `#{redis_cli_cmd(port)} ping 2>/dev/null`.strip.downcase == 'pong'
@@ -362,7 +362,7 @@ class RedisCluster
     end
 
     def redis_command(instance, command)
-        if instance.is_a? Fixnum
+        if instance.is_a? Integer
             port = instance
         else
             port = instance[:port]
