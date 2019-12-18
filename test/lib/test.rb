@@ -37,8 +37,10 @@ class RedisProxyTestCase
     FileUtils.mkdir_p(TMPDIR) if !File.exists?(TMPDIR)
     LOGDIR = File.join(TMPDIR, 'log')
     FileUtils.mkdir_p(LOGDIR) if !File.exists?(LOGDIR)
+    PROXYDIR = File.dirname(ROOTDIR)
 
     @@exceptions = []
+    @@interrupted = false
 
     GenericSetup = proc{
         $options ||= {}
@@ -86,6 +88,7 @@ class RedisProxyTestCase
         log "TESTING #{@name.gsub(/_+/, ' ').upcase}", :cyan
         @started = Time.now.to_f
         failed_setup = false
+        interrupted = false
         if @setup
             begin
                 instance_eval(&@setup)
@@ -97,12 +100,17 @@ class RedisProxyTestCase
             rescue Exception => e
                 on_exception(e)
                 failed_setup = true
+                @@interrupted = true if e.is_a? Interrupt
                 #return false
             end
         end
         if !failed_setup
             @tests.each{|test|
                 run_test(test)
+                if test[:exception].is_a?(Interrupt)
+                    interrupted = true
+                    break
+                end
             }
         end
         if @cleanup
@@ -113,9 +121,11 @@ class RedisProxyTestCase
                 log message.red
             rescue Exception => e
                 on_exception(e)
+                @@interrupted = true if e.is_a? Interrupt
             end
         end
         @duration = Time.now.to_f - @started
+        @@interrupted = true if interrupted
     end
 
     def setup(&block)
@@ -136,6 +146,7 @@ class RedisProxyTestCase
     def run_test(test)
         @current_test = test
         failed = false
+        interrupt = false
         begin
             started = Time.now.to_f
             instance_eval &(test[:exec])
@@ -143,7 +154,9 @@ class RedisProxyTestCase
             test[:failed] = failed = true
             test[:failure] = message if message
         rescue Exception => e
-            test[:failed] = failed = true
+            interrupt = e.is_a?(Interrupt)
+            test[:failed] = failed = true if !interrupt
+            test[:exception] = e
             on_exception(e)
         ensure
             duration = Time.now.to_f - started
@@ -152,6 +165,8 @@ class RedisProxyTestCase
         if failed
             status = 'FAIL'.red
             @failed_tests << test
+        elsif interrupt
+            status = 'CANCEL'.magenta
         else
             status = 'OK'.green
             @succeeded_tests << test
@@ -244,8 +259,24 @@ class RedisProxyTestCase
     end
 
     def on_exception(e)
-        @@exceptions << e
-        log_exception(e)
+        if !e.is_a? Interrupt
+            @@exceptions << e
+            log_exception(e)
+        else
+            STDERR.flush
+            STDOUT.flush
+            STDERR.puts colorized("\nInterrupt!\n", :magenta)
+            STDERR.flush
+            STDOUT.flush
+        end
+    end
+
+    def interrupted?
+        @@interrupted
+    end
+
+    def RedisProxyTestCase::interrupted?
+        @@interrupted
     end
 
     def RedisProxyTestCase::exceptions

@@ -76,9 +76,13 @@ module RedisProxyTestLogger
     end
 
     def log_exception(e)
+        STDERR.flush
+        STDOUT.flush
         STDERR.puts ''
         STDERR.puts(e.to_s.red)
         STDERR.puts(e.backtrace.join("\n").yellow)
+        STDERR.flush
+        STDOUT.flush
     end
 
 end

@@ -58,6 +58,46 @@ def final_cleanup
     end
 end
 
+def log_exceptions(exceptions)
+    logfile = File.join RedisProxyTestCase::LOGDIR, "test_#{urand2hex(6)}.err"
+    begin
+        proxy_dir = RedisProxyTestCase::PROXYDIR
+        git_branch = `git -C "#{proxy_dir}" rev-parse --abbrev-ref HEAD`.strip
+        git_commit = `git -C "#{proxy_dir}" rev-parse HEAD`.strip
+    rescue Exception => e
+        git_branch = nil
+        git_commit = nil
+    end
+    begin
+        File.open(logfile, 'w'){|f|
+            f.puts "Redis Cluster Proxy Test Exceptions"
+            f.puts "Date: #{Time.now}"
+            f.puts "Ruby Version: #{RUBY_VERSION} (patch #{RUBY_PATCHLEVEL})"
+            f.puts "Platform: #{RUBY_PLATFORM}"
+            if git_commit && git_branch && git_commit != '' && git_branch != ''
+                f.puts "GIT commit: #{git_commit} on branch (#{git_branch})"
+            end
+            f.puts "Tests: #{$tests.join(', ')}"
+            exceptions.each_with_index{|e, i|
+                f.puts "\n-----------------------------\n\n"
+                f.puts "Exception ##{i + 1}: #{e.class}"
+                f.puts "Message: #{e.to_s}"
+                f.puts "Backtrace:"
+                e.backtrace.each{|bt|
+                    f.puts "- #{bt}"
+                }
+            }
+        }
+    rescue Exception => e
+        puts e
+        return nil
+    end
+    logfile
+end
+
+#$stderr = File.new('/dev/null', 'w') #Silence STDERR
+Thread.report_on_exception = false if Thread.respond_to? :report_on_exception
+
 Signal.trap("TERM") do
     final_cleanup
 end
@@ -71,6 +111,7 @@ begin
         test.run
         failures_count += test.failed_tests.length
         succeeded_count += test.succeeded_tests.length
+        break if RedisProxyTestCase::interrupted?
     }
 rescue Exception => e
     STDERR.puts e.to_s.red
@@ -84,6 +125,11 @@ ensure
     end
 end
 duration = Time.now.to_f - started
+
+if RedisProxyTestCase::interrupted?
+    STDERR.puts RedisProxyTestLogger::colorized("Canceled!", :magenta)
+    exit 1
+end
 
 puts "All tests executed in #{'%.1f' % duration}s".cyan
 if RedisProxyTestCase::exceptions.length == 0
@@ -103,5 +149,11 @@ if RedisProxyTestCase::exceptions.length == 0
         puts "#{failures_count} test(s) failed!".red
     end
 else
-    STDERR.puts "#{RedisProxyTestCase::exceptions.length} exception(s) occurred"
+    msg = "#{RedisProxyTestCase::exceptions.length} exception(s) occurred"
+    STDERR.puts RedisProxyTestLogger::colorized(msg, :magenta)
+    logfile = log_exceptions RedisProxyTestCase::exceptions
+    if logfile
+        msg = "See: '#{logfile}'"
+        STDERR.puts RedisProxyTestLogger::colorized(msg, :magenta)
+    end
 end
