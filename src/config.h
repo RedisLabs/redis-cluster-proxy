@@ -43,6 +43,7 @@ typedef struct {
     char *auth;
     int disable_multiplexing;
     int cross_slot_enabled;
+    int clusters_pool_size;
 } redisClusterProxyConfig;
 
 extern redisClusterProxyConfig config;

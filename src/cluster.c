@@ -248,9 +248,32 @@ static void freeClusterNodes(redisCluster *cluster) {
     listRelease(cluster->nodes);
 }
 
+void resetClusterDuplicates(redisCluster *cluster) {
+    listIter li;
+    listNode *ln;
+    listRewind(cluster->duplicates, &li);
+    while ((ln = listNext(&li))) {
+        redisCluster *dup = ln->value;
+        /* Set duplicated_from to NULL since it would point to a
+         * freed cluster. */
+        dup->duplicated_from = NULL;
+        /* Also set duplicated_from to NULL into single nodes. */
+        listIter nli;
+        listNode *nln;
+        listRewind(dup->nodes, &nli);
+        while ((nln = listNext(&nli))) {
+            clusterNode *n = nln->value;
+            n->duplicated_from = NULL;
+        }
+    }
+    listEmpty(cluster->duplicates);
+}
+
 int resetCluster(redisCluster *cluster) {
     if (cluster->slots_map) raxFree(cluster->slots_map);
     freeClusterNodes(cluster);
+    if (cluster->duplicates != NULL)
+        resetClusterDuplicates(cluster);
     cluster->slots_map = raxNew();
     cluster->nodes = listCreate();
     if (!cluster->slots_map) return 0;
@@ -265,23 +288,7 @@ void freeCluster(redisCluster *cluster) {
     if (cluster->requests_to_reprocess)
         raxFree(cluster->requests_to_reprocess);
     if (cluster->duplicates != NULL) {
-        listIter li;
-        listNode *ln;
-        listRewind(cluster->duplicates, &li);
-        while ((ln = listNext(&li))) {
-            redisCluster *dup = ln->value;
-            /* Set duplicated_from to NULL since it would point to a
-             * freed cluster. */
-            dup->duplicated_from = NULL;
-            /* Also set duplicated_from to NULL into single nodes. */
-            listIter nli;
-            listNode *nln;
-            listRewind(dup->nodes, &nli);
-            while ((nln = listNext(&nli))) {
-                clusterNode *n = nln->value;
-                n->duplicated_from = NULL;
-            }
-        }
+        resetClusterDuplicates(cluster);
         listRelease(cluster->duplicates);
     }
     if (cluster->duplicated_from != NULL) {

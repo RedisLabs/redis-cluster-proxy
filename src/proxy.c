@@ -36,28 +36,29 @@
 #include <sys/stat.h>
 #include <sys/utsname.h>
 
-#define DEFAULT_PORT            7777
-#define DEFAULT_MAX_CLIENTS     10000
-#define MAX_THREADS             500
-#define DEFAULT_THREADS         8
-#define DEFAULT_TCP_KEEPALIVE   300
-#define DEFAULT_TCP_BACKLOG     511
-#define QUERY_OFFSETS_MIN_SIZE  10
-#define EL_INSTALL_HANDLER_FAIL 9999
-#define REQ_STATUS_UNKNOWN      -1
-#define PARSE_STATUS_INCOMPLETE -1
-#define PARSE_STATUS_ERROR      0
-#define PARSE_STATUS_OK         1
-#define UNDEFINED_SLOT          -1
+#define DEFAULT_PORT                7777
+#define DEFAULT_MAX_CLIENTS         10000
+#define MAX_THREADS                 500
+#define DEFAULT_THREADS             8
+#define DEFAULT_TCP_KEEPALIVE       300
+#define DEFAULT_TCP_BACKLOG         511
+#define QUERY_OFFSETS_MIN_SIZE      10
+#define DEFAULT_CLUSTERS_POOL_SIZE  4
+#define EL_INSTALL_HANDLER_FAIL     9999
+#define REQ_STATUS_UNKNOWN          -1
+#define PARSE_STATUS_INCOMPLETE     -1
+#define PARSE_STATUS_ERROR          0
+#define PARSE_STATUS_OK             1
+#define UNDEFINED_SLOT              -1
 
-#define MAX_ACCEPTS             1000
-#define NET_IP_STR_LEN          46
+#define MAX_ACCEPTS                 1000
+#define NET_IP_STR_LEN              46
 
-#define THREAD_IO_READ          0
-#define THREAD_IO_WRITE         1
+#define THREAD_IO_READ              0
+#define THREAD_IO_WRITE             1
 
-#define QUEUE_TYPE_SENDING      1
-#define QUEUE_TYPE_PENDING      2
+#define QUEUE_TYPE_SENDING          1
+#define QUEUE_TYPE_PENDING          2
 
 #define UNUSED(V) ((void) V)
 
@@ -87,6 +88,7 @@ typedef struct proxyThread {
     list *clients;
     list *unlinked_clients;
     list *pending_messages;
+    list *available_clusters_pool;
     uint64_t next_client_id;
     sds msgbuffer;
 } proxyThread;
@@ -215,6 +217,10 @@ static sds proxySubCommandConfig(clientRequest *r, sds option, sds value,
     } else if (strcmp("enable-cross-slot", option) == 0) {
         is_int = 1;
         opt = &(config.cross_slot_enabled);
+    } else if (strcmp("clusters-pool-size", option) == 0) {
+        is_int = 1;
+        opt = &(config.clusters_pool_size);
+        read_only = 1;
     }
     if (opt == NULL) {
         if (err) *err = sdsnew("Invalid config option");
@@ -1051,6 +1057,10 @@ static void printHelp(void) {
         "  --threads <n>        Thread number (default: %d, max: %d)\n"
         "  --tcpkeepalive       TCP Keep Alive (default: %d)\n"
         "  --tcp-backlog        TCP Backlog (default: %d)\n"
+        "  --clusters-pool-size <n> Size of the pool of cluster connections \n"
+        "                           that every thread uses for clients with \n"
+        "                           private connections, can be zero.\n"
+        "                           Default: %d\n"
         "  --daemonize          Execute the proxy in background\n"
         "  --disable-multiplexing <opt> When should multiplexing disabled\n"
         "                               (never|auto|always) (default: auto)\n"
@@ -1069,7 +1079,7 @@ static void printHelp(void) {
                                 "'debug') \n"
         "  -h, --help         Print this help\n",
         DEFAULT_PORT, DEFAULT_MAX_CLIENTS, DEFAULT_THREADS, MAX_THREADS,
-        DEFAULT_TCP_KEEPALIVE, DEFAULT_TCP_BACKLOG);
+        DEFAULT_TCP_KEEPALIVE, DEFAULT_TCP_BACKLOG, DEFAULT_CLUSTERS_POOL_SIZE);
 }
 
 int parseOptions(int argc, char **argv) {
@@ -1108,6 +1118,8 @@ int parseOptions(int argc, char **argv) {
                                 MAX_THREADS);
                 config.num_threads = MAX_THREADS;
             } else if (config.num_threads < 1) config.num_threads = 1;
+        } else if (!strcmp("--clusters-pool-size", arg) && !lastarg) {
+            config.clusters_pool_size = atoi(argv[++i]);
         } else if (!strcmp("--log-level", arg) && !lastarg) {
             char *level_name = argv[++i];
             int j = 0, level = -1;
@@ -1275,6 +1287,7 @@ static void initConfig(void) {
     config.dump_queues = 0;
     config.auth = NULL;
     config.cross_slot_enabled = 0;
+    config.clusters_pool_size = DEFAULT_CLUSTERS_POOL_SIZE;
 }
 
 static void initProxy(void) {
@@ -1468,6 +1481,56 @@ static void printClusterConfiguration(redisCluster *cluster) {
            replica_count);
 }
 
+static int populateClustersPoolSize(proxyThread *thread) {
+    assert(thread->loop != NULL);
+    if (thread->cluster == NULL) return 0;
+    if (thread->cluster->is_updating || thread->cluster->broken ||
+        thread->cluster->update_required) return 0;
+    if (thread->available_clusters_pool == NULL) {
+        thread->available_clusters_pool = listCreate();
+        if (thread->available_clusters_pool == NULL) {
+            proxyLogErr("Failed to allocate 'available_clusters_pool' for "
+                        "thread %d\n", thread->thread_id);
+            return 0;
+        }
+    }
+    list *pool = thread->available_clusters_pool;
+    int added = 0;
+    while (listLength(pool) < (unsigned long) config.clusters_pool_size) {
+        redisCluster *cluster = duplicateCluster(thread->cluster);
+        if (cluster == NULL) {
+            proxyLogErr("Failed to duplicate cluster while populating pool "
+                        "on thread %d\n", thread->thread_id);
+            goto final;
+        }
+        listIter li;
+        listNode *ln;
+        listRewind(cluster->nodes, &li);
+        while ((ln = listNext(&li))) {
+            clusterNode *node = ln->value;
+            if (node->is_replica) continue;
+            redisContext *ctx = getClusterNodeContext(node);
+            if ((ctx = clusterNodeConnect(node)) == NULL) {
+                proxyLogWarn("Could not connect to node %s:%d\n",
+                             node->ip, node->port);
+                goto final;
+            }
+            /* Install the write handler since the connection to the cluster
+             * node is asynchronous. */
+            if (aeCreateFileEvent(thread->loop, ctx->fd, AE_WRITABLE,
+                                  writeToClusterHandler, node) == AE_ERR) {
+                proxyLogWarn("Failed to create write handler for node %s:%d\n",
+                             node->ip, node->port);
+                goto final;
+            }
+        }
+        listAddNodeTail(pool, cluster);
+        added++;
+    }
+final:
+    return added;
+}
+
 static proxyThread *createProxyThread(int index) {
     int is_first = (index == 0);
     proxyThread *thread = zmalloc(sizeof(*thread));
@@ -1496,6 +1559,7 @@ static proxyThread *createProxyThread(int index) {
         return NULL;
     }
     if (is_first) printClusterConfiguration(thread->cluster);
+    thread->available_clusters_pool = NULL;
     thread->clients = listCreate();
     if (thread->clients == NULL) goto fail;
     thread->unlinked_clients = listCreate();
@@ -1503,8 +1567,10 @@ static proxyThread *createProxyThread(int index) {
     thread->pending_messages = listCreate();
     if (thread->pending_messages == NULL) goto fail;
     listSetFreeMethod(thread->pending_messages, zfree);
+    int node_count = listLength(thread->cluster->nodes);
     int loopsize = proxy.min_reserved_fds +
-                   listLength(thread->cluster->nodes) +
+                   node_count +
+                   (config.clusters_pool_size * node_count) +
                    (config.maxclients / config.num_threads) + 1;
     thread->loop = aeCreateEventLoop(loopsize);
     if (thread->loop == NULL) goto fail;
@@ -1516,6 +1582,7 @@ static proxyThread *createProxyThread(int index) {
         goto fail;
     }
     thread->msgbuffer = sdsempty();
+    if (config.clusters_pool_size > 0) populateClustersPoolSize(thread);
     return thread;
 fail:
     if (thread) freeProxyThread(thread);
@@ -1612,6 +1679,16 @@ static void freeProxyThread(proxyThread *thread) {
     if (thread->io[0]) close(thread->io[0]);
     if (thread->io[1]) close(thread->io[1]);
     if (thread->cluster != NULL) freeCluster(thread->cluster);
+    if (thread->available_clusters_pool != NULL) {
+        listIter li;
+        listNode *ln;
+        listRewind(thread->available_clusters_pool, &li);
+        while ((ln = listNext(&li)) != NULL) {
+            redisCluster *cluster = ln->value;
+            if (cluster != NULL) freeCluster(cluster);
+        }
+        listRelease(thread->available_clusters_pool);
+    }
     zfree(thread);
 }
 
@@ -1679,7 +1756,27 @@ static int disableMultiplexingForClient(client *c) {
     proxyLogDebug("Disabling multiplexing for client %d:%" PRId64 "\n",
                   c->thread_id, c->id);
     proxyThread *thread = proxy.threads[c->thread_id];
-    c->cluster = duplicateCluster(thread->cluster);
+    /* Try to take an already connected cluster from the thread's pool,
+     * if available. */
+    if (thread->available_clusters_pool != NULL) {
+        listNode *ln = listFirst(thread->available_clusters_pool);
+        if (ln) {
+            listDelNode(thread->available_clusters_pool, ln);
+            redisCluster *cluster = ln->value;
+            if (cluster) {
+                proxyLogDebug("Assigning available cluster from thread pool to "
+                              "client %d:%" PRId64 ". Remaining available "
+                              "clusters: %d\n", c->thread_id, c->id,
+                              listLength(thread->available_clusters_pool));
+                c->cluster = cluster;
+            }
+        }
+    }
+    if (!c->cluster) {
+        proxyLogDebug("Duplicating thread's shared cluster for client "
+                      "%d:%" PRId64, c->thread_id, c->id);
+        c->cluster = duplicateCluster(thread->cluster);
+    }
     if (c->cluster == NULL) return 0;
     c->cluster->owner = c;
     listIter li;
@@ -1688,7 +1785,7 @@ static int disableMultiplexingForClient(client *c) {
     while ((ln = listNext(&li))) {
         clusterNode *node = (clusterNode *) ln->value;
         clusterNode *source = node->duplicated_from;
-        assert(source != NULL);
+        if (source == NULL) return 0;
         redisClusterConnection *conn = source->connection;
 
         /* Move requests from shared connection to private connection. */
@@ -1942,8 +2039,8 @@ static void writeToClusterHandler(aeEventLoop *el, int fd, void *privdata,
             return;
         }
     }
-    if (req == NULL) return;
-    writeToCluster(el, fd, req);
+    if (req != NULL) writeToCluster(el, fd, req);
+    else aeDeleteFileEvent(el, fd, AE_WRITABLE);
 }
 
 
