@@ -81,6 +81,8 @@ You can also use a configuration file instead of passing arguments by using the 
 
 `redis-cluster-proxy -c /path/to/my/proxy.conf 127.0.0.1:7000`
 
+You can find an example `proxy.conf` file insider the main Redis Cluster Proxy's directory.
+
 After launching it, you can connect to the proxy as if it were a normal Redis server (however make sure to understand the current limitations).
 
 You can then connect to Redis Cluster Proxy using the client you prefer, ie:
