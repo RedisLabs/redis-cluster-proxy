@@ -41,6 +41,7 @@ def is_down_err(reply)
     (
         !reply['cluster node disconnected'].nil? ||
         !reply['could not connect to node'].nil? ||
+        !reply['failed to write to cluster'].nil? ||
         !reply['error writing to cluster'].nil?
     )
 end
