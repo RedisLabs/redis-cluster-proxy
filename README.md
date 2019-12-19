@@ -169,6 +169,18 @@ The `PROXY` command will allow to get specific info or perform actions that are 
 
     Get help for the PROXY command
 
+# Commands that act differently from standard Redis Commands or that have special behaviour
+
+- PING: `PONG` is replied directly by the proxy
+- MULTI: disables multiplexing for the calling client by creating a private
+         connection in the client itself. **Note**: since it's required to be
+         atomic, cross-slots queries cannot work inside a multi transaction.
+- DBSIZE: sends the query to all nodes in the cluster and sums their replies,
+          so that the result will be the total number of keys in the whole
+          cluster.
+
+For a list of all known commands (both supported and unsupported) and their 
+features, see [COMMANDS.md](COMMANDS.md)
 
 # Current status
 

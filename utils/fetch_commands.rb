@@ -189,6 +189,10 @@ csv = [
     ['NAME', 'ARITY', 'FIRST KEY', 'LAST KEY', 'KEY STEP', 'UNSUPPORTED',
      'CUSTOM', 'PROXY FLAGS', 'GET KEYS CALLBACK', 'REPLY HANDLER', 'HANDLER']
 ]
+doc = {
+    supported: [],
+    unsupported: []
+}
 $all_flags = %w(REDIS_COMMAND_FLAG_NONE)
 commands = $redis.command
 commands = commands.map{|c|
@@ -220,7 +224,7 @@ commands = commands.map{|c|
         proxy_flags = 0
     end
     unsupported = (UNSUPPORTED_COMMANDS.include?(name) ? 1 : 0)
-    unsupported = true if !unsupported && cmdflags.include?('pubsub')
+    unsupported = 1 if unsupported.zero? && cmdflags.include?('pubsub')
     code =  "    {#{name.inspect}, #{arity.to_i},"
     if $options[:flags]
         code << "\n     #{flags},\n    "
@@ -251,6 +255,17 @@ commands = commands.map{|c|
     end
     code << "#{unsupported}, "
     code << "#{get_keys}, #{handler}, #{reply_handler}}"
+    doc_info = {
+        name: name.upcase,
+        disables_multiplexing: (handler == 'multiCommand' ||
+                                handler == 'genericBlockingCommand'),
+        can_disable_multiplexing: (handler == 'xreadCommand'),
+        "cross-slots unsupported":
+            PROXY_COMMANDS_FLAGS[:MULTISLOT_UNSUPPORTED][name],
+        sums_multiple_replies: reply_handler == 'sumReplies',
+        merges_multiple_replies: reply_handler == 'mergeReplies',
+    }
+    doc[(unsupported.zero? ? :supported : :unsupported)] << doc_info
     code
 }
 custom_commands = CUSTOM_COMMANDS.map{|cmd|
@@ -420,6 +435,30 @@ outfile = File.join $path, 'commands.c'
 File.open(outfile, 'w'){|f| f.write(code)}
 puts "Code written to: #{outfile}"
 File.open(versfile, 'w'){|f| f.write($redis_version.to_s)}
+
+# Generate DOC
+
+doc_content = File.read(File.join($path, 'commands_tpl.md'))
+[:supported, :unsupported].each{|type|
+    list = doc[type].sort_by{|c| c[:name]}.map{|c|
+        l = " - #{c[:name]}"
+        extra = c.keys.map{|k|
+            next if k == :name
+            val = c[k]
+            next if !val
+            "**#{k.to_s.gsub(/_+/, ' ')}**"
+        }.compact.join(', ')
+        l << " (#{extra})" if !extra.strip.empty?
+        l
+    }.join("\n")
+    doc_content = doc_content.gsub "%%#{type.to_s.upcase}_COMMANDS_LIST%%", list
+}
+docfile = File.join $path, 'COMMANDS.md'
+File.open(docfile, 'w:utf-8'){|f|
+    f.write doc_content
+}
+puts "Doc written to: #{docfile}"
+
 if $options[:csv]
     require 'csv'
     csvfile = File.join $path, 'proxy_commands.csv'
