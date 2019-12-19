@@ -116,7 +116,7 @@ class RedisClusterProxy
         if @pid
             log "Stopping proxy to 127.0.0.1:#{@entry_point[:port]} " +
                 "with PID #{@pid}", :gray
-            Process.kill('TERM', @pid) 
+            Process.kill('TERM', @pid)
             $test_proxies ||= []
             $test_proxies -= [self]
             @pid = nil

@@ -29,6 +29,7 @@ opts =RedisProxyTestUtils::OptionParser.new help_banner_arguments: '[TESTS]' do
     option   '',   '--log-level LEVEL', "Proxy's --log-level (default: debug)"
     option   '',   '--dump-queues',"Proxy's --dump-queues"
     option   '',   '--dump-queries',"Proxy's --dump-queries"
+    option   '',   '--keep-logs', "Keep Proxies' logs (if any)"
     option   '',   '--valgrind', 'Valgrind mode'
 
 end
@@ -136,14 +137,17 @@ if RedisProxyTestCase::exceptions.length == 0
     if failures_count.zero?
         puts ("All #{succeeded_count} test(s) were performed without "+
              "errors!").green
-        # Clean logs
-        Dir.glob(File.join(RedisProxyTestCase::LOGDIR, '*.log')).each{|logfile|
-            next if File.basename(logfile)[/^valgrind/]
-            begin
-                FileUtils.rm logfile
-            rescue Exception => e
-            end
-        }
+        if !$options[:keep_logs]
+            # Clean logs
+            pattern = File.join(RedisProxyTestCase::LOGDIR, '*.log')
+            Dir.glob(pattern).each{|logfile|
+                next if File.basename(logfile)[/^valgrind/]
+                begin
+                    FileUtils.rm logfile
+                rescue Exception => e
+                end
+            }
+        end
     else
         puts "#{succeeded_count} test(s) succeeded without errors".green
         puts "#{failures_count} test(s) failed!".red

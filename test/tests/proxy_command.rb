@@ -14,3 +14,11 @@ test "PROXY CONFIG GET" do
         assert_equal(reply[1].to_i, val.to_i)
     }
 end
+
+test "LOG TO PROXY" do
+    msg = "*********** TEST LOG ***********"
+    reply = log_to_proxy $main_proxy, msg
+    assert_not_redis_err reply
+    log = File.read $main_proxy.logfile
+    assert_not_nil(log[msg], "Could not find logged message in proxy's log")
+end

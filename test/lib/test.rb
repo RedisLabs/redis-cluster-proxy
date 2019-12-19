@@ -258,6 +258,10 @@ class RedisProxyTestCase
         log_same_line("[  ] #{test[:name]} #{message}")
     end
 
+    def log_to_proxy(proxy, msg)
+        proxy.redis_command :proxy, 'log', msg
+    end
+
     def on_exception(e)
         if !e.is_a? Interrupt
             @@exceptions << e
