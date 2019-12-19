@@ -21,6 +21,20 @@
 #include <stdint.h>
 #include "proxy.h"
 
+#define ERROR_CLUSTER_RECONFIG \
+    "-CLUSTERDOWN Failed to fetch cluster configuration"
+#define ERROR_COMMAND_UNSUPPORTED_CROSSSLOT \
+    "Cross-slot queries are not supported for this command"
+#define ERROR_OOM "Out of memory"
+#define ERROR_MULTIPLE_REPLIES_ITER_FAIL "Failed to iterate multiple replies"
+#define ERROR_CLUSTER_READ_FAIL "Failed to read from cluster"
+#define ERROR_CLUSTER_WRITE_FAIL "Failed to write to cluster"
+#define ERROR_UNKNOWN_SUBCMD \
+    "Unknown subcommand or wrong number of arguments for '%s'."
+#define ERROR_MERGE_REPLY_INVALID_FMT \
+    "Invalid reply format while merging multiple replies from cluster"
+#define ERROR_NODE_DISCONNECTED "Cluster node disconnected: "
+
 int initReplyArray(client *c);
 void addReplyArray(client *c, uint64_t req_id);
 void addReplyStringLen(client *c, const char *str, int len, uint64_t req_id);
@@ -31,6 +45,8 @@ void addReplyBulkString(client *c, const char *str, uint64_t req_id);
 void addReplyInt(client *c, int64_t integer, uint64_t req_id);
 void addReplyErrorLen(client *c, const char *err, int len, uint64_t req_id);
 void addReplyError(client *c, const char *err, uint64_t req_id);
+void addReplyErrorUnknownSubcommand(client *c, const char *subcmd,
+                                    const char *help, uint64_t req_id);
 void addReplyHelp(client *c, const char **help, uint64_t req_id);
 void addReplyRaw(client *c, const char *buf, size_t len, uint64_t req_id);
 

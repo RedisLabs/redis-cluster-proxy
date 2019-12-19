@@ -46,7 +46,7 @@ void addReplyArray(client *c, uint64_t req_id) {
 }
 
 void addReplyHelp(client *c, const char **help, uint64_t req_id) {
-    if (!initReplyArray(c)) addReplyError(c, "Out of memory", req_id);
+    if (!initReplyArray(c)) addReplyError(c, ERROR_OOM, req_id);
     const char *item = NULL;
     int idx = 0;
     while ((item = help[idx++])) addReplyString(c, item, req_id);
@@ -95,10 +95,14 @@ void addReplyInt(client *c, int64_t integer, uint64_t req_id) {
 }
 
 void addReplyErrorLen(client *c, const char *err, int len, uint64_t req_id) {
-    sds r = sdsnew("-ERR");
-    if (len) {
-        r = sdscat(r, " ");
-        r = sdscatlen(r, err, len);
+    sds r = NULL;
+    if (len && err[0] == '-') r = sdsnewlen(err, len);
+    else {
+        r = sdsnew("-ERR");
+        if (len) {
+            r = sdscat(r, " ");
+            r = sdscatlen(r, err, len);
+        }
     }
     r = sdscat(r, "\r\n");
     if (c->reply_array != NULL) {
@@ -111,6 +115,15 @@ void addReplyErrorLen(client *c, const char *err, int len, uint64_t req_id) {
 
 void addReplyError(client *c, const char *err, uint64_t req_id) {
     addReplyErrorLen(c, err, strlen(err), req_id);
+}
+
+void addReplyErrorUnknownSubcommand(client *c, const char *subcmd,
+                                    const char *help, uint64_t req_id)
+{
+    sds err = sdscatfmt(sdsempty(), ERROR_UNKNOWN_SUBCMD, subcmd);
+    if (help != NULL) err = sdscatfmt(err, " Try %s", help);
+    addReplyError(c, err, req_id);
+    sdsfree(err);
 }
 
 void addReplyRaw(client *c, const char *buf, size_t len, uint64_t req_id) {

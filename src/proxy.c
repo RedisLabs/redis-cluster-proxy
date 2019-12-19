@@ -59,11 +59,6 @@
 #define QUEUE_TYPE_SENDING      1
 #define QUEUE_TYPE_PENDING      2
 
-#define ERROR_CLUSTER_RECONFIG \
-    "Failed to fetch cluster configuration"
-#define ERROR_COMMAND_UNSUPPORTED_CROSSSLOT \
-    "Cross-slot queries are not supported for this command."
-
 #define UNUSED(V) ((void) V)
 
 #define getThread(c) (proxy.threads[c->thread_id])
@@ -246,7 +241,7 @@ static sds proxySubCommandConfig(clientRequest *r, sds option, sds value,
     } else {
         if (value == NULL) {
             if (!initReplyArray(r->client)) {
-                *err = sdsnew("Out of memory");
+                *err = sdsnew(ERROR_OOM);
                 return NULL;
             }
             addReplyString(r->client, option, r->id);
@@ -275,7 +270,7 @@ static void proxySubCommandCommand(clientRequest *req, sds cmdtype) {
             only_crossslots_disabled = 1;
         else {
             addReplyError(req->client,
-                          "Invalid argument `TYPE` for PROXY COMMAND. "
+                          "Invalid argument `TYPE` for `PROXY COMMAND`. "
                           "Supported types: unsupported, "
                           "crossslots-unsupported",
                           req->id);
@@ -283,7 +278,7 @@ static void proxySubCommandCommand(clientRequest *req, sds cmdtype) {
         }
     }
     if (!initReplyArray(req->client)) {
-        addReplyError(req->client, "Out of memory", req->id);
+        addReplyError(req->client, ERROR_OOM, req->id);
         return;
     }
     int i, command_count = sizeof(redisCommandTable) / sizeof(redisCommandDef);
@@ -322,8 +317,8 @@ static void proxySubCommandClient(clientRequest *req, sds subcmd) {
     } else if (strcasecmp("help", subcmd) == 0) {
         addReplyHelp(req->client, proxyCommandSubcommandClientHelp, req->id);
     } else {
-        addReplyError(req->client, "Invalid subcommand for PROXY CLIENT",
-                      req->id);
+        addReplyErrorUnknownSubcommand(req->client, "PROXY CLIENT",
+            "PROXY CLIENT HELP", req->id);
     }
 }
 
@@ -482,7 +477,11 @@ int execOrDiscardCommand(void *r) {
     clientRequest *req = r;
     client *c = req->client;
     if (!c->multi_transaction) {
-        addReplyError(c, "Client is not under MULTI transaction", req->id);
+        sds err = sdsnew(req->command->name);
+        sdstoupper(err);
+        err = sdscat(err, " without MULTI");
+        addReplyError(c, err, req->id);
+        sdsfree(err);
         return PROXY_COMMAND_HANDLED;
     }
     if (c->multi_request != NULL && c->multi_request->node != NULL)
@@ -495,7 +494,8 @@ int proxyCommand(void *r) {
     clientRequest *req = r;
     sds subcmd = NULL, err = NULL;
     if (req->argc < 2) {
-        err = sdsnew("Wrong number of arguments for command PROXY");
+        addReplyErrorUnknownSubcommand(req->client, "PROXY", "PROXY HELP",
+            req->id);
         goto final;
     }
     assert(req->offsets_size >= 2);
@@ -508,7 +508,8 @@ int proxyCommand(void *r) {
     subcmd = sdsnewlen(p, len);
     if (strcasecmp("config", subcmd) == 0) {
         if (req->argc < 3) {
-            err = sdsnew("Missing PROXY CONFIG action (GET | SET)");
+            addReplyErrorUnknownSubcommand(req->client, "PROXY CONFIG",
+                "PROXY HELP", req->id);
             goto final;
         }
         assert(req->offsets_size >= 3);
@@ -522,17 +523,17 @@ int proxyCommand(void *r) {
         if (strcasecmp("get", action) == 0 || strcasecmp("set", action) == 0) {
             is_set_action = (action[0] == 's' || action[0] == 'S');
         } else {
-            err = sdsnew("Unsupported PROXY CONFIG action ");
-            err = sdscatfmt(err, "'%S'", action);
+            addReplyErrorUnknownSubcommand(req->client, "PROXY CONFIG",
+                "PROXY HELP", req->id);
             sdsfree(action);
             goto final;
         }
         sdsfree(action);
-        if (req->argc < 4)
-            err = sdsnew("Missing config option name");
-        else if (is_set_action && req->argc < 5)
-            err = sdsnew("Missing config option value");
-        if (err != NULL) goto final;
+        if (req->argc < 4 || (is_set_action && req->argc < 5)) {
+            addReplyErrorUnknownSubcommand(req->client, "PROXY CONFIG",
+                "PROXY HELP", req->id);
+            goto final;
+        }
         assert(req->offsets_size >= 4);
         offset = req->offsets[3];
         len = req->lengths[3];
@@ -572,16 +573,18 @@ int proxyCommand(void *r) {
                 addReplyString(req->client, "OK", req->id);
             else
                 err = sdsnew("Failed to disable multiplexing");
-        } else
-            err = sdsnew("Unsupported action. Supported actions: status|off");
+        } else {
+            addReplyErrorUnknownSubcommand(req->client, "PROXY MULTIPLEXING",
+                "PROXY HELP", req->id);
+        }
         sdsfree(action);
     } else if (strcasecmp("ping", subcmd) == 0) {
         addReplyString(req->client, "PONG", req->id);
     } else if (strcasecmp("info", subcmd) == 0) {
         sds section = NULL;
         if (req->argc > 3) {
-            err = sdsnew("Wrong number of arguments for command PROXY's "
-                         "subcommand");
+            addReplyErrorUnknownSubcommand(req->client, "PROXY INFO",
+                "PROXY HELP", req->id);
             goto final;
         } else if (req->argc == 3) {
             assert(req->offsets_size >= 3);
@@ -605,8 +608,8 @@ int proxyCommand(void *r) {
         if (cmdtype) sdsfree(cmdtype);
     } else if (strcasecmp("client", subcmd) == 0) {
         if (req->argc < 3) {
-            err = sdsnew("Wrong number of arguments for command PROXY's "
-                         "subcommand");
+            addReplyErrorUnknownSubcommand(req->client, "PROXY CLIENT",
+                "PROXY CLIENT HELP", req->id);
             goto final;
         }
         assert(req->offsets_size >= 3);
@@ -650,8 +653,8 @@ int proxyCommand(void *r) {
             int len = req->lengths[2];
             msg = sdsnewlen(req->buffer + offset, len);
         } else {
-            err = sdsnew("Wrong number of arguments for command PROXY's "
-                         "subcommand");
+            addReplyErrorUnknownSubcommand(req->client, "PROXY LOG",
+                "PROXY HELP", req->id);
             goto final;
         }
         int msglen = sdslen(msg);
@@ -667,8 +670,8 @@ int proxyCommand(void *r) {
     } else if (strcasecmp("help", subcmd) == 0) {
         addReplyHelp(req->client, proxyCommandHelp, req->id);
     } else {
-        err = sdsnew("Unsupported subcommand ");
-        err = sdscatfmt(err, "'%S' for command PROXY", subcmd);
+        addReplyErrorUnknownSubcommand(req->client, "PROXY",
+            "PROXY HELP", req->id);
     }
 final:
     if (err != NULL) {
@@ -687,7 +690,7 @@ int mergeReplies(void *_reply, void *_req) {
     raxStart(&iter, req->child_replies);
     if (!raxSeek(&iter, "^", NULL, 0)) {
         raxStop(&iter);
-        addReplyError(req->client, "Failed to iterate multiple replies",
+        addReplyError(req->client, ERROR_MULTIPLE_REPLIES_ITER_FAIL,
                       req->id);
         return 0;
     }
@@ -714,7 +717,7 @@ int mergeReplies(void *_reply, void *_req) {
                 proxyLogDebug("Child reply:\n%s\np:\n%s\nendl:\n%s\n",
                               child_reply, p, endl);
             }
-            err = "Invalid reply format while merging multiple replies";
+            err = ERROR_MERGE_REPLY_INVALID_FMT;
             goto final;
         }
         *endl = '\0';
@@ -726,7 +729,7 @@ int mergeReplies(void *_reply, void *_req) {
                 proxyLogDebug("Invalid count!\nChild reply:\n%s\np:\n%s\n"
                               "endl:\n%s\n", child_reply, p, endl);
             }
-            err = "Invalid reply format while merging multiple replies";
+            err = ERROR_MERGE_REPLY_INVALID_FMT;
             goto final;
         }
         count += c;
@@ -757,7 +760,7 @@ int getFirstMultipleReply(void *_reply, void *_req) {
     raxStart(&iter, req->child_replies);
     if (!raxSeek(&iter, "^", NULL, 0)) {
         raxStop(&iter);
-        addReplyError(req->client, "Failed to iterate multiple replies",
+        addReplyError(req->client, ERROR_MULTIPLE_REPLIES_ITER_FAIL,
                       req->id);
         return 0;
     }
@@ -789,7 +792,7 @@ int sumReplies(void *_reply, void *_req) {
     raxStart(&iter, req->child_replies);
     if (!raxSeek(&iter, "^", NULL, 0)) {
         raxStop(&iter);
-        addReplyError(req->client, "Failed to iterate multiple replies",
+        addReplyError(req->client, ERROR_MULTIPLE_REPLIES_ITER_FAIL,
                       req->id);
         return 0;
     }
@@ -809,7 +812,7 @@ int sumReplies(void *_reply, void *_req) {
             int64_t val = strtoll(child_reply + 1, &strprt, 10);
             tot += val;
         } else {
-            addReplyError(req->client, "Invalid reply format",
+            addReplyError(req->client, "Invalid reply format from cluster",
                           req->id);
             raxStop(&iter);
             return 0;
@@ -1884,7 +1887,7 @@ static void writeToClusterHandler(aeEventLoop *el, int fd, void *privdata,
     if (ctx->err) {
         proxyLogErr("Failed to connect to node %s:%d\n", node->ip, node->port);
         if (req != NULL) {
-            sds err = sdsnew("Cluster node disconnected: ");
+            sds err = sdsnew(ERROR_NODE_DISCONNECTED);
             err = sdscatprintf(err, "%s:%d", node->ip, node->port);
             addReplyError(req->client, err, req->id);
             sdsfree(err);
@@ -1899,7 +1902,7 @@ static void writeToClusterHandler(aeEventLoop *el, int fd, void *privdata,
             proxyLogErr("Failed to create read reply handler for node %s:%d\n",
                           node->ip, node->port);
             if (req != NULL) {
-                addReplyError(req->client, "Failed to read from cluster",
+                addReplyError(req->client, ERROR_CLUSTER_READ_FAIL,
                               req->id);
                 freeRequest(req);
             }
@@ -1960,7 +1963,7 @@ static int writeToCluster(aeEventLoop *el, int fd, clientRequest *req) {
             if (errno == EPIPE) {
                 clusterNodeDisconnect(req->node);
             } else {
-                addReplyError(req->client, "Error writing to cluster", req->id);
+                addReplyError(req->client, ERROR_CLUSTER_WRITE_FAIL, req->id);
                 freeRequest(req);
             }
             return 0;
@@ -2045,7 +2048,7 @@ void onClusterNodeDisconnection(clusterNode *node) {
         redisCluster *cluster = node->cluster;
         assert(cluster != NULL);
         if (cluster->is_updating) return;
-        sds err = sdsnew("Cluster node disconnected: ");
+        sds err = sdsnew(ERROR_NODE_DISCONNECTED);
         err = sdscatprintf(err, "%s:%d", node->ip, node->port);
         listIter li;
         listNode *ln;
@@ -2814,7 +2817,7 @@ static int sendRequestToCluster(clientRequest *req, sds *errmsg)
          * is asynchronous. */
         if (aeCreateFileEvent(el, ctx->fd, AE_WRITABLE,
                               writeToClusterHandler, req->node) == AE_ERR) {
-            addReplyError(req->client, "Failed to write to cluster\n", req->id);
+            addReplyError(req->client, ERROR_CLUSTER_WRITE_FAIL, req->id);
             proxyLogErr("Failed to create write handler for request\n");
             freeRequest(req);
             return 0;
@@ -2836,7 +2839,7 @@ static int sendRequestToCluster(clientRequest *req, sds *errmsg)
         {
             proxyLogErr("Failed to create read reply handler for node %s:%d\n",
                           req->node->ip, req->node->port);
-            addReplyError(req->client, "Failed to read from cluster\n",
+            addReplyError(req->client, ERROR_CLUSTER_READ_FAIL,
                           req->id);
             freeRequest(req);
             return 0;
@@ -2851,7 +2854,7 @@ static int sendRequestToCluster(clientRequest *req, sds *errmsg)
     if (!sent) {
         if (aeCreateFileEvent(el, ctx->fd, AE_WRITABLE,
                               writeToClusterHandler, req->node) == AE_ERR) {
-            addReplyError(req->client, "Failed to write to cluster\n", req->id);
+            addReplyError(req->client, ERROR_CLUSTER_WRITE_FAIL, req->id);
             proxyLogErr("Failed to create write handler for request\n");
             freeRequest(req);
             return 0;
@@ -2937,8 +2940,10 @@ int processRequest(clientRequest *req, int *parsing_status) {
      * - Commands not defined in redisCommandTable
      * - Commands explictly having unsupported to 1 */
     if (cmd == NULL || cmd->unsupported){
-        errmsg = sdsnew("Unsupported command: ");
-        errmsg = sdscatfmt(errmsg, "'%s'", command_name);
+        errmsg = sdscatprintf(sdsempty(),
+                            "%s command `%.*s`",
+                             (cmd == NULL ? "unknown" : "unsupported"),
+                             128, command_name);
         proxyLogDebug("%s\n", errmsg);
         goto invalid_request;
     }
@@ -3159,7 +3164,7 @@ static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
         redisCluster *cluster = NULL;
         if (!ok) {
             proxyLogErr("Error: %s\n", ctx->errstr);
-            errmsg = "Failed to get reply";
+            errmsg = ERROR_CLUSTER_READ_FAIL;
         }
         reply = (redisReply *) _reply;
         /* Reply not yet available, just return */
@@ -3329,7 +3334,7 @@ static void readClusterReply(aeEventLoop *el, int fd,
                       node->ip, node->port, thread_id);
         int err = ctx->err;
         node_disconnected = (err & (REDIS_ERR_IO | REDIS_ERR_EOF));
-        if (node_disconnected) errmsg = sdsnew("Cluster node disconnected: ");
+        if (node_disconnected) errmsg = sdsnew(ERROR_NODE_DISCONNECTED);
         else {
             proxyLogErr("Error from node %s:%d: %s\n", node->ip, node->port,
                         ctx->errstr);
