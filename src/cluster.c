@@ -697,7 +697,7 @@ int updateCluster(redisCluster *cluster) {
     proxyLogDebug("Cluster reconfiguration: still waiting for %d requests\n",
                   requests_to_wait);
     cluster->is_updating = 1;
-    /* If the are requests pending or writing to cluster, just return
+    /* If there are requests pending or writing to cluster, just return
      * CLUSTER_RECONFIG_WAIT status. */
     if (requests_to_wait) goto final;
     status = CLUSTER_RECONFIG_STARTED;
