@@ -18,6 +18,10 @@
 #ifndef __REDIS_CLUSTER_PROXY_H__
 #define __REDIS_CLUSTER_PROXY_H__
 
+#ifdef __STDC_NO_ATOMICS__
+#error "Missing support for C11 Atomics, please update your C compiler."
+#endif
+
 #include <pthread.h>
 #include <stdint.h>
 #include <sys/resource.h>
