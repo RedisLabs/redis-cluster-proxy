@@ -394,7 +394,7 @@ static sds genInfoString(sds section) {
     return info;
 }
 
-int genericBlockingCommand(void *r){
+int commandWithPrivateConnection(void *r){
     clientRequest *req = r;
     client *c = req->client;
     redisCluster *cluster = getCluster(c);

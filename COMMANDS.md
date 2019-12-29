@@ -128,7 +128,8 @@
  - TTL
  - TYPE
  - UNLINK (**sums multiple replies**)
- - WATCH
+ - UNWATCH (**disables multiplexing**)
+ - WATCH (**disables multiplexing**)
  - XACK
  - XADD
  - XCLAIM
@@ -207,7 +208,6 @@ Those commands are currently not supported by Redis Cluster Proxy.
  - SYNC
  - TIME
  - UNSUBSCRIBE
- - UNWATCH
  - WAIT
 
 

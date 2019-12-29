@@ -24,7 +24,7 @@ $path = File.expand_path(File.dirname(__FILE__))
 COPY_START_YEAR = 2019
 UNSUPPORTED_COMMANDS = %w(
     subscribe psubscribe debug role migrate acl shutdown info wait
-    slaveof replconf time unwatch monitor config latency unsubscribe
+    slaveof replconf time monitor config latency unsubscribe
     scan replicaof pfselftest lastslave slowlog 
     publish cluster sync command readwrite asking
     script randomkey module pfdebug pubsub
@@ -35,10 +35,12 @@ COMMAND_HANDLERS = {
     'multi' => 'multiCommand',
     'exec' => 'execOrDiscardCommand',
     'discard' => 'execOrDiscardCommand',
-    'blpop' => 'genericBlockingCommand',
-    'brpop' => 'genericBlockingCommand',
-    'bzpopmin' => 'genericBlockingCommand',
-    'bzpopmax' => 'genericBlockingCommand',
+    'watch' => 'commandWithPrivateConnection',
+    'unwatch' => 'commandWithPrivateConnection',
+    'blpop' => 'commandWithPrivateConnection',
+    'brpop' => 'commandWithPrivateConnection',
+    'bzpopmin' => 'commandWithPrivateConnection',
+    'bzpopmax' => 'commandWithPrivateConnection',
     'xread' => 'xreadCommand',
     'xreadgroup' => 'xreadCommand',
     'post' => 'securityWarningCommand',
@@ -62,6 +64,8 @@ REPLY_HANDLERS = {
     'save' => 'getFirstMultipleReply',
     'bgsave' => 'getFirstMultipleReply',
     'keys' => 'mergeReplies',
+    'watch' => 'getFirstMultipleReply',
+    'unwatch' => 'getFirstMultipleReply',
 }
 GET_KEYS_PROC = {
     'zunionstore' => 'zunionInterGetKeys',
@@ -96,7 +100,8 @@ PROXY_COMMANDS_FLAGS = {
         'xreadgroup' => true
     },
     DUPLICATE: {
-        'keys' => true
+        'keys' => true,
+        'unwatch' => true,
     }
 }
 
@@ -258,7 +263,7 @@ commands = commands.map{|c|
     doc_info = {
         name: name.upcase,
         disables_multiplexing: (handler == 'multiCommand' ||
-                                handler == 'genericBlockingCommand'),
+                                handler == 'commandWithPrivateConnection'),
         can_disable_multiplexing: (handler == 'xreadCommand'),
         "cross-slots unsupported":
             PROXY_COMMANDS_FLAGS[:MULTISLOT_UNSUPPORTED][name],
