@@ -1504,15 +1504,21 @@ static proxyThread *createProxyThread(int index) {
     if (thread->pending_messages == NULL) goto fail;
     listSetFreeMethod(thread->pending_messages, zfree);
     int loopsize = proxy.min_reserved_fds +
-                   listLength(thread->cluster->nodes) +
-                   (config.maxclients / config.num_threads) + 1;
+       (listLength(thread->cluster->nodes) * (config.num_threads)) +
+       (config.maxclients / config.num_threads) + 1;
     thread->loop = aeCreateEventLoop(loopsize);
-    if (thread->loop == NULL) goto fail;
+    if (thread->loop == NULL) {
+        proxyLogErr("Failed to allocate event loop for thread %d\n", index);
+        goto fail;
+    }
     thread->loop->privdata = thread;
     aeSetBeforeSleepProc(thread->loop, beforeThreadSleep);
     /*aeCreateTimeEvent(thread->loop, 1, proxyThreadCron, NULL,NULL);*/
     if (aeCreateFileEvent(thread->loop, thread->io[THREAD_IO_READ],
                           AE_READABLE, readThreadPipe, thread) == AE_ERR) {
+        proxyLogErr("Failed to install thread pipe read handler for "
+                    "thread %d\n", index);
+        if (errno > 0) proxyLogErr("Error: %s\n", strerror(errno));
         goto fail;
     }
     thread->msgbuffer = sdsempty();
