@@ -1354,8 +1354,7 @@ static void writeRepliesToClients(struct aeEventLoop *el) {
         client *c = ln->value;
         if (!writeToClient(c)) continue;
         if (c->written > 0 && c->written < sdslen(c->obuf)) {
-            if (aeCreateFileEvent(el, c->fd, AE_WRITABLE, writeHandler, c) ==
-                AE_OK) {
+            if (installIOHandler(el, c->fd, AE_WRITABLE, writeHandler, c, 0)) {
                 c->has_write_handler = 1;
             } else {
                 c->has_write_handler = 0;
@@ -1514,8 +1513,9 @@ static proxyThread *createProxyThread(int index) {
     thread->loop->privdata = thread;
     aeSetBeforeSleepProc(thread->loop, beforeThreadSleep);
     /*aeCreateTimeEvent(thread->loop, 1, proxyThreadCron, NULL,NULL);*/
-    if (aeCreateFileEvent(thread->loop, thread->io[THREAD_IO_READ],
-                          AE_READABLE, readThreadPipe, thread) == AE_ERR) {
+    if (!installIOHandler(thread->loop, thread->io[THREAD_IO_READ],
+                          AE_READABLE, readThreadPipe, thread, 0))
+    {
         proxyLogErr("Failed to install thread pipe read handler for "
                     "thread %d\n", index);
         if (errno > 0) proxyLogErr("Error: %s\n", strerror(errno));
@@ -1572,8 +1572,8 @@ static int sendMessageToThread(proxyThread *thread, sds buf) {
 install_write_handler:
     sdsrange(buf, totwritten, -1);
     listAddNodeTail(thread->pending_messages, buf);
-    if (aeCreateFileEvent(thread->loop, fd, AE_WRITABLE,
-        handlePendingAwakeMessages, thread) == AE_ERR)
+    if (!installIOHandler(thread->loop, fd, AE_WRITABLE,
+        handlePendingAwakeMessages, thread, 0))
     {
         proxyLogDebug("Failed to create thread awake write handler!\n");
         listNode *ln = listSearchKey(thread->pending_messages, buf);
@@ -2821,8 +2821,9 @@ static int sendRequestToCluster(clientRequest *req, sds *errmsg)
         }
         /* Install the write handler since the connection to the cluster node
          * is asynchronous. */
-        if (aeCreateFileEvent(el, ctx->fd, AE_WRITABLE,
-                              writeToClusterHandler, req->node) == AE_ERR) {
+        if (!installIOHandler(el, ctx->fd, AE_WRITABLE, writeToClusterHandler,
+                              req->node, 0))
+        {
             addReplyError(req->client, ERROR_CLUSTER_WRITE_FAIL, req->id);
             proxyLogErr("Failed to create write handler for request\n");
             freeRequest(req);
@@ -2858,8 +2859,9 @@ static int sendRequestToCluster(clientRequest *req, sds *errmsg)
     if (!writeToCluster(el, ctx->fd, req)) return 0;
     int sent = (req->written == sdslen(req->buffer));
     if (!sent) {
-        if (aeCreateFileEvent(el, ctx->fd, AE_WRITABLE,
-                              writeToClusterHandler, req->node) == AE_ERR) {
+        if (!installIOHandler(el, ctx->fd, AE_WRITABLE, writeToClusterHandler,
+            req->node, 0))
+        {
             addReplyError(req->client, ERROR_CLUSTER_WRITE_FAIL, req->id);
             proxyLogErr("Failed to create write handler for request\n");
             freeRequest(req);
@@ -3468,8 +3470,9 @@ int main(int argc, char **argv) {
     if (config.daemonize) daemonize();
     initProxy();
     for (i = 0; i < proxy.fd_count; i++) {
-        if (aeCreateFileEvent(proxy.main_loop, proxy.fds[i], AE_READABLE,
-                              acceptTcpHandler, NULL) == AE_ERR) {
+        if (!installIOHandler(proxy.main_loop, proxy.fds[i], AE_READABLE,
+                              acceptTcpHandler, NULL, 0))
+        {
             proxyLogErr("FATAL: Failed to create TCP accept handlers, "
                         "aborting...\n");
             exit_status = 1;
