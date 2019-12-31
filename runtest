@@ -1,12 +1,12 @@
 #!/bin/bash
 
 if [ -z `which ruby` ]; then
-    echo "Ruby is required by tests, but is missing on this system, please install it..."
+    echo "Ruby is required by tests, but it's missing on this system, please install it."
     exit 1
 fi
 
 if [ -z `which gem` ]; then
-    echo "Rubygems is required by tests, but is missing on this system, please install it..."
+    echo "Rubygems is required by tests, but it's missing on this system, please install it."
     exit 1
 fi
 
