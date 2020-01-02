@@ -2236,7 +2236,7 @@ static int parseRequest(clientRequest *req) {
                     }
                     p = req->buffer + req->query_offset;
                 }
-                if (arglen > 0) {
+                if (arglen >= 0) {
                     int newargc = req->argc + 1;
                     if (!requestMakeRoomForArgs(req, newargc)) {
                         status = PARSE_STATUS_ERROR;
