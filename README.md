@@ -132,7 +132,7 @@ The `PROXY` command will allow to get specific info or perform actions that are 
   ```
   PROXY CONFIG GET threads
   PROXY CONFIG SET log-level debug
-  PROXT CONFIG SET enable-cross-slot 1
+  PROXY CONFIG SET enable-cross-slot 1
   ```
 - PROXY MULTIPLEXING STATUS|OFF
 
