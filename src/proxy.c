@@ -769,9 +769,7 @@ int getFirstMultipleReply(void *_reply, void *_req) {
         sds child_reply = (sds) iter.data;
         if (child_reply == NULL) continue;
         if (child_reply[0] == '-') {
-            /* Reply is an error, reply the error and exit. */
-            addReplyRaw(req->client, child_reply, sdslen(child_reply),
-                        req->id);
+            /* Reply is an error, so reply the error to the client */
             first = child_reply;
             break;
         }
