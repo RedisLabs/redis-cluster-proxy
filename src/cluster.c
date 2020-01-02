@@ -327,6 +327,7 @@ clusterNode *duplicateClusterNode(clusterNode *source, redisCluster *c) {
     if (source->name) node->name = sdsdup(source->name);
     node->flags = source->flags;
     node->replicas_count = source->replicas_count;
+    node->is_replica = source->is_replica;
     if (source->replicate) node->replicate = sdsdup(source->replicate);
     node->slots_count = source->slots_count;
     if ((node->slots_count = source->slots_count) > 0)
