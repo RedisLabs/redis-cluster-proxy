@@ -64,13 +64,14 @@ class RedisProxyTestCase
     }
 
     attr_reader :name, :testfile, :tests, :failed_tests, :succeeded_tests,
-                :current_test, :started, :duration
+                :skipped_tests, :current_test, :started, :duration
 
     def initialize(name, testfile: nil)
         @name = name
         @tests = []
         @failed_tests = []
         @succeeded_tests = []
+        @skipped_tests = []
         @current_test = nil
         if !@testfile
             @testfile = "#{name}"
@@ -94,7 +95,7 @@ class RedisProxyTestCase
                 instance_eval(&@setup)
             rescue AssertionFailure => message
                 message ||= 'assertion failure'
-                log message.red
+                log message.to_s.red
                 #return false
                 failed_setup = true
             rescue Exception => e
@@ -118,7 +119,7 @@ class RedisProxyTestCase
                 instance_eval(&@cleanup)
             rescue AssertionFailure => message
                 message ||= 'assertion failure'
-                log message.red
+                log message.to_s.red
             rescue Exception => e
                 on_exception(e)
                 @@interrupted = true if e.is_a? Interrupt
@@ -147,12 +148,16 @@ class RedisProxyTestCase
         @current_test = test
         failed = false
         interrupt = false
+        skipped = false
         begin
             started = Time.now.to_f
             instance_eval &(test[:exec])
         rescue AssertionFailure => message
             test[:failed] = failed = true
             test[:failure] = message if message
+        rescue SkipTestException => message
+            test[:skipped_because] = message
+            skipped = true
         rescue Exception => e
             interrupt = e.is_a?(Interrupt)
             test[:failed] = failed = true if !interrupt
@@ -167,6 +172,9 @@ class RedisProxyTestCase
             @failed_tests << test
         elsif interrupt
             status = 'CANCEL'.magenta
+        elsif skipped
+            status = 'SKIPPED'.cyan
+            @skipped_tests << test
         else
             status = 'OK'.green
             @succeeded_tests << test
@@ -176,6 +184,8 @@ class RedisProxyTestCase
         puts message
         if test[:failure]
             puts test[:failure].to_s.red
+        elsif test[:skipped_because]
+            puts ("-> Skip reason: " + test[:skipped_because].to_s).yellow
         end
         !failed
     end
@@ -253,6 +263,11 @@ class RedisProxyTestCase
         assert(obj.is_a?(cls), message)
     end
 
+    def skip_test(message)
+        message ||= "Test skipped"
+        raise SkipTestException, message
+    end
+
     def log_test_update(message, test = nil)
         test ||= @current_test
         log_same_line("[  ] #{test[:name]} #{message}")
@@ -288,6 +303,9 @@ class RedisProxyTestCase
     end
 
     class AssertionFailure < Exception
+    end
+
+    class SkipTestException < Exception
     end
 
 end

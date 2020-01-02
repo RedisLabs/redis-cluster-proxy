@@ -46,6 +46,7 @@ COMMAND_HANDLERS = {
     'post' => 'securityWarningCommand',
     'host:' => 'securityWarningCommand',
     'ping' => 'pingCommand',
+    'auth' => 'authCommand',
     #'randomkey' => 'randomKeyCommand',
 }
 REPLY_HANDLERS = {
@@ -102,6 +103,7 @@ PROXY_COMMANDS_FLAGS = {
     DUPLICATE: {
         'keys' => true,
         'unwatch' => true,
+        'auth' => true,
     }
 }
 

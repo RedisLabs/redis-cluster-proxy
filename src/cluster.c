@@ -413,9 +413,18 @@ int clusterNodeLoadInfo(redisCluster *cluster, clusterNode *node, list *friends,
     }
     node->connection->context = ctx;
     node->connection->connected = 1;
-    if (config.auth) {
+    int auth_failed = 0;
+    char *auth = config.auth, *user = config.auth_user;
+    if (cluster->owner != NULL) {
+        client *c = cluster->owner;
+        if (c->auth_user) {
+            auth = c->auth_passw;
+            user = c->auth_user;
+        }
+    }
+    if (auth || user) {
         char *autherr = NULL;
-        if (!clusterNodeAuth(node, config.auth, &autherr)) {
+        if (!clusterNodeAuth(node, auth, user, &autherr)) {
             fprintf(stderr, "Failed to authenticate to node %s:%d",
                     node->ip, node->port);
             if (autherr != NULL) {
@@ -423,6 +432,7 @@ int clusterNodeLoadInfo(redisCluster *cluster, clusterNode *node, list *friends,
                 zfree(autherr);
             }
             fprintf(stderr, "\n");
+            auth_failed = 1;
         }
     }
     reply = redisCommand(ctx, "CLUSTER NODES");
@@ -434,6 +444,10 @@ int clusterNodeLoadInfo(redisCluster *cluster, clusterNode *node, list *friends,
         fprintf(stderr, "Cluster node %s:%d replied with error:\n%s\n",
                 node->ip, node->port, reply->str);
         goto cleanup;
+    }
+    if (auth_failed && user) {
+        fprintf(stderr, "WARN: failed to authenticate with user '%s'\n",
+                config.auth_user);
     }
     char *lines = reply->str, *p, *line;
     while ((p = strstr(lines, "\n")) != NULL) {
@@ -494,6 +508,11 @@ int clusterNodeLoadInfo(redisCluster *cluster, clusterNode *node, list *friends,
         if (name != NULL && node->name == NULL) node->name = sdsnew(name);
         node->is_replica = (strstr(flags, "slave") != NULL ||
                            (master_id != NULL && master_id[0] != '-'));
+        /* If authentication failed on a master node, exit with success = 0 */
+        if (!node->is_replica && auth_failed) {
+            success = 0;
+            goto cleanup;
+        }
         if (i == 8) {
             int remaining = strlen(line);
             while (remaining > 0) {
@@ -657,7 +676,7 @@ clusterNode *getFirstMappedNode(redisCluster *cluster) {
  *                             after these queues are empty.
  *      CLUSTER_RECONFIG_STARTED: reconfiguration has started
  *      CLUSTER_RECONFIG_ERR: some error occurred during reconfiguration.
- *                            In this case clsuter->broken is set to 1.
+ *                            In this case cluster->broken is set to 1.
  *      CLUSTER_RECONFIG_ENDED: reconfiguration ended with success. */
 int updateCluster(redisCluster *cluster) {
     if (cluster->broken) return CLUSTER_RECONFIG_ERR;
@@ -803,7 +822,7 @@ void clusterRemoveRequestToReprocess(redisCluster *cluster, void *r) {
 
 /* Try to send an AUTH command to the specified node. The string dereferenced
  * from the `**err` argument should be freed outside. */
-int clusterNodeAuth(clusterNode *node, char *auth, char **err) {
+int clusterNodeAuth(clusterNode *node, char *auth, char *user, char **err) {
     proxyLogDebug("Authenticating to node %s:%d\n", node->ip, node->port);
     redisContext *ctx = getClusterNodeContext(node);
     char *errmsg = NULL;
@@ -812,7 +831,14 @@ int clusterNodeAuth(clusterNode *node, char *auth, char **err) {
         errmsg = "AUTH failed: no connection";
         goto fail;
     }
-    redisReply *reply = redisCommand(ctx, "AUTH %s", auth);
+    redisReply *reply = NULL;
+    /* If `user` is NULL, user simple redis authentication (password-only),
+     * otherwise use the ACL authentication implemented in Redis >= 6.0 that
+     * allows combination of both username and password. */
+    if (user == NULL)
+        reply = redisCommand(ctx, "AUTH %s", auth);
+    else
+        reply = redisCommand(ctx, "AUTH %s %s", user, auth);
     int ok = clusterCheckRedisReply(node, reply, err);
     if (reply != NULL) freeReplyObject(reply);
     if (!ok) goto fail;

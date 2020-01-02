@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019  Giuseppe Fabio Nicotra <artix2 at gmail dot com>
+ * Copyright (C) 2019-2020  Giuseppe Fabio Nicotra <artix2 at gmail dot com>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published

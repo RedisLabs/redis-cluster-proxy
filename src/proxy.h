@@ -44,7 +44,7 @@
 struct client;
 struct proxyThread;
 
-typedef struct clientRequest{
+typedef struct clientRequest {
     struct client *client;
     uint64_t id;
     sds buffer;
@@ -113,6 +113,10 @@ typedef struct client {
     int multi_transaction;
     clientRequest *multi_request;
     clusterNode *multi_transaction_node;
+    sds auth_user;                  /* Used by client who wants to authenticate
+                                     * itself with different credentials from
+                                     * the ones used in the proxy config */
+    sds auth_passw;
 } client;
 
 int processRequest(clientRequest *req, int *parsing_status);

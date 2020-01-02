@@ -105,6 +105,7 @@ end
 
 failures_count = 0
 succeeded_count = 0
+skipped_count = 0
 started = Time.now.to_f
 begin
     $tests.each{|name|
@@ -112,6 +113,7 @@ begin
         test.run
         failures_count += test.failed_tests.length
         succeeded_count += test.succeeded_tests.length
+        skipped_count += test.skipped_tests.length
         break if RedisProxyTestCase::interrupted?
     }
 rescue Exception => e
@@ -151,6 +153,9 @@ if RedisProxyTestCase::exceptions.length == 0
     else
         puts "#{succeeded_count} test(s) succeeded without errors".green
         puts "#{failures_count} test(s) failed!".red
+    end
+    if skipped_count > 0
+        puts "#{skipped_count} test(s) skipped!".yellow
     end
 else
     msg = "#{RedisProxyTestCase::exceptions.length} exception(s) occurred"

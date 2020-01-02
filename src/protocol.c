@@ -126,6 +126,12 @@ void addReplyErrorUnknownSubcommand(client *c, const char *subcmd,
     sdsfree(err);
 }
 
+void addReplyErrorWrongArgc(client *c, const char *cmdname, uint64_t req_id) {
+    sds err = sdscatfmt(sdsempty(), ERROR_WRONG_ARGC, cmdname);
+    addReplyError(c, err, req_id);
+    sdsfree(err);
+}
+
 void addReplyRaw(client *c, const char *buf, size_t len, uint64_t req_id) {
     /* If the smallest request ID written is smaller than reply's request ID,
      *  replies are not ordered, so add the reply to the unordered_replies rax

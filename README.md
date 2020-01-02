@@ -45,6 +45,10 @@ And, finally, if you want to launch tests, just type:
 
 `% make test`
 
+**Note:** by default, tests use the `redis-server` that is installed on your system (the one that is found in your `$PATH`). If you need to use another `redis-server`, use the environment variable `REDIS_HOME`, ie:
+
+`% REDIS_HOME=/path/to/my/redis/src make test`
+
 As you can see, the make syntax (but also the output style) is the same used in Redis, so it will be familiar to Redis users.
 
 # Install
@@ -89,7 +93,23 @@ You can then connect to Redis Cluster Proxy using the client you prefer, ie:
 
 `redis-cli -p 7777`
 
-# Enabling Cross-slots queries
+# Password-protected clusters and Redis ACL
+
+If your cluster nodes are protected with a password, use can use the `-a`, `--auth` command line options or the `auth` option in a configuration file in order to specify an authentication password.
+Furthermore, if your cluster is using the new [ACL](https://redis.io/topics/acl) implemented in Redis 6.0 and it has multiple users, you can even authenticate with a specific user by using the `--auth-user` comand line option (or `auth-user` in a config file) followed by the username.
+Examples:
+
+`redis-cluster-proxy -a MYPASSWORD 127.0.0.1:7000`
+
+`redis-cluster-proxy --auth MYPASSWORD 127.0.0.1:7000`
+
+`redis-cluster-proxy --auth-user MYUSER --auth MYPASSWORD 127.0.0.1:7000`
+
+The proxy will use these credentials in order to authenticate to the cluster and fetch the cluster's internal configuration, but it will also autmoatically authenticate all clients with the provided credentials.
+So, **all clients** that will connect to the proxy will be **automatically authenticated** with the user specified by `--auth-user` or with the `default` user if no user has been specified, **without the need** to call the `AUTH` command by themselves.
+Anyway, if any client wants to be authenticated with a different user, it always can call the Redis `AUTH` command (documented [here](https://redis.io/commands/auth)): in this case, the client will use a private connection instead of the shared, multiplexed connection, and it will authenticate with another user.
+
+# Enabling cross-slots queries
 
 Cross-slots queries use multiple keys belonging to different slots or even different nodes.
 Since their execution is not guaranteed to be atomic (so, they can actually break the atomic design of many Redis commands), they are disabled by default.
@@ -169,7 +189,7 @@ The `PROXY` command will allow to get specific info or perform actions that are 
 
     Get help for the PROXY command
 
-# Commands that act differently from standard Redis Commands or that have special behaviour
+# Commands that act differently from standard Redis commands or that have special behaviour
 
 - PING: `PONG` is replied directly by the proxy
 - MULTI: disables multiplexing for the calling client by creating a private

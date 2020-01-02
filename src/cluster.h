@@ -94,5 +94,5 @@ clusterNode *getFirstMappedNode(redisCluster *cluster);
 int updateCluster(redisCluster *cluster);
 void clusterAddRequestToReprocess(redisCluster *cluster, void *r);
 void clusterRemoveRequestToReprocess(redisCluster *cluster, void *r);
-int clusterNodeAuth(clusterNode *node, char *auth, char **err);
+int clusterNodeAuth(clusterNode *node, char *auth, char *user, char **err);
 #endif /* __REDIS_CLUSTER_PROXY_CLUSTER_H__ */

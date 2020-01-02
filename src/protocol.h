@@ -34,6 +34,8 @@
 #define ERROR_MERGE_REPLY_INVALID_FMT \
     "Invalid reply format while merging multiple replies from cluster"
 #define ERROR_NODE_DISCONNECTED "Cluster node disconnected: "
+#define ERROR_WRONG_ARGC "wrong number of arguments for '%' command"
+#define ERROR_INVALID_QUERY "Invalid query format"
 
 int initReplyArray(client *c);
 void addReplyArray(client *c, uint64_t req_id);
@@ -47,6 +49,7 @@ void addReplyErrorLen(client *c, const char *err, int len, uint64_t req_id);
 void addReplyError(client *c, const char *err, uint64_t req_id);
 void addReplyErrorUnknownSubcommand(client *c, const char *subcmd,
                                     const char *help, uint64_t req_id);
+void addReplyErrorWrongArgc(client *c, const char *cmdname, uint64_t req_id);
 void addReplyHelp(client *c, const char **help, uint64_t req_id);
 void addReplyRaw(client *c, const char *buf, size_t len, uint64_t req_id);
 

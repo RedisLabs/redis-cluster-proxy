@@ -91,8 +91,11 @@ typedef struct proxyThread {
     sds msgbuffer;
 } proxyThread;
 
+/* Globals */
+
 redisClusterProxy proxy;
 redisClusterProxyConfig config;
+redisCommandDef *authCommandDef = NULL;
 
 /* Forward declarations. */
 
@@ -351,7 +354,8 @@ static sds genInfoString(sds section) {
                     "tcp_port:%d\r\n"
                     "uptime_in_seconds:%jd\r\n"
                     "uptime_in_days:%jd\r\n"
-                    "config_file:%s\r\n",
+                    "config_file:%s\r\n"
+                    "acl_user:%s\r\n",
                     REDIS_CLUSTER_PROXY_VERSION,
                     name.sysname, name.release, name.machine,
 #ifdef __GNUC__
@@ -364,7 +368,8 @@ static sds genInfoString(sds section) {
                     config.port,
                     (intmax_t)uptime,
                     (intmax_t)(uptime/(3600*24)),
-                    (proxy.configfile ? proxy.configfile : "")
+                    (proxy.configfile ? proxy.configfile : ""),
+                    (config.auth_user ? config.auth_user : "default")
         );
     }
     if (default_section || all_sections ||
@@ -393,6 +398,8 @@ static sds genInfoString(sds section) {
     }
     return info;
 }
+
+/* Command handlers */
 
 int commandWithPrivateConnection(void *r){
     clientRequest *req = r;
@@ -488,6 +495,51 @@ int execOrDiscardCommand(void *r) {
         req->node = c->multi_request->node;
     req->closes_transaction = 1;
     return PROXY_COMMAND_UNHANDLED;
+}
+
+int authCommand(void *r) {
+    int status = PROXY_COMMAND_UNHANDLED;
+    clientRequest *req = r;
+    client *c = req->client;
+    sds user = NULL, passw = NULL;
+    if (req->argc == 1) {
+        addReplyErrorWrongArgc(c, "auth", req->id);
+        status = PROXY_COMMAND_HANDLED;
+        goto final;
+    } else if (req->argc == 2) {
+        if (req->offsets_size < 2) {
+            unlinkClient(c);
+            status = PROXY_COMMAND_HANDLED;
+            goto final;
+        }
+        passw = sdsnewlen(req->buffer + req->offsets[1], req->lengths[1]);
+    } else if (req->argc > 2) {
+        if (req->offsets_size < 3) {
+            unlinkClient(c);
+            status = PROXY_COMMAND_HANDLED;
+            goto final;
+        }
+        user = sdsnewlen(req->buffer + req->offsets[1], req->lengths[1]);
+        passw = sdsnewlen(req->buffer + req->offsets[2], req->lengths[2]);
+    }
+    if ((user && (!config.auth_user || strcmp(user, config.auth_user)) != 0) ||
+        (!user && config.auth_user))
+    {
+        /* Disable multiplexing for this client, since it's requiring to
+         * authenticate itself with credentials different from the ones
+         * used by the proxy. */
+        int is_handled = commandWithPrivateConnection(req);
+        if (c->status == CLIENT_STATUS_UNLINKED || c->cluster == NULL) {
+            status = is_handled;
+            goto final;
+        }
+        c->auth_user = user;
+        c->auth_passw = passw;
+    }
+final:
+    if (user != NULL && user != c->auth_user) sdsfree(user);
+    if (passw != NULL && passw != c->auth_passw) sdsfree(passw);
+    return status;
 }
 
 int proxyCommand(void *r) {
@@ -683,6 +735,8 @@ final:
     return PROXY_COMMAND_HANDLED;
 }
 
+/* Reply Handlers */
+
 int mergeReplies(void *_reply, void *_req) {
     UNUSED(_reply);
     clientRequest *req = _req;
@@ -836,7 +890,7 @@ int zunionInterGetKeys(void *r, int *first_key, int *last_key, int *key_step,
         return -1;
     }
     if (req->offsets_size < 4) {
-        if (err) *err = "Invalid request format";
+        if (err) *err = ERROR_INVALID_QUERY;
         return -1;
     }
     *skip = zmalloc(sizeof(int));
@@ -1056,6 +1110,7 @@ static void printHelp(void) {
         "\n                       queries routed to multiple nodes cannot be"
                                 " atomic).\n"
         "  -a, --auth <passw>   Authentication password\n"
+        "  --auth-user <name>   Authentication username\n"
         "  --disable-colors     Disable colorized output\n"
         "  --log-level <level>  Minimum log level: (default: info)\n"
         "                       (debug|info|success|warning|error)\n"
@@ -1079,6 +1134,8 @@ int parseOptions(int argc, char **argv) {
             config.port = atoi(argv[++i]);
         else if ((!strcmp(argv[i],"-a") || !strcmp("--auth", arg)) && !lastarg)
             config.auth = argv[++i];
+        else if (!strcmp("--auth-user", arg) && !lastarg)
+            config.auth_user = argv[++i];
         else if (!strcmp("--disable-colors", arg))
             config.use_colors = 0;
         else if (!strcmp("--daemonize", arg))
@@ -1272,6 +1329,7 @@ static void initConfig(void) {
     config.dump_buffer = 0;
     config.dump_queues = 0;
     config.auth = NULL;
+    config.auth_user = NULL;
     config.cross_slot_enabled = 0;
 }
 
@@ -1288,6 +1346,7 @@ static void initProxy(void) {
         redisCommandDef *cmd = redisCommandTable + i;
         raxInsert(proxy.commands, (unsigned char*) cmd->name,
                   strlen(cmd->name), cmd, NULL);
+        if (strcasecmp("auth", cmd->name) == 0) authCommandDef = cmd;
     }
     proxy.main_loop = aeCreateEventLoop(proxy.min_reserved_fds);
     proxy.threads = zmalloc(config.num_threads *
@@ -1661,6 +1720,8 @@ static client *createClient(int fd, char *ip) {
     c->multi_transaction = 0;
     c->multi_request = NULL;
     c->multi_transaction_node = NULL;
+    c->auth_user = NULL;
+    c->auth_passw = NULL;
     if (config.disable_multiplexing == CFG_DISABLE_MULTIPLEXING_ALWAYS) {
         if (!disableMultiplexingForClient(c)) {
             unlinkClient(c);
@@ -1834,6 +1895,8 @@ static void freeClient(client *c) {
     if (c->cluster != NULL) freeCluster(c->cluster);
     ln = listSearchKey(thread->unlinked_clients, c);
     if (ln) ln->value = NULL;
+    if (c->auth_user != NULL) sdsfree(c->auth_user);
+    if (c->auth_passw != NULL) sdsfree(c->auth_passw);
     zfree(c);
     proxy.numclients--;
 }
@@ -1929,11 +1992,26 @@ static void writeToClusterHandler(aeEventLoop *el, int fd, void *privdata,
         }
     }
     node->connection->connected = 1;
-    if (config.auth && !node->connection->authenticated &&
+    /* Try to automatically authenticate if config.auth has been set.
+     * It the connection is private (no multiplexing), check if the client
+     * tried to authenticate with different credentials from the ones
+     * used by the proxy and, in this case, skip the automatic authentication
+     * since the client will send its AUTH query by itself. */
+    char *auth = config.auth, *auth_user = config.auth_user;
+    client *c = NULL;
+    if ((c = node->cluster->owner) && (c->auth_user || c->auth_passw)) {
+        if ((c->auth_user && (!auth_user || strcmp(auth_user, c->auth_user))) ||
+            (auth_user && !c->auth_user))
+        {
+            auth_user = NULL;
+            auth = NULL;
+        }
+    }
+    if (auth && !node->connection->authenticated &&
         !node->connection->authenticating)
     {
         char *autherr = NULL;
-        if (!clusterNodeAuth(node, config.auth, &autherr)) {
+        if (!clusterNodeAuth(node, config.auth, config.auth_user, &autherr)) {
             if (autherr) {
                 proxyLogDebug("AUTH: %s\n", autherr);
                 if (req) {
@@ -3215,7 +3293,8 @@ static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
              * pool (the request will be also added to a
              * `requests_to_reprocess` list on the client). */
             if ((strstr(reply->str, "ASK") == reply->str ||
-                strstr(reply->str, "MOVED") == reply->str)){
+                strstr(reply->str, "MOVED") == reply->str))
+            {
                 proxyLogDebug("Cluster configuration changed! "
                               "(request " REQID_PRINTF_FMT ")\n",
                               REQID_PRINTF_ARG(req));
@@ -3456,6 +3535,10 @@ int main(int argc, char **argv) {
                       &config.entry_node_port, &config.entry_node_socket)) {
         fprintf(stderr, "Invalid address '%s'\n", config.cluster_address);
         return 1;
+    }
+    if (config.auth_user != NULL) {
+        if (strcmp("default", config.auth_user) == 0) config.auth_user = NULL;
+        else if (config.auth == NULL) config.auth = "";
     }
     proxy.tcp_backlog = config.tcp_backlog;
     checkTcpBacklogSettings();

@@ -1,9 +1,9 @@
 require 'redis'
 require 'hiredis'
 
-redis_cli = nil
-
 $authpassw = '123'
+$acl_username = 'myuser'
+$acl_userpassw = '1234'
 
 setup {
     use_valgrind = $options[:valgrind] == true
@@ -21,14 +21,26 @@ setup {
                                        verbose: true
     @aux_proxy.start
     $aux_cluster, $aux_proxy = @aux_cluster, @aux_proxy
-    $source_node, $target_node = @aux_cluster.masters[0, 2]
-    assert($source_node != nil, "Failed to find a source master node")
-    assert($target_node != nil, "Failed to find a target master node")
-    $slots = $source_node[:slots]
-    assert($slots != nil, "Source slots is nil")
-    $slots = $slots.keys.dup
-    assert($slots.length > 0, "Source slots is empty")
-    redis_cli = $main_cluster.instance_eval{@redis_cli}
+    node = @aux_cluster.masters[0]
+    r = Redis.new port: node[:port]
+    reply = redis_command r, 'auth', $authpassw
+    assert_not_redis_err(reply)
+    begin
+        @acl_command = r.command 'info', 'acl'
+    rescue Redis::CommandError => cmderr
+        @acl_command = nil
+    end
+    @acl_command = @acl_command.first if @acl_command.is_a? Array
+    if @acl_command
+        @aux_cluster.nodes.each{|n|
+            r = Redis.new port: n[:port]
+            reply = redis_command r, 'auth', $authpassw
+            assert_not_redis_err(reply)
+            reply = redis_command r, 'acl', 'setuser', $acl_username, 'on',
+                                  ">#{$acl_userpassw}", '~*','+get'
+            assert_not_redis_err(reply)
+        }
+    end
 }
 
 cleanup {
@@ -88,5 +100,50 @@ test "GET #{$numkeys} keys (clients=#{$numclients}, multiplex=off)" do
         assert_not_redis_err(reply)
         assert_equal(expected, reply)
         log_same_line ''
+    }
+end
+
+test 'AUTH as restricted user' do
+    if !@acl_command
+        server = @aux_cluster.instance_eval{@redis_server}
+        message = "Missing support for ACL in redis-server, found in:\n"
+        message << "   #{server}\n"
+        message << "   ACL requires redis-server >= 6.0\n"
+        message << "   You can use the env. variable REDIS_HOME to specify\n"
+        message << "   another path for redis-server\n"
+        skip_test message
+    end
+
+    spawn_clients($numclients, proxy: $aux_proxy){|client, idx|
+        use_restricted_user = ((idx % 2) == 0)
+        if use_restricted_user
+            begin
+                reply = client.call 'auth', $acl_username, $acl_userpassw
+            rescue Redis::CommandError => cmderr
+                reply = cmderr
+            end
+            assert_not_redis_err(reply)
+            reply = redis_command client, 'proxy', 'multiplexing', 'status'
+            assert_not_redis_err(reply)
+            assert_not_nil(reply)
+            assert_equal(reply.downcase, 'off')
+        end
+        keys = (0...$numkeys).map{|n|
+            key = "k:#{n}"
+            val = n.to_s
+            reply = redis_command client, 'get', key
+            assert_not_redis_err(reply)
+            assert_equal(reply, val)
+            reply = redis_command client, 'set', key, val
+            if use_restricted_user
+                assert_redis_err(reply)
+                reply = reply.to_s
+                assert(reply['NOPERM'],
+                       "Expected NOPERM error for restricted client, " +
+                       "got '#{reply}'")
+            else
+                assert_not_redis_err(reply)
+            end
+        }
     }
 end

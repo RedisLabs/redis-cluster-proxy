@@ -57,6 +57,16 @@ def find_redis!
         if !path
             path = `which #{progname}`.strip
             path = nil if path.empty?
+            if !path
+                RedisProxyTestLogger::log("WARNING: '#{progname}' not found!",
+                                          :yellow)
+                if !redis_home
+                    RedisProxyTestLogger::log(
+                        "Use the environment variable REDIS_HOME to set " +
+                        "the path to the directory containing #{progname}"
+                    )
+                end
+            end
         end
         paths[progname] = path
     }

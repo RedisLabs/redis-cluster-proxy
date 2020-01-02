@@ -41,6 +41,7 @@ typedef struct {
     int dump_buffer;
     int dump_queues;
     char *auth;
+    char *auth_user;
     int disable_multiplexing;
     int cross_slot_enabled;
 } redisClusterProxyConfig;
