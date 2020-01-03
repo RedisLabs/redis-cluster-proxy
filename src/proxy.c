@@ -796,7 +796,7 @@ final:
         addReplyError(req->client, err, req->id);
         proxyLogDebug("%s\n", err);
     } else {
-        reply = sdscatfmt(sdsempty(), "*%I\r\n%S", count, merged_replies);
+        reply = sdscatfmt(sdsempty(), "*%u\r\n%S", count, merged_replies);
         addReplyRaw(req->client, reply, sdslen(reply), req->id);
     }
     req->client->min_reply_id = req->max_child_reply_id + 1;
@@ -2492,7 +2492,7 @@ static int splitMultiSlotRequest(clientRequest *req, int idx) {
     if (!success) goto cleanup;
     llen = (p - req->buffer);
     /* Create a new query header containing the updated argument count */
-    newbuf = sdscatfmt(sdsempty(), "*%I", req->argc);
+    newbuf = sdscatfmt(sdsempty(), "*%u", req->argc);
     diff = sdslen(newbuf) - llen;
     sdsrange(req->buffer, llen, -1);
     newbuf = sdscatfmt(newbuf, "%S", req->buffer);
@@ -2514,7 +2514,7 @@ static int splitMultiSlotRequest(clientRequest *req, int idx) {
     if (!success) goto cleanup;
     char *command_name = req->command->name;
     int cmdlen = strlen(command_name), first_offset = 0;
-    newbuf = sdscatfmt(sdsempty(), "*%I\r\n$%I\r\n", new->argc, cmdlen);
+    newbuf = sdscatfmt(sdsempty(), "*%u\r\n$%u\r\n", new->argc, cmdlen);
     first_offset = sdslen(newbuf);
     newbuf = sdscatfmt(newbuf, "%s\r\n", req->command->name);
     len = sdslen(newbuf);
