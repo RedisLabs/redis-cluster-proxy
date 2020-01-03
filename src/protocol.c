@@ -34,7 +34,7 @@ int initReplyArray(client *c) {
 void addReplyArray(client *c, uint64_t req_id) {
     if (c->reply_array == NULL) return;
     sds r = sdsnew("*");
-    r = sdscatfmt(r, "%I\r\n", listLength(c->reply_array));
+    r = sdscatfmt(r, "%u\r\n", listLength(c->reply_array));
     listIter li;
     listNode *ln;
     listRewind(c->reply_array, &li);
