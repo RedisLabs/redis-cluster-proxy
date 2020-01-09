@@ -100,6 +100,7 @@
  - RPUSHX
  - SADD
  - SAVE
+ - SCAN
  - SCARD
  - SDIFF
  - SDIFFSTORE (**cross-slots unsupported**)
@@ -199,7 +200,6 @@ Those commands are currently not supported by Redis Cluster Proxy.
  - REPLCONF
  - REPLICAOF
  - ROLE
- - SCAN
  - SCRIPT
  - SHUTDOWN
  - SLAVEOF

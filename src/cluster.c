@@ -145,15 +145,32 @@ redisCluster *createCluster(int thread_id) {
         zfree(cluster);
         return NULL;
     }
+    cluster->nodes_by_name = raxNew();
+    if (cluster->nodes_by_name == NULL) {
+        freeCluster(cluster);
+        return NULL;
+    }
     cluster->requests_to_reprocess = raxNew();
     if (cluster->requests_to_reprocess == NULL) {
         freeCluster(cluster);
         return NULL;
     }
+    /* The 'master_names' list is used by such commands as SCAN. It will
+     * remain NULL until requested by the function clusterGetMasterNames,
+     * so it doesn't use any memory if not needed. */
+    cluster->master_names = NULL;
     cluster->is_updating = 0;
     cluster->update_required = 0;
     cluster->broken = 0;
     return cluster;
+}
+
+static void clusterAddNode(redisCluster* cluster, clusterNode *node) {
+    listAddNodeTail(cluster->nodes, node);
+    if (node->name) {
+        raxInsert(cluster->nodes_by_name, (unsigned char*) node->name,
+                  strlen(node->name), node, NULL);
+    }
 }
 
 redisCluster *duplicateCluster(redisCluster *source) {
@@ -180,7 +197,7 @@ redisCluster *duplicateCluster(redisCluster *source) {
         }
         raxInsert(nodes_by_name, (unsigned char*) node->name,
                   sdslen(node->name), node, NULL);
-        listAddNodeTail(cluster->nodes, node);
+        clusterAddNode(cluster, node);
     }
     raxStart(&iter, source->slots_map);
     if (!raxSeek(&iter, "^", NULL, 0)) {
@@ -250,17 +267,23 @@ static void freeClusterNodes(redisCluster *cluster) {
 
 int resetCluster(redisCluster *cluster) {
     if (cluster->slots_map) raxFree(cluster->slots_map);
+    if (cluster->nodes_by_name) raxFree(cluster->nodes_by_name);
+    if (cluster->master_names) listRelease(cluster->master_names);
     freeClusterNodes(cluster);
     cluster->slots_map = raxNew();
+    cluster->nodes_by_name = raxNew();
     cluster->nodes = listCreate();
     if (!cluster->slots_map) return 0;
     if (!cluster->nodes) return 0;
+    if (!cluster->nodes_by_name) return 0;
     return 1;
 }
 
 void freeCluster(redisCluster *cluster) {
     proxyLogDebug("Free cluster\n");
     if (cluster->slots_map) raxFree(cluster->slots_map);
+    if (cluster->nodes_by_name) raxFree(cluster->nodes_by_name);
+    if (cluster->master_names) listRelease(cluster->master_names);
     freeClusterNodes(cluster);
     if (cluster->requests_to_reprocess)
         raxFree(cluster->requests_to_reprocess);
@@ -605,11 +628,11 @@ int fetchClusterConfiguration(redisCluster *cluster, char *ip, int port,
     }
     clusterNode *firstNode = createClusterNode(ip, port, cluster);
     if (!firstNode) {success = 0; goto cleanup;}
-    listAddNodeTail(cluster->nodes, firstNode);
     friends = listCreate();
     success = (friends != NULL);
     if (!success) goto cleanup;
     success = clusterNodeLoadInfo(cluster, firstNode, friends, ctx);
+    clusterAddNode(cluster, firstNode);
     if (!success) goto cleanup;
     listIter li;
     listNode *ln;
@@ -622,7 +645,7 @@ int fetchClusterConfiguration(redisCluster *cluster, char *ip, int port,
             freeClusterNode(friend);
             goto cleanup;
         }
-        listAddNodeTail(cluster->nodes, friend);
+        clusterAddNode(cluster, friend);
     }
 cleanup:
     if (friends) listRelease(friends);
@@ -654,6 +677,21 @@ clusterNode *getNodeByKey(redisCluster *cluster, char *key, int keylen,
     return node;
 }
 
+clusterNode *getNodeByName(redisCluster *cluster, const char *name) {
+    if (cluster->nodes_by_name == NULL) return NULL;
+    clusterNode *node = NULL;
+    raxIterator iter;
+    raxStart(&iter, cluster->nodes_by_name);
+    if (!raxSeek(&iter, "=", (unsigned char*) name, strlen(name))) {
+        proxyLogErr("Failed to seek cluster node into nodes_by_name.\n");
+        raxStop(&iter);
+        return NULL;
+    }
+    if (raxNext(&iter)) node = (clusterNode *) iter.data;
+    raxStop(&iter);
+    return node;
+}
+
 clusterNode *getFirstMappedNode(redisCluster *cluster) {
     clusterNode *node = NULL;
     raxIterator iter;
@@ -665,6 +703,44 @@ clusterNode *getFirstMappedNode(redisCluster *cluster) {
     if (raxNext(&iter)) node = (clusterNode *) iter.data;
     raxStop(&iter);
     return node;
+}
+
+/* Return lexicographically sorted node names. Names are taken from the
+ * nodes_by_name radix tree, and the list is built in a "lazy" way, since
+ * it's NULL until `clusterGetMasterNames` is called for the very frist time.
+ * Furthermore, if the cluster is a duplicate, it will be taken by the
+ * cluster's parent. */
+list *clusterGetMasterNames(redisCluster *cluster) {
+    list *names =  NULL;
+    if (cluster->duplicated_from)
+        names = clusterGetMasterNames(cluster->duplicated_from);
+    if (names != NULL) return names;
+    names = cluster->master_names;
+    if (names == NULL) {
+        if (cluster->broken || cluster->is_updating ||
+            cluster->update_required || !cluster->nodes_by_name) return NULL;
+        names = cluster->master_names = listCreate();
+        listSetFreeMethod(names, (void (*)(void *)) sdsfree);
+        if (names == NULL) {
+            proxyLogErr("Failed to allocate cluster->master_names\n");
+            return NULL;
+        }
+        raxIterator iter;
+        raxStart(&iter, cluster->nodes_by_name);
+        if (!raxSeek(&iter, "^", NULL, 0)) {
+            raxStop(&iter);
+            listRelease(cluster->master_names);
+            return NULL;
+        }
+        while (raxNext(&iter)) {
+            clusterNode *node = iter.data;
+            if (node->is_replica) continue;
+            sds name = sdsnewlen(iter.key, iter.key_len);
+            listAddNodeTail(names, name);
+        }
+        raxStop(&iter);
+    }
+    return names;
 }
 
 /* Update the cluster's configuration. Wait until all request pending or

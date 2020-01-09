@@ -70,7 +70,9 @@ typedef struct redisCluster {
     int thread_id;
     list *nodes;
     rax  *slots_map;
-    rax *requests_to_reprocess;
+    rax  *nodes_by_name;
+    list *master_names;
+    rax  *requests_to_reprocess;
     int is_updating;
     int update_required;
     int broken;
@@ -90,7 +92,9 @@ void clusterNodeDisconnect(clusterNode *node);
 clusterNode *searchNodeBySlot(redisCluster *cluster, int slot);
 clusterNode *getNodeByKey(redisCluster *cluster, char *key, int keylen,
                           int *getslot);
+clusterNode *getNodeByName(redisCluster *cluster, const char *name);
 clusterNode *getFirstMappedNode(redisCluster *cluster);
+list *clusterGetMasterNames(redisCluster *cluster);
 int updateCluster(redisCluster *cluster);
 void clusterAddRequestToReprocess(redisCluster *cluster, void *r);
 void clusterRemoveRequestToReprocess(redisCluster *cluster, void *r);

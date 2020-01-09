@@ -96,6 +96,7 @@ typedef struct proxyThread {
 redisClusterProxy proxy;
 redisClusterProxyConfig config;
 redisCommandDef *authCommandDef = NULL;
+redisCommandDef *scanCommandDef = NULL;
 
 /* Forward declarations. */
 
@@ -542,6 +543,91 @@ final:
     return status;
 }
 
+/* Scan all master nodes in the cluster. Node order is alphabeticallty and it's
+ * taken from `clusterGetMasterNames`. The index of the node is taken from the
+ * cursor last 4 digits. If the index is beyond the list of all the master
+ * the choosen node will be the last one. If the cursor is '0', the choosen
+ * node will be the first one. This special cursor format will be handled by
+ * `handleScanReply`, that will append the index of the node to scan to the
+ * cursor replied from the cluster. The real cursor sent to the cluster won't
+ * actually contain the index suffix. */
+int scanCommand(void *r) {
+    clientRequest *req = r;
+    client *c = req->client;
+    if (req->argc < 2) {
+        addReplyErrorWrongArgc(c, req->command->name, req->id);
+        return PROXY_COMMAND_HANDLED;
+    }
+    if (req->offsets_size < 2) {
+        addReplyError(c, ERROR_INVALID_QUERY, req->id);
+        return PROXY_COMMAND_HANDLED;
+    }
+    int status = PROXY_COMMAND_UNHANDLED;
+    sds cursor = sdsnewlen(req->buffer + req->offsets[1], req->lengths[1]);
+    char *errptr = NULL;
+    uint64_t cursor_n = strtoll(cursor, &errptr, 10);
+    int idx = 0;
+    if (cursor_n == 0) {
+        if (errptr && *errptr != '\0') {
+            proxyLogDebug("Invalid SCAN cursor: '%s'. (errptr: '%s')\n",
+                          cursor, errptr);
+            addReplyError(c, ERROR_INVALID_QUERY, req->id);
+            status = PROXY_COMMAND_HANDLED;
+            goto final;
+        }
+    } else {
+        /* Take the last 4-digits in the cursor: they'll be used as the
+         * node index */
+         int crslen = sdslen(cursor);
+         if (crslen > 4) {
+            int prefixlen = crslen - 4;
+            char *p = cursor + prefixlen;
+            /* Read the node index */
+            idx = atoi(p);
+            p = req->buffer + req->offsets[1] + crslen;
+            sds remaining = sdsnew(p);
+            sdsrange(cursor, 0, prefixlen - 1);
+            p = req->buffer + req->offsets[1];
+            while (*p != '$' && p > req->buffer) p--;
+            if (p <= req->buffer) {
+                addReplyError(c, ERROR_INVALID_QUERY, req->id);
+                sdsfree(remaining);
+                status = PROXY_COMMAND_HANDLED;
+                goto final;
+            }
+            /* Remove the index suffix from the buffer that has to be sent
+             * to the node. */
+            sdsrange(req->buffer, 0, p - req->buffer);
+            req->buffer = sdscatfmt(req->buffer, "%u\r\n%S%S",
+                                    (unsigned int) prefixlen,
+                                    cursor, remaining);
+            sdsfree(remaining);
+         }
+    }
+    redisCluster *cluster = getCluster(c);
+    list *node_names = clusterGetMasterNames(cluster);
+    if (!node_names) goto final;
+    /* If the index is beyond the current nodes, use the last node. */
+    if ((unsigned long)idx >= listLength(node_names))
+        idx = listLength(node_names) - 1;
+    listNode *ln = listIndex(node_names, (long) idx);
+    clusterNode *node = NULL;
+    if (ln) {
+        sds name = listNodeValue(ln);
+        if (name) node = getNodeByName(cluster, name);
+    }
+    if (!node) {
+        addReplyError(c, ERROR_NO_NODE, req->id);
+        status = PROXY_COMMAND_HANDLED;
+        goto final;
+    }
+    /* Set the choosen node in the request. */
+    req->node = node;
+final:
+    if (cursor) sdsfree(cursor);
+    return status;
+}
+
 int proxyCommand(void *r) {
     clientRequest *req = r;
     sds subcmd = NULL, err = NULL;
@@ -737,8 +823,10 @@ final:
 
 /* Reply Handlers */
 
-int mergeReplies(void *_reply, void *_req) {
+int mergeReplies(void *_reply, void *_req, char *buf, int len) {
     UNUSED(_reply);
+    UNUSED(buf);
+    UNUSED(len);
     clientRequest *req = _req;
     raxIterator iter;
     raxStart(&iter, req->child_replies);
@@ -807,8 +895,10 @@ final:
 
 /* Reply with the first reply within multiple replies from multiple queries.
  * If there's at least an error within the replies, reply with the error. */
-int getFirstMultipleReply(void *_reply, void *_req) {
+int getFirstMultipleReply(void *_reply, void *_req, char *buf, int len) {
     UNUSED(_reply);
+    UNUSED(buf);
+    UNUSED(len);
     clientRequest *req = _req;
     raxIterator iter;
     raxStart(&iter, req->child_replies);
@@ -837,8 +927,10 @@ int getFirstMultipleReply(void *_reply, void *_req) {
     return 1;
 }
 
-int sumReplies(void *_reply, void *_req) {
+int sumReplies(void *_reply, void *_req, char *buf, int len) {
     UNUSED(_reply);
+    UNUSED(buf);
+    UNUSED(len);
     clientRequest *req = _req;
     raxIterator iter;
     raxStart(&iter, req->child_replies);
@@ -864,8 +956,7 @@ int sumReplies(void *_reply, void *_req) {
             int64_t val = strtoll(child_reply + 1, &strprt, 10);
             tot += val;
         } else {
-            addReplyError(req->client, "Invalid reply format from cluster",
-                          req->id);
+            addReplyError(req->client, ERROR_INVALID_REPLY, req->id);
             raxStop(&iter);
             return 0;
         }
@@ -874,6 +965,117 @@ int sumReplies(void *_reply, void *_req) {
     addReplyInt(req->client, tot, req->id);
     req->client->min_reply_id = req->max_child_reply_id + 1;
     return 1;
+}
+
+/* Handle replies for 'SCAN' command. The cursor contained in the reply will
+ * be modified by appending the index of the node that has to be scanned, since
+ * 'SCAN' command has to scann  all the master nodes in the cluster (see
+ * `scanCommand`). The list of the nodes is alphabetically ordered.
+ * When the reply contains a non-zero cursor, keep scanning the current
+ * node (the one associated with the request). When reply will contain a zero
+ * cursor, the scan for the current node is completed, so choose the next node
+ * in the list, or just reply the zero cursor to the client if there's no
+ * another nodes left. The index of the choosen node (the index is relative to
+ * the alphabetically sorted list of masters) is then appended to the cursor
+ * contained in the reply, as a 4-digits suffix. */
+int handleScanReply(void *_reply, void *_req, char *buf, int len) {
+    UNUSED(_reply);
+    int status = PROXY_REPLY_UNHANDLED;
+    clientRequest *req = _req;
+    client *c = req->client;
+    if (req->node == NULL || req->node->name == NULL) {
+        addReplyError(c, "Missing node, probabily disconnected", req->id);
+        freeRequest(req);
+        return 0;
+    }
+    sds buffer = sdsnewlen(buf, len), cursor = NULL, crslenstr = NULL,
+                 remaining = NULL;
+    char *p = strchr(buffer, '$'), *err = NULL, *lenptr, *crsptr;
+    if (!p || ((++p) - buffer) >= len) {
+        err = ERROR_INVALID_REPLY;
+        goto final;
+    }
+    lenptr = p;
+    p = strstr(lenptr, "\r\n");
+    if (!p) {
+        err = ERROR_INVALID_REPLY;
+        goto final;
+    }
+    crslenstr = sdsnewlen(lenptr, (p - lenptr));
+    int crslen = atoi(crslenstr);
+    if (crslen == 0) {
+        err = ERROR_INVALID_REPLY;
+        goto final;
+    }
+    p += 2;
+    if (!p || (p - buffer) >= len) {
+        err = ERROR_INVALID_REPLY;
+        goto final;
+    }
+    crsptr = p;
+    p = strchr(crsptr, '\r');
+    if (!p) {
+        err = ERROR_INVALID_REPLY;
+        goto final;
+    }
+    cursor = sdsnewlen(crsptr, crslen);
+    char *errptr = NULL;
+    uint64_t cursor_n = strtoll(cursor, &errptr, 10);
+    if (cursor_n == 0 && errptr && *errptr != '\0') {
+        err = ERROR_INVALID_REPLY;
+        goto final;
+    }
+    redisCluster *cluster = getCluster(c);
+    list *names = clusterGetMasterNames(cluster);
+    if (!names) {
+        err = "Failed to scan nodes: could not find cluster node names";
+        goto final;
+    }
+    int idx = 0, found = 0;
+    listIter li;
+    listNode *ln;
+    listRewind(names, &li);
+    while ((ln = listNext(&li))) {
+        sds name = listNodeValue(ln);
+        if (strcmp(req->node->name, name) == 0) {
+            found = 1;
+            break;
+        }
+        idx++;
+    }
+    if (!found) {
+        err = ERROR_NO_NODE;
+        goto final;
+    }
+    /* Server replied with cursor = 0, so scan for current node ended.
+     * Increment idx in order to take to next node to scan. If idx is
+     * beyond the current nodes, scan ended for all the nodes. */
+    if (cursor_n == 0) {
+        /* Scan has been performed on all nodes, so simply reply as normal. */
+        if ((unsigned long)(++idx) >= listLength(names)) {
+            status = PROXY_REPLY_UNHANDLED;
+            goto final;
+        }
+    }
+    cursor = sdscatprintf(cursor, "%.04d", idx);
+    crslen = sdslen(cursor);
+    remaining = sdsnewlen(p, len - (p - buffer));
+    sdsrange(buffer, 0, (lenptr - 1) - buffer);
+    buffer = sdscatfmt(buffer, "%u\r\n%S%S", sdslen(cursor), cursor, remaining);
+    addReplyRaw(c, buffer, sdslen(buffer), req->id);
+    status = 1;
+final:
+    sdsfree(buffer);
+    if (cursor) sdsfree(cursor);
+    if (crslenstr) sdsfree(crslenstr);
+    if (remaining) sdsfree(remaining);
+    if (err) goto onerr;
+    else if (status != PROXY_REPLY_UNHANDLED) freeRequest(req);
+    return status;
+onerr:
+    addReplyError(c, err, req->id);
+    freeRequest(req);
+    return 0;
 }
 
 /* Get Keys Callbacks */
@@ -1347,6 +1549,7 @@ static void initProxy(void) {
         raxInsert(proxy.commands, (unsigned char*) cmd->name,
                   strlen(cmd->name), cmd, NULL);
         if (strcasecmp("auth", cmd->name) == 0) authCommandDef = cmd;
+        else if (strcasecmp("scan", cmd->name) == 0) scanCommandDef = cmd;
     }
     proxy.main_loop = aeCreateEventLoop(proxy.min_reserved_fds);
     proxy.threads = zmalloc(config.num_threads *
@@ -2568,6 +2771,7 @@ cleanup:
 
 static clusterNode *getRequestNode(clientRequest *req, sds *err) {
     clusterNode *node = NULL;
+    if (req->node && req->command == scanCommandDef) return req->node;
     int first_key = req->command->first_key,
         last_key = req->command->last_key,
         key_step = req->command->key_step, i;
@@ -3048,7 +3252,7 @@ int processRequest(clientRequest *req, int *parsing_status) {
     clusterNode *node = getRequestNode(req, &errmsg);
     if (node == NULL) {
         if (errmsg == NULL)
-            errmsg = sdsnew("Failed to get node for query");
+            errmsg = sdsnew(ERROR_NO_NODE);
         proxyLogDebug("%s " REQID_PRINTF_FMT "\n", errmsg,
                       REQID_PRINTF_ARG(req));
         goto invalid_request;
@@ -3224,7 +3428,7 @@ static int addChildRequestReply(clientRequest *req, char *replybuf, int len) {
         redisCommandDef *cmd = parent->command;
         assert(cmd != NULL);
         if (cmd->handleReply != NULL) {
-            cmd->handleReply(NULL, parent);
+            cmd->handleReply(NULL, parent, NULL, 0);
         } else {
             addReplyError(parent->client, ERROR_COMMAND_UNSUPPORTED_CROSSSLOT,
                           parent->id);
@@ -3314,8 +3518,6 @@ static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
         }
         if (errmsg != NULL) addReplyError(req->client, errmsg, req->id);
         else {
-            proxyLogDebug("Writing reply for request " REQID_PRINTF_FMT
-                          " to client buffer...\n", REQID_PRINTF_ARG(req));
             char *obuf = ctx->reader->buf;
             /*size_t len = ctx->reader->len;*/
             size_t len = ctx->reader->pos;
@@ -3340,6 +3542,16 @@ static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
                 proxyLogDebug("Writing reply for request " REQID_PRINTF_FMT
                               " to client buffer...\n",
                               REQID_PRINTF_ARG(req));
+                redisCommandDef *cmd = req->command;
+                int cmdflags = cmd->proxy_flags;
+                if (cmd->handleReply && (cmdflags & CMDFLAG_HANDLE_REPLY)) {
+                    if (req->command->handleReply(reply, req, obuf, len) !=
+                        PROXY_REPLY_UNHANDLED)
+                    {
+                        req = NULL;
+                        goto consume_buffer;
+                    }
+                }
                 addReplyRaw(req->client, obuf, len, req->id);
             }
         }

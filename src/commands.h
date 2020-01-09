@@ -24,11 +24,15 @@
 #define PROXY_COMMAND_HANDLED      1
 #define PROXY_COMMAND_UNHANDLED    0
 
+#define PROXY_REPLY_UNHANDLED      2
+
 #define CMDFLAG_MULTISLOT_UNSUPPORTED 1 << 0
 #define CMDFLAG_DUPLICATE 1 << 1
+#define CMDFLAG_HANDLE_REPLY 1 << 2
 
 typedef int redisClusterProxyCommandHandler(void *request);
-typedef int redisClusterProxyReplyHandler(void *reply, void *request);
+typedef int redisClusterProxyReplyHandler(void *reply, void *request,
+   char *buf, int len);
 
 /* Callback used to get key indices in some special commands, returns
  * the number of keys or -1 if some error occurs.

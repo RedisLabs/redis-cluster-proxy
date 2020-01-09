@@ -25,7 +25,7 @@ COPY_START_YEAR = 2019
 UNSUPPORTED_COMMANDS = %w(
     subscribe psubscribe debug role migrate acl shutdown info wait
     slaveof replconf time monitor config latency unsubscribe
-    scan replicaof pfselftest lastslave slowlog 
+    replicaof pfselftest lastslave slowlog 
     publish cluster sync command readwrite asking
     script randomkey module pfdebug pubsub
     hello memory psync client readonly punsubscribe
@@ -47,6 +47,7 @@ COMMAND_HANDLERS = {
     'host:' => 'securityWarningCommand',
     'ping' => 'pingCommand',
     'auth' => 'authCommand',
+    'scan' => 'scanCommand',
     #'randomkey' => 'randomKeyCommand',
 }
 REPLY_HANDLERS = {
@@ -67,6 +68,7 @@ REPLY_HANDLERS = {
     'keys' => 'mergeReplies',
     'watch' => 'getFirstMultipleReply',
     'unwatch' => 'getFirstMultipleReply',
+    'scan' => 'handleScanReply',
 }
 GET_KEYS_PROC = {
     'zunionstore' => 'zunionInterGetKeys',
@@ -88,6 +90,7 @@ CUSTOM_COMMANDS = [
 PROXY_FLAGS = {
     MULTISLOT_UNSUPPORTED: '1 << 0',
     DUPLICATE: '1 << 1',
+    HANDLE_REPLY: '1 << 2',
 }
 
 PROXY_COMMANDS_FLAGS = {
@@ -104,6 +107,9 @@ PROXY_COMMANDS_FLAGS = {
         'keys' => true,
         'unwatch' => true,
         'auth' => true,
+    },
+    HANDLE_REPLY: {
+        'scan' => true,
     }
 }
 
@@ -325,7 +331,8 @@ header = File.read(File.join($path, 'src_header.h'))
 header.gsub! '$CP_YEAR', copy_year
 handler_def =
     "typedef int redisClusterProxyCommandHandler(void *request);\n" +
-    "typedef int redisClusterProxyReplyHandler(void *reply, void *request);\n" +
+    "typedef int redisClusterProxyReplyHandler(void *reply, void *request,\n" +
+    "   char *buf, int len);\n" +
     "\n" +
     "/* Callback used to get key indices in some special commands, returns\n" +
     " * the number of keys or -1 if some error occurs.\n" +
@@ -370,6 +377,7 @@ code = header + "\n\n" +
 code << "#include <stdlib.h>\n\n"
 code << "#define PROXY_COMMAND_HANDLED      1\n"
 code << "#define PROXY_COMMAND_UNHANDLED    0\n\n"
+code << "#define PROXY_REPLY_UNHANDLED      2\n\n"
 PROXY_FLAGS.each{|flag, val|
     code << "#define #{CMDFLAG_PRFX}_#{flag} #{val}\n"
     code << "\n" if flag == PROXY_FLAGS.keys.last
@@ -411,7 +419,7 @@ if REPLY_HANDLERS.length > 0
     added = {}
     REPLY_HANDLERS.each{|cmdname, func|
         next if added[func]
-        code << "int #{func}(void *reply, void *request);\n"
+        code << "int #{func}(void *reply, void *request, char *buf, int len);\n"
         added[func] = true
     }
     code << "\n"
