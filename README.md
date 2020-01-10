@@ -235,6 +235,7 @@ The `PROXY` command will allow to get specific info or perform actions that are 
 - DBSIZE: sends the query to all nodes in the cluster and sums their replies,
           so that the result will be the total number of keys in the whole
           cluster.
+- SCAN: performs the scan on all the master nodes of the cluster. The **cursor** contained in the reply will have a special four-digits suffix indicating the index of the node that has to be scanned. **Note**: sometimes the cursor could be something like "00001", so it's important that you don't convert it to an integer when your client has to use it to perform the next scan.
 
 For a list of all known commands (both supported and unsupported) and their 
 features, see [COMMANDS.md](COMMANDS.md)
