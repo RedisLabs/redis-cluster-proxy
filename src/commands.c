@@ -69,7 +69,7 @@ struct redisCommandDef redisCommandTable[203] = {
     {"object", -2, 2, 2, 1, 0, 0, NULL, NULL, NULL},
     {"zlexcount", 4, 1, 1, 1, 0, 0, NULL, NULL, NULL},
     {"hstrlen", 3, 1, 1, 1, 0, 0, NULL, NULL, NULL},
-    {"command", -1, 0, 0, 0, 0, 1, NULL, NULL, NULL},
+    {"command", -1, 0, 0, 0, 0, 0, NULL, NULL, getFirstMultipleReply},
     {"geodist", -4, 1, 1, 1, 0, 0, NULL, NULL, NULL},
     {"sunionstore", -3, 1, -1, 1,
      CMDFLAG_MULTISLOT_UNSUPPORTED,

@@ -15,6 +15,7 @@
  - BRPOPLPUSH
  - BZPOPMAX (**disables multiplexing**)
  - BZPOPMIN (**disables multiplexing**)
+ - COMMAND
  - DBSIZE (**sums multiple replies**)
  - DECR
  - DECRBY
@@ -177,7 +178,6 @@ Those commands are currently not supported by Redis Cluster Proxy.
  - ASKING
  - CLIENT
  - CLUSTER
- - COMMAND
  - CONFIG
  - DEBUG
  - HELLO
