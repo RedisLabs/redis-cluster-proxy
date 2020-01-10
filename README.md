@@ -173,7 +173,7 @@ The `PROXY` command will allow to get specific info or perform actions that are 
 
     - `PROXY CLIENT THREAD`: get current client's thread
 
-- PROXY CLIENT [subcmd]
+- PROXY CLUSTER [subcmd]
 
   Perform actions related to the cluster associated with the calling client, ie:
 
@@ -212,7 +212,7 @@ The `PROXY` command will allow to get specific info or perform actions that are 
         12) (integer) 1
     ...
 
-```
+  ```
 
 - PROXY LOG <level> MESSAGE
 
