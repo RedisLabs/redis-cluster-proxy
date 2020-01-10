@@ -47,6 +47,7 @@ void addReplyBulkStringLen(client *c, const char *str, int len,
                            uint64_t req_id);
 void addReplyBulkString(client *c, const char *str, uint64_t req_id);
 void addReplyInt(client *c, int64_t integer, uint64_t req_id);
+void addReplyNull(client *c, uint64_t req_id);
 void addReplyErrorLen(client *c, const char *err, int len, uint64_t req_id);
 void addReplyError(client *c, const char *err, uint64_t req_id);
 void addReplyErrorUnknownSubcommand(client *c, const char *subcmd,

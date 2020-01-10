@@ -56,7 +56,10 @@ typedef struct clusterNode {
     int is_replica;
     int *slots;
     int slots_count;
-    int replicas_count;
+    int replicas_count; /* Value is always -1 until 'PROXY CLUSTER' command
+                         * counts all replicas and stores the result in
+                         * `replicas_count`, that is actually used as a
+                         * cache. */
     sds *migrating; /* An array of sds where even strings are slots and odd
                      * strings are the destination node IDs. */
     sds *importing; /* An array of sds where even strings are slots and odd

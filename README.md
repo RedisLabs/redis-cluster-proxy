@@ -169,13 +169,50 @@ The `PROXY` command will allow to get specific info or perform actions that are 
 
   Perform client specific actions, ie:
 
-    - `PROXY CLIENT ID`
-    
-    Get current client's internal ID
+    - `PROXY CLIENT ID`: get current client's internal ID
 
-    - `PROXY CLIENT THREAD`
-    
-    Get current client's thread
+    - `PROXY CLIENT THREAD`: get current client's thread
+
+- PROXY CLIENT [subcmd]
+
+  Perform actions related to the cluster associated with the calling client, ie:
+
+    - `PROXY CLUSTER` or `PROXY CLUSTER INFO` Get info about the cluster. Info is an array whose elements are in the form of name/value pairs, where the names are specific features such as `status`, `connection`, and so on. You can also retrieve info for a single specific feature, ie. by calling `PROXY CLUSTER STATUS`.
+    Below there's a list of common info that can be retrieved:
+
+        - `status`: Current status of the cluster, can be `updating`,`updated` or `broken`
+        - `connection`: Connection type, that can be `shared` if the client is working inside a multiplexing context (so the connection is shared with all the clients of the thread), or `private` if the client is using its own private connection.
+        - `nodes`: A nested array containing the list of all the master nodes
+                   of the cluster. Every node is another nested array, containing name/value pairs.
+
+    - `PROXY CLUSTER UPDATE`: request an update of the current cluster's configuration.
+
+
+  Examples:
+
+  ```
+  -> PROXY CLUSTER
+
+  1) status
+  2) updated
+  3) connection
+  4) shared
+  5) nodes
+  6) 1)  1) name
+         2) 8d829c8b66f67dd9c4adad16e5c0a4c82aadd810
+         3) ip
+         4) 127.0.0.1
+         5) port
+         6) (integer) 7002
+         7) slots
+         8) (integer) 5462
+         9) replicas
+        10) (integer) 1
+        11) connected
+        12) (integer) 1
+    ...
+
+```
 
 - PROXY LOG <level> MESSAGE
 

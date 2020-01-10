@@ -20,5 +20,6 @@
 
 extern const char *proxyCommandHelp[];
 extern const char *proxyCommandSubcommandClientHelp[];
+extern const char *proxyCommandSubcommandClusterHelp[];
 
 #endif /* __REDIS_CLUSTER_PROXY_HELP_H__ */

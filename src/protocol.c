@@ -94,6 +94,16 @@ void addReplyInt(client *c, int64_t integer, uint64_t req_id) {
     sdsfree(r);
 }
 
+void addReplyNull(client *c, uint64_t req_id) {
+    sds r = sdsnew("$-1\r\n");
+    if (c->reply_array != NULL) {
+        listAddNodeTail(c->reply_array, r);
+        return;
+    }
+    addReplyRaw(c, (const char*) r, sdslen(r), req_id);
+    sdsfree(r);
+}
+
 void addReplyErrorLen(client *c, const char *err, int len, uint64_t req_id) {
     sds r = NULL;
     if (len && err[0] == '-') r = sdsnewlen(err, len);

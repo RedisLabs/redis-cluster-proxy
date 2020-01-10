@@ -326,6 +326,109 @@ static void proxySubCommandClient(clientRequest *req, sds subcmd) {
     }
 }
 
+static void proxySubCommandCluster(clientRequest *req, sds subcmd) {
+    int fetch_info = 0;
+    sds info_field = NULL;
+    redisCluster *cluster = getCluster(req->client);
+    if (cluster == NULL) {
+        addReplyError(req->client, "-FATAL no cluster", req->id);
+        return;
+    }
+    if (subcmd ==  NULL || strcasecmp("info", subcmd) == 0) {
+        fetch_info = 1;
+    } else if (strcasecmp("update", subcmd) == 0) {
+        cluster->is_updating = 1;
+        int status = updateCluster(cluster);
+        if (status == CLUSTER_RECONFIG_ERR)
+            addReplyError(req->client, "Update failed", req->id);
+        else if (status == CLUSTER_RECONFIG_WAIT)
+            addReplyString(req->client, "waiting", req->id);
+        else if (status == CLUSTER_RECONFIG_STARTED)
+            addReplyString(req->client, "started", req->id);
+        else if (status == CLUSTER_RECONFIG_ENDED)
+            addReplyString(req->client, "done", req->id);
+        else addReplyString(req->client, "OK", req->id);
+    } else if (strcasecmp("help", subcmd) == 0) {
+        addReplyHelp(req->client, proxyCommandSubcommandClusterHelp, req->id);
+    } else if (strcasecmp("status", subcmd) == 0 ||
+               strcasecmp("connection", subcmd) == 0 ||
+               strcasecmp("nodes", subcmd) == 0) {
+        fetch_info = 1;
+        info_field = subcmd;
+    } else {
+        addReplyErrorUnknownSubcommand(req->client, "PROXY CLUSTER",
+            "PROXY CLUSTER HELP", req->id);
+    }
+    if (fetch_info) {
+        if (!initReplyArray(req->client)) {
+            addReplyError(req->client, ERROR_OOM, req->id);
+            return;
+        }
+        if (!info_field || strcasecmp("status", info_field) == 0) {
+            char *status = "updated";
+            if (cluster->broken) status = "broken";
+            else if (cluster->is_updating || cluster->update_required)
+                status = "updating";
+            addReplyString(req->client, "status", req->id);
+            addReplyString(req->client, status, req->id);
+        }
+        if (!info_field || strcasecmp("connection", info_field) == 0) {
+            char *connection = "shared";
+            if (req->client->cluster == cluster) connection = "private";
+            addReplyString(req->client, "connection", req->id);
+            addReplyString(req->client, connection, req->id);
+        }
+        if (!info_field || strcasecmp("nodes", info_field) == 0) {
+            list *names = clusterGetMasterNames(cluster);
+            addReplyString(req->client, "nodes", req->id);
+            if (!names) addReplyNull(req->client, req->id);
+            else {
+                sds c = sdscatfmt(sdsempty(), "*%U\r\n", listLength(names));
+                listIter li;
+                listNode *ln;
+                listRewind(names, &li);
+                while ((ln = listNext(&li))) {
+                    char *name = ln->value;
+                    clusterNode *node = getNodeByName(cluster, name);
+                    if (!node) {
+                        c = sdscatprintf(c, "$-1\r\n");
+                        continue;
+                    }
+                    int connected = (node->connection != NULL &&
+                                     node->connection->context != NULL);
+                    if (node->replicas_count < 0) {
+                        node->replicas_count = 0;
+                        listIter rli;
+                        listNode *rln;
+                        listRewind(cluster->nodes, &rli);
+                        while ((rln = listNext(&rli))) {
+                            clusterNode *r = rln->value;
+                            if (!r->is_replica || !r->replicate) continue;
+                            if (sdscmp(r->replicate, name) == 0)
+                                node->replicas_count++;
+                        }
+                    }
+                    c = sdscatfmt(c, "*%i\r\n", 12);
+                    c = sdscat(c, "+name\r\n");
+                    c = sdscatprintf(c, "+%s\r\n", node->name);
+                    c = sdscat(c, "+ip\r\n");
+                    c = sdscatprintf(c, "+%s\r\n", node->ip);
+                    c = sdscat(c, "+port\r\n");
+                    c = sdscatfmt(c, ":%i\r\n", node->port);
+                    c = sdscat(c, "+slots\r\n");
+                    c = sdscatfmt(c, ":%i\r\n", node->slots_count);
+                    c = sdscat(c, "+replicas\r\n");
+                    c = sdscatfmt(c, ":%i\r\n", node->replicas_count);
+                    c = sdscat(c, "+connected\r\n");
+                    c = sdscatfmt(c, ":%i\r\n", connected);
+                }
+                listAddNodeTail(req->client->reply_array, c);
+            }
+        }
+        addReplyArray(req->client, req->id);
+    }
+}
+
 static sds genInfoString(sds section) {
     int default_section = (section == NULL ||
                            strcasecmp("default", section) == 0);
@@ -755,6 +858,14 @@ int proxyCommand(void *r) {
         int len = req->lengths[2];
         sds arg = sdsnewlen(req->buffer + offset, len);
         proxySubCommandClient(req, arg);
+        if (arg) sdsfree(arg);
+    } else if (strcasecmp("cluster", subcmd) == 0) {
+        sds arg = NULL;
+        if (req->argc > 2) {
+            assert(req->offsets_size >= 2);
+            arg = sdsnewlen(req->buffer + req->offsets[2], req->lengths[2]);
+        }
+        proxySubCommandCluster(req, arg);
         if (arg) sdsfree(arg);
     } else if (strcasecmp("log", subcmd) == 0) {
         int loglvl = LOGLEVEL_DEBUG;

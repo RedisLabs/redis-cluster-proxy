@@ -326,7 +326,7 @@ static clusterNode *createClusterNode(char *ip, int port, redisCluster *c) {
     node->name = NULL;
     node->flags = 0;
     node->replicate = NULL;
-    node->replicas_count = 0;
+    node->replicas_count = -1;
     node->slots = zmalloc(CLUSTER_SLOTS * sizeof(int));
     node->slots_count = 0;
     node->migrating = NULL;
@@ -531,6 +531,7 @@ int clusterNodeLoadInfo(redisCluster *cluster, clusterNode *node, list *friends,
         if (name != NULL && node->name == NULL) node->name = sdsnew(name);
         node->is_replica = (strstr(flags, "slave") != NULL ||
                            (master_id != NULL && master_id[0] != '-'));
+        if (node->is_replica) node->replicate = sdsnew(master_id);
         /* If authentication failed on a master node, exit with success = 0 */
         if (!node->is_replica && auth_failed) {
             success = 0;
