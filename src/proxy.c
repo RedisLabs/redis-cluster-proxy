@@ -1729,7 +1729,7 @@ static void printClusterConfiguration(redisCluster *cluster) {
 
 static proxyThread *createProxyThread(int index) {
     int is_first = (index == 0);
-    proxyThread *thread = zmalloc(sizeof(*thread));
+    proxyThread *thread = zcalloc(sizeof(*thread));
     if (thread == NULL) return NULL;
     thread->loop = NULL;
     if (pipe(thread->io) == -1) {
