@@ -28,6 +28,7 @@ opts =RedisProxyTestUtils::OptionParser.new help_banner_arguments: '[TESTS]' do
     option   '',   '--proxy-threads NUM', 'Number of proxy threads'
     option   '',   '--benchmark-threads NUM', 'Number of benchmark threads'
     option   '',   '--benchmark-pipeline NUM', 'Pipeline queries'
+    option   '',   '--benchmark-opts OPTS', 'Other redis-benchmark options'
     option '-r',   '--repeat NUM', 'Repeat tests multiple times'
     option '-o',   '--output PATH', 'Output results to a file'
     option   '',   '--csv', 'Set output format to CSV'
@@ -87,6 +88,9 @@ def redis_benchmark(port, tests, **kwargs)
         arg
     }.compact.join(' ')
     cmd << " #{opts}" if opts.length > 0
+    if (bmopts = $options[:benchmark_opts])
+        cmd << " #{bmopts}"
+    end
     if tests.is_a?(Array) && tests.length > 0
         cmd += " -t #{tests.join(',')}"
     elsif tests.is_a?(String) && tests.length > 0
