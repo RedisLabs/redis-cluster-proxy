@@ -75,8 +75,9 @@ typedef struct clientRequest {
 
 typedef struct {
     aeEventLoop *main_loop;
-    int fds[2];
+    int fds[3];
     int fd_count;
+    int unixsocket_fd;
     int tcp_backlog;
     char neterr[ANET_ERR_LEN];
     struct proxyThread **threads;

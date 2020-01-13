@@ -26,6 +26,8 @@
 
 typedef struct {
     int port;
+    char *unixsocket;
+    mode_t unixsocketperm;
     char *cluster_address;
     char *entry_node_host;
     int entry_node_port;
