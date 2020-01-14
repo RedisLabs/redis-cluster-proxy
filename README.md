@@ -1,7 +1,7 @@
 # Redis Cluster Proxy
 
 Redis Cluster Proxy is a proxy for [Redis](https://redis.io/) Clusters.
-Redis has the ability to run in Cluster mode, where a set of Redis instances will take care of failover and partitioning. This special mode requires to use special clients understanding the Cluster protocol: by using this Proxy instead the Cluster is abstracted away, and you can talk with a set of instances composing a Redis Cluster like if they were a single instance.
+Redis has the ability to run in Cluster mode, where a set of Redis instances will take care of failover and partitioning. This special mode requires the use of special clients understanding the Cluster protocol: by using this Proxy instead the Cluster is abstracted away, and you can talk with a set of instances composing a Redis Cluster like if they were a single instance.
 Redis Cluster Proxy is multi-threaded and it currently uses, by default, a multiplexing communication model so that every thread has its own connection to the cluster that is shared to all clients belonging to the thread itself.
 Anyway, in some special cases (ie. `MULTI` transactions or blocking commands), the multiplexing gets disabled and the client will have its own cluster connection.
 In this way clients just sending trivial commands like GETs and SETs will
@@ -16,7 +16,7 @@ So, these are the main features of Redis Cluster Proxy:
 - Automatic update of the cluster's configuration after `ASK|MOVED` errors: when those kinds of errors occur in replies, the proxy automatically updates its internal representation of the cluster by fetching an updated configuration of it and by remapping all the slots. All queries will be re-executed after the update is completed, so that, from the client's point-of-view, everything flows as normal (the clients won't receive the ASK|MOVED error: they will directly receive the expected replies after the cluster configuration has been updated).
 - Cross-slot/Cross-node queries: many commands involving multiple keys belonging to different slots (or even to different cluster nodes) are supported. Those commands will split the query into multiple queries that will be routed to different slots/nodes. Reply handling for those commands is command-specific. Some commands, such as `MGET`, will merge all the replies as if they were a single reply. Other commands such as `MSET` or `DEL` will sum the results of all the replies. Since those queries actually break the atomicity of the command, their usage is optional (disabled by default). See below for more info.
 - Some commands with no specific node/slot such as `DBSIZE` are delivered to all the nodes and the replies will be map-reduced in order to give a sum of all the values contained in all the replies.
-- Additional `PROXY` command that can be used to perform some proxy-specific actions.
+- The additional `PROXY` command that can be used to perform some proxy-specific actions.
 
 # Build
 
@@ -29,7 +29,7 @@ In order to build it, just type:
 
 `% make`
 
-If you need a 32 bit binary, use:
+If you need a 32-bit binary, use:
 
 `% make 32bit`
 
@@ -62,7 +62,7 @@ You can use make PREFIX=/some/other/directory install if you wish to use a diffe
 # Usage
 
 Redis Cluster Proxy attaches itself to an already running Redis cluster.
-Binary will be compiled inside the `src` directory.
+The binary will be compiled inside the `src` directory.
 The basic usage is:
 
 `./redis-cluster-proxy CLUSTER_ADDRESS`
@@ -73,11 +73,27 @@ For example:
 
 `./redis-cluster-proxy 127.0.0.1:7000`
 
+`./redis-cluster-proxy /path/to/entry-point.socket`
+
 If you need a basic help, just run it with the canonical `-h` or `--help` option.
 
 `./redis-cluster-proxy -h`
 
 By default, Redis Cluster Port will listen on port 7777, but you can change it with the `-p` or `--port` option.
+
+You can also tell Redis Cluster Port to listen upon a UNIX socket, by using the `--unixsocket` option to specify the socket filename and, optionally, the `--unixsocketperm` to set socket file permissions.
+
+If you want to only listen on the UNIX socket, set `--port` to 0, so that the proxy won't listen on TCP sockets at all.
+
+Examples:
+
+Listen on port 7888
+
+`./redis-cluster-proxy --port 7888 127.0.0.1:7000`
+
+Listen on UNIX socket and disable TCP connections
+
+`./redis-cluster-proxy --unixsocket /path/to/proxy.socket 127.0.0.1:7000`
 
 You can change the number of threads using the `--threads` option.
 
@@ -85,7 +101,7 @@ You can also use a configuration file instead of passing arguments by using the 
 
 `redis-cluster-proxy -c /path/to/my/proxy.conf 127.0.0.1:7000`
 
-You can find an example `proxy.conf` file insider the main Redis Cluster Proxy's directory.
+You can find an example `proxy.conf` file inside the main Redis Cluster Proxy's directory.
 
 After launching it, you can connect to the proxy as if it were a normal Redis server (however make sure to understand the current limitations).
 
@@ -95,8 +111,8 @@ You can then connect to Redis Cluster Proxy using the client you prefer, ie:
 
 # Password-protected clusters and Redis ACL
 
-If your cluster nodes are protected with a password, use can use the `-a`, `--auth` command line options or the `auth` option in a configuration file in order to specify an authentication password.
-Furthermore, if your cluster is using the new [ACL](https://redis.io/topics/acl) implemented in Redis 6.0 and it has multiple users, you can even authenticate with a specific user by using the `--auth-user` comand line option (or `auth-user` in a config file) followed by the username.
+If your cluster nodes are protected with a password, you can use the `-a`, `--auth` command-line options or the `auth` option in a configuration file in order to specify an authentication password.
+Furthermore, if your cluster is using the new [ACL](https://redis.io/topics/acl) implemented in Redis 6.0 and it has multiple users, you can even authenticate with a specific user by using the `--auth-user` command-line option (or `auth-user` in a config file) followed by the username.
 Examples:
 
 `redis-cluster-proxy -a MYPASSWORD 127.0.0.1:7000`
@@ -105,8 +121,8 @@ Examples:
 
 `redis-cluster-proxy --auth-user MYUSER --auth MYPASSWORD 127.0.0.1:7000`
 
-The proxy will use these credentials in order to authenticate to the cluster and fetch the cluster's internal configuration, but it will also autmoatically authenticate all clients with the provided credentials.
-So, **all clients** that will connect to the proxy will be **automatically authenticated** with the user specified by `--auth-user` or with the `default` user if no user has been specified, **without the need** to call the `AUTH` command by themselves.
+The proxy will use these credentials to authenticate to the cluster and fetch the cluster's internal configuration, but it will also autmatically authenticate all clients with the provided credentials.
+So, **all clients** that will connect to the proxy will be **automatically authenticated** with the user that is specified by `--auth-user` or with the `default` user if no user has been specified, **without the need** to call the `AUTH` command by themselves.
 Anyway, if any client wants to be authenticated with a different user, it always can call the Redis `AUTH` command (documented [here](https://redis.io/commands/auth)): in this case, the client will use a private connection instead of the shared, multiplexed connection, and it will authenticate with another user.
 
 # Enabling cross-slots queries
@@ -119,7 +135,7 @@ Anyway, if you don't mind about atomicity and you want this feature, you can ena
 
 # The PROXY command
 
-The `PROXY` command will allow to get specific info or perform actions that are specific to the proxy. The command has various subcommands, here's a little list:
+The `PROXY` command will allow you to get specific info or perform actions that are specific to the proxy. The command has various subcommands, here's a little list:
 
 - PROXY CONFIG GET|SET option [value]
 
@@ -148,7 +164,7 @@ The `PROXY` command will allow to get specific info or perform actions that are 
 
 - PROXY INFO
 
-  Returns info specific to the cluster, in a similar fashion to the `INFO` command in Redis.
+  Returns info specific to the cluster, similarly to the `INFO` command in Redis.
 
 - PROXY COMMAND [UNSUPPORTED|CROSSSLOTS-UNSUPPORTED]
 
@@ -167,11 +183,11 @@ The `PROXY` command will allow to get specific info or perform actions that are 
 
 - PROXY CLIENT <subcmd>
 
-  Perform client specific actions, ie:
+  Perform client-specific actions, ie:
 
-    - `PROXY CLIENT ID`: get current client's internal ID
+    - `PROXY CLIENT ID`: get the current client's internal ID
 
-    - `PROXY CLIENT THREAD`: get current client's thread
+    - `PROXY CLIENT THREAD`: get the current client's thread
 
 - PROXY CLUSTER [subcmd]
 
@@ -180,7 +196,7 @@ The `PROXY` command will allow to get specific info or perform actions that are 
     - `PROXY CLUSTER` or `PROXY CLUSTER INFO` Get info about the cluster. Info is an array whose elements are in the form of name/value pairs, where the names are specific features such as `status`, `connection`, and so on. You can also retrieve info for a single specific feature, ie. by calling `PROXY CLUSTER STATUS`.
     Below there's a list of common info that can be retrieved:
 
-        - `status`: Current status of the cluster, can be `updating`,`updated` or `broken`
+        - `status`: Current status of the cluster, can be `updating`, `updated` or `broken`
         - `connection`: Connection type, that can be `shared` if the client is working inside a multiplexing context (so the connection is shared with all the clients of the thread), or `private` if the client is using its own private connection.
         - `nodes`: A nested array containing the list of all the master nodes
                    of the cluster. Every node is another nested array, containing name/value pairs.
@@ -216,7 +232,7 @@ The `PROXY` command will allow to get specific info or perform actions that are 
 
 - PROXY LOG <level> MESSAGE
 
-    Log `MESSAGE` to Proxy's log, for debugging purpose.
+    Log `MESSAGE` to Proxy's log, for debugging purposes.
 
     The optional `level` can be used to define the log level:
 
@@ -226,7 +242,7 @@ The `PROXY` command will allow to get specific info or perform actions that are 
 
     Get help for the PROXY command
 
-# Commands that act differently from standard Redis commands or that have special behaviour
+# Commands that act differently from standard Redis commands or that have special behavior
 
 - PING: `PONG` is replied directly by the proxy
 - MULTI: disables multiplexing for the calling client by creating a private
@@ -235,7 +251,7 @@ The `PROXY` command will allow to get specific info or perform actions that are 
 - DBSIZE: sends the query to all nodes in the cluster and sums their replies,
           so that the result will be the total number of keys in the whole
           cluster.
-- SCAN: performs the scan on all the master nodes of the cluster. The **cursor** contained in the reply will have a special four-digits suffix indicating the index of the node that has to be scanned. **Note**: sometimes the cursor could be something like "00001", so it's important that you don't convert it to an integer when your client has to use it to perform the next scan.
+- SCAN: performs the scan on all the master nodes of the cluster. The **cursor** contained in the reply will have a special four-digits suffix indicating the index of the node that has to be scanned. **Note**: sometimes the cursor could be something like "00001", so you mustn't convert it to an integer when your client has to use it to perform the next scan.
 
 For a list of all known commands (both supported and unsupported) and their 
 features, see [COMMANDS.md](COMMANDS.md)

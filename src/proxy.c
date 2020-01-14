@@ -1478,7 +1478,7 @@ int parseOptions(int argc, char **argv) {
         else if (!strcmp("--dump-queues", arg))
             config.dump_queues = 1;
         else if (!strcmp(argv[i], "--unixsocket") && !lastarg)
-            config.unixsocket = zstrdup(argv[++i]);
+            config.unixsocket = argv[++i];
         else if (!strcmp(argv[i], "--unixsocketperm") && !lastarg) {
             errno = 0;
             config.unixsocketperm = (mode_t)strtol(argv[++i], NULL, 8);
@@ -1710,6 +1710,16 @@ static void initProxy(void) {
     proxyLogInfo("All thread(s) started!\n");
 }
 
+void closeListeningSockets() {
+    int j;
+    proxyLogInfo("Closing listening sockets.\n");
+    for (j = 0; j < proxy.fd_count; j++) close(proxy.fds[j]);
+    if (config.unixsocket) {
+        proxyLogInfo("Removing the unix socket file.\n");
+        unlink(config.unixsocket); /* don't care if this fails */
+    }
+}
+
 static void releaseProxy(void) {
     int i;
     if (proxy.main_loop != NULL) {
@@ -1726,6 +1736,7 @@ static void releaseProxy(void) {
     }
     if (proxy.commands)
         raxFree(proxy.commands);
+    closeListeningSockets();
 }
 
 void writeHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
@@ -2510,19 +2521,25 @@ void onClusterNodeDisconnection(clusterNode *node) {
 static int listen(void) {
     int fd_idx = 0;
     /* Try to use both IPv6 and IPv4 */
-    proxy.fds[fd_idx] = anetTcp6Server(proxy.neterr, config.port, NULL,
-                                       proxy.tcp_backlog);
-    if (proxy.fds[fd_idx] != ANET_ERR)
-        anetNonBlock(NULL, proxy.fds[fd_idx++]);
-    else if (errno == EAFNOSUPPORT)
-        proxyLogWarn("Not listening to IPv6: unsupported\n");
+    if (config.port != 0) {
+        proxy.fds[fd_idx] = anetTcp6Server(proxy.neterr, config.port, NULL,
+                                           proxy.tcp_backlog);
+        if (proxy.fds[fd_idx] != ANET_ERR)
+            anetNonBlock(NULL, proxy.fds[fd_idx++]);
+        else if (errno == EAFNOSUPPORT)
+            proxyLogWarn("Not listening to IPv6: unsupported\n");
 
-    proxy.fds[fd_idx] = anetTcpServer(proxy.neterr, config.port, NULL,
-                                      proxy.tcp_backlog);
-    if (proxy.fds[fd_idx] != ANET_ERR)
-        anetNonBlock(NULL, proxy.fds[fd_idx++]);
-    else if (errno == EAFNOSUPPORT)
-        proxyLogWarn("Not listening to IPv4: unsupported\n");
+        proxy.fds[fd_idx] = anetTcpServer(proxy.neterr, config.port, NULL,
+                                          proxy.tcp_backlog);
+        if (proxy.fds[fd_idx] != ANET_ERR)
+            anetNonBlock(NULL, proxy.fds[fd_idx++]);
+        else if (errno == EAFNOSUPPORT)
+            proxyLogWarn("Not listening to IPv4: unsupported\n");
+        if (fd_idx > 0)
+            printf("Listening on port %d\n", config.port);
+        else
+            fprintf(stderr, "Failed to listen on port %d\n", config.port);
+    }
     /* UNIX socket listener */
     if (config.unixsocket != NULL) {
         unlink(config.unixsocket); /* Don't care if this fails */
@@ -2531,8 +2548,9 @@ static int listen(void) {
         if (proxy.unixsocket_fd != ANET_ERR) {
             anetNonBlock(NULL, proxy.unixsocket_fd);
             proxy.fds[fd_idx++] = proxy.unixsocket_fd;
+            printf("Listening on socket '%s'\n", config.unixsocket);
         } else {
-            proxyLogWarn("Opening Unix socket: %s\n", proxy.neterr);
+            fprintf(stderr, "Error opening Unix socket: %s\n", proxy.neterr);
         }
     }
     proxy.fd_count = fd_idx;
@@ -3919,11 +3937,9 @@ int main(int argc, char **argv) {
     proxy.tcp_backlog = config.tcp_backlog;
     checkTcpBacklogSettings();
     if (!listen()) {
-        proxyLogErr("Failed to listen on port %d\n", config.port);
         exit_status = 1;
         goto cleanup;
     }
-    printf("Listening on port %d\n", config.port);
     if (config.daemonize) daemonize();
     initProxy();
     for (i = 0; i < proxy.fd_count; i++) {
