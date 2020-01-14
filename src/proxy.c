@@ -3905,7 +3905,10 @@ void daemonize(void) {
 int main(int argc, char **argv) {
     int exit_status = 0, i;
     signal(SIGPIPE, SIG_IGN);
-    printf("Redis Cluster Proxy v%s\n", REDIS_CLUSTER_PROXY_VERSION);
+    printf("Redis Cluster Proxy v%s", REDIS_CLUSTER_PROXY_VERSION);
+    if (strcmp("999.999.999", REDIS_CLUSTER_PROXY_VERSION) == 0)
+        printf(" (unstable)");
+    printf("\n");
     initConfig();
     proxy.configfile = NULL;
     int parsed_opts = parseOptions(argc, argv);

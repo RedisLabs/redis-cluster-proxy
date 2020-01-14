@@ -33,8 +33,8 @@
 #include "commands.h"
 #include "sds.h"
 #include "rax.h"
+#include "version.h"
 
-#define REDIS_CLUSTER_PROXY_VERSION "9.9.999"
 #define CLIENT_STATUS_NONE          0
 #define CLIENT_STATUS_LINKED        1
 #define CLIENT_STATUS_UNLINKED      2
