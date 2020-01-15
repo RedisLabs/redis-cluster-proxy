@@ -1478,7 +1478,7 @@ int parseOptions(int argc, char **argv) {
         else if (!strcmp("--dump-queues", arg))
             config.dump_queues = 1;
         else if (!strcmp(argv[i], "--unixsocket") && !lastarg)
-            config.unixsocket = argv[++i];
+            config.unixsocket = zstrdup(argv[++i]);
         else if (!strcmp(argv[i], "--unixsocketperm") && !lastarg) {
             errno = 0;
             config.unixsocketperm = (mode_t)strtol(argv[++i], NULL, 8);
