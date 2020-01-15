@@ -93,7 +93,7 @@ Listen on port 7888
 
 Listen on UNIX socket and disable TCP connections
 
-`./redis-cluster-proxy --unixsocket /path/to/proxy.socket 127.0.0.1:7000`
+`./redis-cluster-proxy --unixsocket /path/to/proxy.socket --port 0 127.0.0.1:7000`
 
 You can change the number of threads using the `--threads` option.
 
