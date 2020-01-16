@@ -80,6 +80,8 @@ If you need a basic help, just run it with the canonical `-h` or `--help` option
 `./redis-cluster-proxy -h`
 
 By default, Redis Cluster Port will listen on port 7777, but you can change it with the `-p` or `--port` option.
+Furthermore, by default, Redis Cluster Port will bind all available network interfaces to listen to incoming connections.
+You can bind to specific interfaces by using the `--bind` options. You can bind  a single interface or you can bind multiple interfaces by using the `--bind` option more the once.
 
 You can also tell Redis Cluster Port to listen upon a UNIX socket, by using the `--unixsocket` option to specify the socket filename and, optionally, the `--unixsocketperm` to set socket file permissions.
 
@@ -90,6 +92,14 @@ Examples:
 Listen on port 7888
 
 `./redis-cluster-proxy --port 7888 127.0.0.1:7000`
+
+Listen on default port and bind only 127.0.0.1:
+
+`./redis-cluster-proxy --bind 127.0.0.1 127.0.0.1:7000`
+
+Listen on port 7888 and bind multiple interfaces:
+
+`./redis-cluster-proxy --port 7888 --bind 192.168.0.10 --bind 10.0.0.10 127.0.0.1:7000`
 
 Listen on UNIX socket and disable TCP connections
 

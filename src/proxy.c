@@ -16,7 +16,6 @@
  */
 
 #include "proxy.h"
-#include "config.h"
 #include "logger.h"
 #include "zmalloc.h"
 #include "protocol.h"
@@ -186,7 +185,6 @@ static sds proxySubCommandConfig(clientRequest *r, sds option, sds value,
     int ok = 0;
     int is_int = 0, is_float = 0, is_string = 0, read_only = 0;
     UNUSED(is_float);
-    UNUSED(is_string);
     if (strcmp("log-level", option) == 0) {
         opt = &(config.loglevel);
     } else if (strcmp("threads", option) == 0) {
@@ -221,6 +219,17 @@ static sds proxySubCommandConfig(clientRequest *r, sds option, sds value,
     } else if (strcmp("enable-cross-slot", option) == 0) {
         is_int = 1;
         opt = &(config.cross_slot_enabled);
+    } else if (strcmp("unixsocketperm", option) == 0) {
+        is_int = 1;
+        read_only = 1;
+        opt = &(config.unixsocketperm);
+    } else if (strcmp("unixsocket", option) == 0) {
+        read_only = 1;
+        is_string = 1;
+        opt = &(config.unixsocket);
+    } else if (strcmp("bind", option) == 0) {
+        opt = &(config.bindaddr);
+        read_only = 1;
     }
     if (opt == NULL) {
         if (err) *err = sdsnew("Invalid config option");
@@ -244,6 +253,22 @@ static sds proxySubCommandConfig(clientRequest *r, sds option, sds value,
         } else {
             reply = sdsnew(redisProxyLogLevels[config.loglevel]);
         }
+    } else if (opt == &(config.bindaddr)) {
+        if (value != NULL) {
+            if (err) *err = sdsnew("This config option is read-only");
+            return NULL;
+        }
+        if (!initReplyArray(r->client)) {
+            *err = sdsnew(ERROR_OOM);
+            return NULL;
+        }
+        int j;
+        addReplyString(r->client, "bind", r->id);
+        sds c = sdscatfmt(sdsempty(), "*%u\r\n", config.bindaddr_count);
+        for (j = 0; j < config.bindaddr_count; j++)
+            c = sdscatprintf(c, "+%s\r\n", config.bindaddr[j]);
+        listAddNodeTail(r->client->reply_array, c);
+        addReplyArray(r->client, r->id);
     } else {
         if (value == NULL) {
             if (!initReplyArray(r->client)) {
@@ -252,6 +277,12 @@ static sds proxySubCommandConfig(clientRequest *r, sds option, sds value,
             }
             addReplyString(r->client, option, r->id);
             if (is_int) addReplyInt(r->client, *((int *) opt), r->id);
+            else if (is_string) {
+                char *str = (char *) *((char **) opt);
+                if (str != NULL) addReplyString(r->client, str, r->id);
+                else addReplyNull(r->client, r->id);
+            }
+            else addReplyError(r->client, "Unsupported CONFIG option", r->id);
             addReplyArray(r->client, r->id);
         } else {
             if (read_only) *err = sdsnew("This config option is read-only");
@@ -1421,7 +1452,8 @@ static void printHelp(void) {
     fprintf(stderr, "Usage: redis-cluster-proxy [OPTIONS] "
         "[cluster_host:cluster_port]\n"
         "  -c <file>            Configuration file\n"
-        "  -p, --port <port>    Port (default: %d)\n"
+        "  -p, --port <port>    Port (default: %d). Use 0 in order to disable "
+        "                       TCP connections at all\n"
         "  --max-clients <n>    Max clients (default: %d)\n"
         "  --threads <n>        Thread number (default: %d, max: %d)\n"
         "  --tcpkeepalive       TCP Keep Alive (default: %d)\n"
@@ -1429,6 +1461,8 @@ static void printHelp(void) {
         "  --daemonize          Execute the proxy in background\n"
         "  --unixsocket <sock_file>     UNIX socket path (empty by default)\n"
         "  --unixsocketperm <mode>      UNIX socket permissions (default: %o)\n"
+        "  --bind <address>     Bind an interface (can be used multiple times "
+        "                       to bind multiple interfaces)\n"
         "  --disable-multiplexing <opt> When should multiplexing disabled\n"
         "                               (never|auto|always) (default: auto)\n"
         "  --enable-cross-slot  Enable cross-slot queries (warning: cross-slot"
@@ -1486,6 +1520,13 @@ int parseOptions(int argc, char **argv) {
                 fprintf(stderr, "Invalid socket file permissions:%s\n", argv[i]);
                 exit(1);
             }
+        } else if (!strcmp("--bind", arg) && !lastarg) {
+            if (config.bindaddr_count >= CFG_BINDADDR_MAX) {
+                fprintf(stderr, "You can bind max. %d interfaces\n",
+                        CFG_BINDADDR_MAX);
+                exit(1);
+            }
+            config.bindaddr[config.bindaddr_count++] = zstrdup(argv[++i]);
         } else if (!strcmp("-c", arg) && !lastarg) {
             char *cfgfile = argv[++i];
             if (!parseOptionsFromFile(cfgfile)) exit(1);
@@ -1667,10 +1708,12 @@ static void initConfig(void) {
     config.auth = NULL;
     config.auth_user = NULL;
     config.cross_slot_enabled = 0;
+    config.bindaddr_count = 0;
 }
 
 static void initProxy(void) {
     int i;
+    proxy.neterr[0] = '\0';
     proxy.numclients = 0;
     proxy.min_reserved_fds = 10 + (config.num_threads * 3) +
                              (proxy.fd_count * 2);
@@ -1737,6 +1780,10 @@ static void releaseProxy(void) {
     if (proxy.commands)
         raxFree(proxy.commands);
     closeListeningSockets();
+    if (config.unixsocket) zfree(config.unixsocket);
+    for (i = 0; i < config.bindaddr_count; i++) {
+        zfree(config.bindaddr[i]);
+    }
 }
 
 void writeHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
@@ -2522,23 +2569,53 @@ static int listen(void) {
     int fd_idx = 0;
     /* Try to use both IPv6 and IPv4 */
     if (config.port != 0) {
-        proxy.fds[fd_idx] = anetTcp6Server(proxy.neterr, config.port, NULL,
-                                           proxy.tcp_backlog);
-        if (proxy.fds[fd_idx] != ANET_ERR)
-            anetNonBlock(NULL, proxy.fds[fd_idx++]);
-        else if (errno == EAFNOSUPPORT)
-            proxyLogWarn("Not listening to IPv6: unsupported\n");
+        if (config.bindaddr_count == 0) {
+            proxy.fds[fd_idx] = anetTcp6Server(proxy.neterr, config.port, NULL,
+                                               proxy.tcp_backlog);
+            if (proxy.fds[fd_idx] != ANET_ERR)
+                anetNonBlock(NULL, proxy.fds[fd_idx++]);
+            else if (errno == EAFNOSUPPORT)
+                proxyLogWarn("Not listening to IPv6: unsupported\n");
 
-        proxy.fds[fd_idx] = anetTcpServer(proxy.neterr, config.port, NULL,
-                                          proxy.tcp_backlog);
-        if (proxy.fds[fd_idx] != ANET_ERR)
-            anetNonBlock(NULL, proxy.fds[fd_idx++]);
-        else if (errno == EAFNOSUPPORT)
-            proxyLogWarn("Not listening to IPv4: unsupported\n");
-        if (fd_idx > 0)
-            printf("Listening on port %d\n", config.port);
-        else
-            fprintf(stderr, "Failed to listen on port %d\n", config.port);
+            proxy.fds[fd_idx] = anetTcpServer(proxy.neterr, config.port, NULL,
+                                              proxy.tcp_backlog);
+            if (proxy.fds[fd_idx] != ANET_ERR)
+                anetNonBlock(NULL, proxy.fds[fd_idx++]);
+            else if (errno == EAFNOSUPPORT)
+                proxyLogWarn("Not listening to IPv4: unsupported\n");
+            if (fd_idx > 0)
+                printf("Listening on *:%d\n", config.port);
+            else {
+                fprintf(stderr, "Failed to listen on *:%d\n", config.port);
+                if (strlen(proxy.neterr))
+                    fprintf(stderr, "%s\n", proxy.neterr);
+            }
+        } else {
+            int i;
+            for (i = 0; i < config.bindaddr_count; i++) {
+                char *bindaddr = config.bindaddr[i];
+                if (strchr(bindaddr, ':')) {
+                    /* IPv6 address */
+                    proxy.fds[fd_idx] = anetTcp6Server(proxy.neterr,
+                        config.port, bindaddr, proxy.tcp_backlog);
+                } else {
+                    /* IPv6 address */
+                    proxy.fds[fd_idx] = anetTcpServer(proxy.neterr,
+                        config.port, bindaddr, proxy.tcp_backlog);
+                }
+                if (proxy.fds[fd_idx] != ANET_ERR) {
+                    anetNonBlock(NULL, proxy.fds[fd_idx++]);
+                    printf("Listening on %s:%d\n", bindaddr, config.port);
+                } else if (errno == EAFNOSUPPORT)
+                    proxyLogWarn("Not listening to IPv6: unsupported\n");
+                if (proxy.fds[fd_idx] == ANET_ERR) {
+                    fprintf(stderr, "Failed to listen on %s:%d\n", bindaddr,
+                            config.port);
+                    if (strlen(proxy.neterr))
+                        fprintf(stderr, "%s\n", proxy.neterr);
+                }
+            }
+        }
     }
     /* UNIX socket listener */
     if (config.unixsocket != NULL) {

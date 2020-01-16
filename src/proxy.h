@@ -33,6 +33,7 @@
 #include "commands.h"
 #include "sds.h"
 #include "rax.h"
+#include "config.h"
 #include "version.h"
 
 #define CLIENT_STATUS_NONE          0
@@ -75,7 +76,7 @@ typedef struct clientRequest {
 
 typedef struct {
     aeEventLoop *main_loop;
-    int fds[3];
+    int fds[CFG_BINDADDR_MAX];
     int fd_count;
     int unixsocket_fd;
     int tcp_backlog;

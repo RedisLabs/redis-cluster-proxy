@@ -23,6 +23,7 @@
 #define CFG_DISABLE_MULTIPLEXING_NEVER      0
 #define CFG_DISABLE_MULTIPLEXING_AUTO       1
 #define CFG_DISABLE_MULTIPLEXING_ALWAYS     2
+#define CFG_BINDADDR_MAX                    16
 
 typedef struct {
     int port;
@@ -46,6 +47,8 @@ typedef struct {
     char *auth_user;
     int disable_multiplexing;
     int cross_slot_enabled;
+    int bindaddr_count;
+    char *bindaddr[CFG_BINDADDR_MAX];
 } redisClusterProxyConfig;
 
 extern redisClusterProxyConfig config;
