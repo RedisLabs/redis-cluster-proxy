@@ -35,29 +35,23 @@
 #include <sys/stat.h>
 #include <sys/utsname.h>
 
-#define DEFAULT_PORT            7777
-#define DEFAULT_UNIXSOCKETPERM  0
-#define DEFAULT_MAX_CLIENTS     10000
-#define MAX_THREADS             500
-#define DEFAULT_THREADS         8
-#define DEFAULT_TCP_KEEPALIVE   300
-#define DEFAULT_TCP_BACKLOG     511
-#define QUERY_OFFSETS_MIN_SIZE  10
-#define EL_INSTALL_HANDLER_FAIL 9999
-#define REQ_STATUS_UNKNOWN      -1
-#define PARSE_STATUS_INCOMPLETE -1
-#define PARSE_STATUS_ERROR      0
-#define PARSE_STATUS_OK         1
-#define UNDEFINED_SLOT          -1
+#define QUERY_OFFSETS_MIN_SIZE              10
+#define MAX_THREADS                         500
+#define EL_INSTALL_HANDLER_FAIL             9999
+#define REQ_STATUS_UNKNOWN                  -1
+#define PARSE_STATUS_INCOMPLETE             -1
+#define PARSE_STATUS_ERROR                  0
+#define PARSE_STATUS_OK                     1
+#define UNDEFINED_SLOT                      -1
 
-#define MAX_ACCEPTS             1000
-#define NET_IP_STR_LEN          46
+#define MAX_ACCEPTS                         1000
+#define NET_IP_STR_LEN                      46
 
-#define THREAD_IO_READ          0
-#define THREAD_IO_WRITE         1
+#define THREAD_IO_READ                      0
+#define THREAD_IO_WRITE                     1
 
-#define QUEUE_TYPE_SENDING      1
-#define QUEUE_TYPE_PENDING      2
+#define QUEUE_TYPE_SENDING                  1
+#define QUEUE_TYPE_PENDING                  2
 
 #define UNUSED(V) ((void) V)
 
@@ -227,6 +221,10 @@ static sds proxySubCommandConfig(clientRequest *r, sds option, sds value,
         read_only = 1;
         is_string = 1;
         opt = &(config.unixsocket);
+    } else if (strcmp("pidfile", option) == 0) {
+        read_only = 1;
+        is_string = 1;
+        opt = &(config.pidfile);
     } else if (strcmp("bind", option) == 0) {
         opt = &(config.bindaddr);
         read_only = 1;
@@ -1448,40 +1446,11 @@ static int parseAddress(char *address, char **ip, int *port, char **hostsocket)
     return 1;
 }
 
-static void printHelp(void) {
-    fprintf(stderr, "Usage: redis-cluster-proxy [OPTIONS] "
-        "[cluster_host:cluster_port]\n"
-        "  -c <file>            Configuration file\n"
-        "  -p, --port <port>    Port (default: %d). Use 0 in order to disable \n"
-        "                       TCP connections at all\n"
-        "  --max-clients <n>    Max clients (default: %d)\n"
-        "  --threads <n>        Thread number (default: %d, max: %d)\n"
-        "  --tcpkeepalive       TCP Keep Alive (default: %d)\n"
-        "  --tcp-backlog        TCP Backlog (default: %d)\n"
-        "  --daemonize          Execute the proxy in background\n"
-        "  --unixsocket <sock_file>     UNIX socket path (empty by default)\n"
-        "  --unixsocketperm <mode>      UNIX socket permissions (default: %o)\n"
-        "  --bind <address>     Bind an interface (can be used multiple times \n"
-        "                       to bind multiple interfaces)\n"
-        "  --disable-multiplexing <opt> When should multiplexing disabled\n"
-        "                               (never|auto|always) (default: auto)\n"
-        "  --enable-cross-slot  Enable cross-slot queries (warning: cross-slot"
-        "\n                       queries routed to multiple nodes cannot be"
-                                " atomic).\n"
-        "  -a, --auth <passw>   Authentication password\n"
-        "  --auth-user <name>   Authentication username\n"
-        "  --disable-colors     Disable colorized output\n"
-        "  --log-level <level>  Minimum log level: (default: info)\n"
-        "                       (debug|info|success|warning|error)\n"
-        "  --dump-queries       Dump query args (only for log-level "
-                                "'debug') \n"
-        "  --dump-buffer        Dump query buffer (only for log-level "
-                                "'debug') \n"
-        "  --dump-queues        Dump request queues (only for log-level "
-                                "'debug') \n"
-        "  -h, --help         Print this help\n",
+void printHelp(void) {
+    fprintf(stderr, mainHelpString,
         DEFAULT_PORT, DEFAULT_MAX_CLIENTS, DEFAULT_THREADS, MAX_THREADS,
-        DEFAULT_TCP_KEEPALIVE, DEFAULT_TCP_BACKLOG, DEFAULT_UNIXSOCKETPERM);
+        DEFAULT_TCP_KEEPALIVE, DEFAULT_TCP_BACKLOG, DEFAULT_PID_FILE,
+        DEFAULT_UNIXSOCKETPERM);
 }
 
 int parseOptions(int argc, char **argv) {
@@ -1499,6 +1468,10 @@ int parseOptions(int argc, char **argv) {
             config.use_colors = 0;
         else if (!strcmp("--daemonize", arg))
             config.daemonize = 1;
+        else if (!strcmp("--pidfile", arg) && !lastarg)
+            config.pidfile = zstrdup(argv[++i]);
+        else if (!strcmp("--logfile", arg) && !lastarg)
+            config.logfile = zstrdup(argv[++i]);
         else if (!strcmp("--maxclients", arg) && !lastarg)
             config.maxclients = atoi(argv[++i]);
         else if (!strcmp("--tcpkeepalive", arg) && !lastarg)
@@ -1517,13 +1490,13 @@ int parseOptions(int argc, char **argv) {
             errno = 0;
             config.unixsocketperm = (mode_t)strtol(argv[++i], NULL, 8);
             if (errno || config.unixsocketperm > 0777) {
-                fprintf(stderr, "Invalid socket file permissions:%s\n", argv[i]);
+                fprintf(stderr,"Invalid socket file permissions:%s\n",argv[i]);
                 exit(1);
             }
         } else if (!strcmp("--bind", arg) && !lastarg) {
-            if (config.bindaddr_count >= CFG_BINDADDR_MAX) {
+            if (config.bindaddr_count >= BINDADDR_MAX) {
                 fprintf(stderr, "You can bind max. %d interfaces\n",
-                        CFG_BINDADDR_MAX);
+                        BINDADDR_MAX);
                 exit(1);
             }
             config.bindaddr[config.bindaddr_count++] = zstrdup(argv[++i]);
@@ -1559,15 +1532,13 @@ int parseOptions(int argc, char **argv) {
             config.loglevel = level;
         } else if (!strcmp("--disable-multiplexing", arg) && !lastarg) {
             char *val = argv[++i];
-            if (!strcasecmp("never", val))
-                config.disable_multiplexing = CFG_DISABLE_MULTIPLEXING_NEVER;
-            else if (!strcasecmp("always", val))
+            if (!strcasecmp("always", val))
                 config.disable_multiplexing = CFG_DISABLE_MULTIPLEXING_ALWAYS;
             else if (!strcasecmp("auto", val))
                 config.disable_multiplexing = CFG_DISABLE_MULTIPLEXING_AUTO;
             else {
                 fprintf(stderr, "Invalid option for --disable-multiplexing, "
-                        "valid options are:\nnever|auto|always\n");
+                        "valid options are:\nauto|always\n");
                 exit(1);
             }
         } else if (!strcmp("--enable-cross-slot", arg)) {
@@ -1691,26 +1662,6 @@ static void checkTcpBacklogSettings(void) {
 #endif
 }
 
-static void initConfig(void) {
-    config.port = DEFAULT_PORT;
-    config.unixsocket = NULL;
-    config.unixsocketperm = DEFAULT_UNIXSOCKETPERM;
-    config.tcpkeepalive = DEFAULT_TCP_KEEPALIVE;
-    config.maxclients = DEFAULT_MAX_CLIENTS;
-    config.num_threads = DEFAULT_THREADS;
-    config.tcp_backlog = DEFAULT_TCP_BACKLOG;
-    config.daemonize = 0;
-    config.loglevel = LOGLEVEL_INFO;
-    config.use_colors = 0;
-    config.dump_queries = 0;
-    config.dump_buffer = 0;
-    config.dump_queues = 0;
-    config.auth = NULL;
-    config.auth_user = NULL;
-    config.cross_slot_enabled = 0;
-    config.bindaddr_count = 0;
-}
-
 static void initProxy(void) {
     int i;
     proxy.neterr[0] = '\0';
@@ -1781,6 +1732,8 @@ static void releaseProxy(void) {
         raxFree(proxy.commands);
     closeListeningSockets();
     if (config.unixsocket) zfree(config.unixsocket);
+    if (config.pidfile) zfree(config.pidfile);
+    if (config.logfile) zfree(config.logfile);
     for (i = 0; i < config.bindaddr_count; i++) {
         zfree(config.bindaddr[i]);
     }
@@ -1915,8 +1868,8 @@ static void printClusterConfiguration(redisCluster *cluster) {
         if (n->is_replica) replica_count++;
         else master_count++;
     }
-    printf("Cluster has %d masters and %d replica(s)\n", master_count,
-           replica_count);
+    proxyLogInfo("Cluster has %d masters and %d replica(s)\n", master_count,
+                 replica_count);
 }
 
 static proxyThread *createProxyThread(int index) {
@@ -1938,7 +1891,7 @@ static proxyThread *createProxyThread(int index) {
         freeProxyThread(thread);
         return NULL;
     }
-    if (is_first) printf("Fetching cluster configuration...\n");
+    if (is_first) proxyLogInfo("Fetching cluster configuration...\n");
     if (!fetchClusterConfiguration(thread->cluster, config.entry_node_host,
                                    config.entry_node_port,
                                    config.entry_node_socket)) {
@@ -2584,11 +2537,11 @@ static int listen(void) {
             else if (errno == EAFNOSUPPORT)
                 proxyLogWarn("Not listening to IPv4: unsupported\n");
             if (fd_idx > 0)
-                printf("Listening on *:%d\n", config.port);
+                proxyLogInfo("Listening on *:%d\n", config.port);
             else {
-                fprintf(stderr, "Failed to listen on *:%d\n", config.port);
+                proxyLogErr("Failed to listen on *:%d\n", config.port);
                 if (strlen(proxy.neterr))
-                    fprintf(stderr, "%s\n", proxy.neterr);
+                    proxyLogErr("%s\n", proxy.neterr);
             }
         } else {
             int i;
@@ -2605,14 +2558,14 @@ static int listen(void) {
                 }
                 if (proxy.fds[fd_idx] != ANET_ERR) {
                     anetNonBlock(NULL, proxy.fds[fd_idx++]);
-                    printf("Listening on %s:%d\n", bindaddr, config.port);
+                    proxyLogInfo("Listening on %s:%d\n", bindaddr, config.port);
                 } else if (errno == EAFNOSUPPORT)
                     proxyLogWarn("Not listening to IPv6: unsupported\n");
                 if (proxy.fds[fd_idx] == ANET_ERR) {
-                    fprintf(stderr, "Failed to listen on %s:%d\n", bindaddr,
-                            config.port);
+                    proxyLogErr("Failed to listen on %s:%d\n", bindaddr,
+                        config.port);
                     if (strlen(proxy.neterr))
-                        fprintf(stderr, "%s\n", proxy.neterr);
+                        proxyLogErr("%s\n", proxy.neterr);
                 }
             }
         }
@@ -2625,9 +2578,9 @@ static int listen(void) {
         if (proxy.unixsocket_fd != ANET_ERR) {
             anetNonBlock(NULL, proxy.unixsocket_fd);
             proxy.fds[fd_idx++] = proxy.unixsocket_fd;
-            printf("Listening on socket '%s'\n", config.unixsocket);
+            proxyLogInfo("Listening on socket '%s'\n", config.unixsocket);
         } else {
-            fprintf(stderr, "Error opening Unix socket: %s\n", proxy.neterr);
+            proxyLogErr("Error opening Unix socket: %s\n", proxy.neterr);
         }
     }
     proxy.fd_count = fd_idx;
@@ -3968,7 +3921,7 @@ void daemonize(void) {
     if (fork() != 0) exit(0); /* parent exits */
     setsid(); /* create a new session */
 
-    /* Every output goes to /dev/null. If Redis is daemonized but
+    /* Every output goes to /dev/null. If the proxy is daemonized but
      * the 'logfile' is set to 'stdout' in the configuration file
      * it will not log at all. */
     if ((fd = open("/dev/null", O_RDWR, 0)) != -1) {
@@ -3979,16 +3932,31 @@ void daemonize(void) {
     }
 }
 
+void createPidFile(void) {
+    if (config.pidfile == NULL) config.pidfile = zstrdup(DEFAULT_PID_FILE);
+    FILE *f = fopen(config.pidfile, "w");
+    if (!f) {
+        proxyLogErr("Failed to create pidfile: '%s'\n", config.pidfile);
+        return;
+    }
+    fprintf(f, "%d\n", (int) getpid());
+    fclose(f);
+    proxyLogInfo("Pidfile: '%s'\n", config.pidfile);
+}
+
 int main(int argc, char **argv) {
     int exit_status = 0, i;
     signal(SIGPIPE, SIG_IGN);
-    printf("Redis Cluster Proxy v%s", REDIS_CLUSTER_PROXY_VERSION);
-    if (strcmp("999.999.999", REDIS_CLUSTER_PROXY_VERSION) == 0)
-        printf(" (unstable)");
-    printf("\n");
     initConfig();
     proxy.configfile = NULL;
     int parsed_opts = parseOptions(argc, argv);
+    if (config.logfile != NULL) {
+        /* If the logfile is an empty string, set it NULL and use STDOUT */
+        if (config.logfile[0] == '\0') {
+            zfree(config.logfile);
+            config.logfile = NULL;
+        } else config.use_colors = 0;
+    }
     char *config_cluster_addr = config.cluster_address;
     if (parsed_opts >= argc) {
         if (config_cluster_addr == NULL) {
@@ -4003,10 +3971,16 @@ int main(int argc, char **argv) {
         }
         config.cluster_address = argv[parsed_opts];
     }
-    printf("Cluster Address: %s\n", config.cluster_address);
+    char *versiontype = "";
+    if (strcmp("999.999.999", REDIS_CLUSTER_PROXY_VERSION) == 0)
+        versiontype = " (unstable)";
+    proxyLogInfo("Redis Cluster Proxy v%s%s\n",
+        REDIS_CLUSTER_PROXY_VERSION, versiontype);
+    proxyLogInfo("Cluster Address: %s\n", config.cluster_address);
+    proxyLogInfo("PID: %d\n", (int) getpid());
     if (!parseAddress(config.cluster_address, &config.entry_node_host,
                       &config.entry_node_port, &config.entry_node_socket)) {
-        fprintf(stderr, "Invalid address '%s'\n", config.cluster_address);
+        proxyLogErr("Invalid address '%s'\n", config.cluster_address);
         return 1;
     }
     if (config.auth_user != NULL) {
@@ -4020,7 +3994,10 @@ int main(int argc, char **argv) {
         exit_status = 1;
         goto cleanup;
     }
-    if (config.daemonize) daemonize();
+    if (config.daemonize) {
+        daemonize();
+        createPidFile();
+    } else if (config.pidfile != NULL) createPidFile();
     initProxy();
     for (i = 0; i < proxy.fd_count; i++) {
         if (!installIOHandler(proxy.main_loop, proxy.fds[i], AE_READABLE,

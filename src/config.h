@@ -20,10 +20,16 @@
 
 #include "redis_config.h"
 
-#define CFG_DISABLE_MULTIPLEXING_NEVER      0
 #define CFG_DISABLE_MULTIPLEXING_AUTO       1
 #define CFG_DISABLE_MULTIPLEXING_ALWAYS     2
-#define CFG_BINDADDR_MAX                    16
+#define BINDADDR_MAX                        16
+#define DEFAULT_PID_FILE                    "/var/run/redis-cluster-proxy.pid"
+#define DEFAULT_PORT                        7777
+#define DEFAULT_UNIXSOCKETPERM              0
+#define DEFAULT_MAX_CLIENTS                 10000
+#define DEFAULT_THREADS                     8
+#define DEFAULT_TCP_KEEPALIVE               300
+#define DEFAULT_TCP_BACKLOG                 511
 
 typedef struct {
     int port;
@@ -48,10 +54,13 @@ typedef struct {
     int disable_multiplexing;
     int cross_slot_enabled;
     int bindaddr_count;
-    char *bindaddr[CFG_BINDADDR_MAX];
+    char *bindaddr[BINDADDR_MAX];
+    char *pidfile;
+    char *logfile;
 } redisClusterProxyConfig;
 
 extern redisClusterProxyConfig config;
+void initConfig(void);
 int parseOptions(int argc, char **argv);
 int parseOptionsFromFile(const char *filename);
 

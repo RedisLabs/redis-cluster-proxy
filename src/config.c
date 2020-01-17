@@ -25,6 +25,28 @@
 
 #define CONFIG_MAX_LINE 1024
 
+void initConfig(void) {
+    config.port = DEFAULT_PORT;
+    config.unixsocket = NULL;
+    config.unixsocketperm = DEFAULT_UNIXSOCKETPERM;
+    config.tcpkeepalive = DEFAULT_TCP_KEEPALIVE;
+    config.maxclients = DEFAULT_MAX_CLIENTS;
+    config.num_threads = DEFAULT_THREADS;
+    config.tcp_backlog = DEFAULT_TCP_BACKLOG;
+    config.daemonize = 0;
+    config.loglevel = LOGLEVEL_INFO;
+    config.use_colors = 0;
+    config.dump_queries = 0;
+    config.dump_buffer = 0;
+    config.dump_queues = 0;
+    config.auth = NULL;
+    config.auth_user = NULL;
+    config.cross_slot_enabled = 0;
+    config.bindaddr_count = 0;
+    config.pidfile = NULL;
+    config.logfile = NULL;
+}
+
 int parseOptionsFromFile(const char *filename) {
     FILE *f;
     if (filename[0] == '-' || filename[0] == '\0') f = stdin;

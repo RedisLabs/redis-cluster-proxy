@@ -21,5 +21,8 @@
 extern const char *proxyCommandHelp[];
 extern const char *proxyCommandSubcommandClientHelp[];
 extern const char *proxyCommandSubcommandClusterHelp[];
+extern const char *mainHelpString;
+
+void printHelp(void);
 
 #endif /* __REDIS_CLUSTER_PROXY_HELP_H__ */
