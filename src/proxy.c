@@ -225,6 +225,10 @@ static sds proxySubCommandConfig(clientRequest *r, sds option, sds value,
         read_only = 1;
         is_string = 1;
         opt = &(config.pidfile);
+    } else if (strcmp("logfile", option) == 0) {
+        read_only = 1;
+        is_string = 1;
+        opt = &(config.logfile);
     } else if (strcmp("bind", option) == 0) {
         opt = &(config.bindaddr);
         read_only = 1;
