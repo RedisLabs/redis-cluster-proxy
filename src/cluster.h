@@ -43,6 +43,7 @@ typedef struct redisClusterConnection {
     int has_read_handler;
     int authenticating;
     int authenticated;
+    struct clusterNode *node;
 } redisClusterConnection;
 
 typedef struct clusterNode {
@@ -104,4 +105,6 @@ int updateCluster(redisCluster *cluster);
 void clusterAddRequestToReprocess(redisCluster *cluster, void *r);
 void clusterRemoveRequestToReprocess(redisCluster *cluster, void *r);
 int clusterNodeAuth(clusterNode *node, char *auth, char *user, char **err);
+redisClusterConnection *createClusterConnection(void);
+void freeClusterConnection(redisClusterConnection *conn);
 #endif /* __REDIS_CLUSTER_PROXY_CLUSTER_H__ */

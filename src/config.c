@@ -45,6 +45,7 @@ void initConfig(void) {
     config.bindaddr_count = 0;
     config.pidfile = NULL;
     config.logfile = NULL;
+    config.connections_pool_size = DEFAULT_CONNECTIONS_POOL_SIZE;
 }
 
 int parseOptionsFromFile(const char *filename) {

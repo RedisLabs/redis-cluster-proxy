@@ -41,6 +41,7 @@
 
 #define QUERY_OFFSETS_MIN_SIZE              10
 #define MAX_THREADS                         500
+#define MAX_POOL_SIZE                       50
 #define EL_INSTALL_HANDLER_FAIL             9999
 #define REQ_STATUS_UNKNOWN                  -1
 #define PARSE_STATUS_INCOMPLETE             -1
@@ -92,6 +93,9 @@
 #define getFirstRequestPending(node, isempty) \
     (getFirstQueuedRequest(node->connection->requests_pending,\
      isempty))
+#define clientRequiresAuth(c) \
+    ((c->auth_user && (!config.auth_user || strcmp(config.auth_user, c->auth_user))) || (config.auth_user && !c->auth_user))
+
 #define REQID_PRINTF_FMT "%d:%" PRId64 ":%" PRId64
 #define REQID_PRINTF_ARG(r) r->client->thread_id, r->client->id, r->id
 #define getClientPeerIP(c) (c->ip ? c->ip : config.unixsocket)
@@ -238,6 +242,7 @@ static sds proxySubCommandConfig(clientRequest *r, sds option, sds value,
     sds reply = NULL;
     int ok = 0;
     int is_int = 0, is_float = 0, is_string = 0, read_only = 0;
+    int max_int = -1;
     UNUSED(is_float);
     if (strcmp("log-level", option) == 0) {
         opt = &(config.loglevel);
@@ -249,6 +254,10 @@ static sds proxySubCommandConfig(clientRequest *r, sds option, sds value,
         is_int = 1;
         opt = &(config.maxclients);
         read_only = 1;
+    } else if (strcmp("connections-pool-size", option) == 0) {
+        is_int = 1;
+        max_int = MAX_POOL_SIZE;
+        opt = &(config.connections_pool_size);
     } else if (strcmp("tcpkeepalive", option) == 0) {
         is_int = 1;
         opt = &(config.tcpkeepalive);
@@ -350,7 +359,13 @@ static sds proxySubCommandConfig(clientRequest *r, sds option, sds value,
             if (read_only) *err = sdsnew("This config option is read-only");
             else {
                 if (is_int) {
-                    *((int *) opt) = atoi(value);
+                    int val = atoi(value);
+                    if (max_int >= 0 && val > max_int) {
+                        *err = sdscatfmt(sdsempty(),
+                            "Maximum value for '%s' is %i", option, max_int);
+                        return NULL;
+                    }
+                    *((int *) opt) = val;
                     ok = 1;
                 }
             }
@@ -1661,7 +1676,7 @@ void printHelp(void) {
     fprintf(stderr, mainHelpString,
         DEFAULT_PORT, DEFAULT_MAX_CLIENTS, DEFAULT_THREADS, MAX_THREADS,
         DEFAULT_TCP_KEEPALIVE, DEFAULT_TCP_BACKLOG, DEFAULT_PID_FILE,
-        DEFAULT_UNIXSOCKETPERM);
+        DEFAULT_UNIXSOCKETPERM, DEFAULT_CONNECTIONS_POOL_SIZE);
 }
 
 int parseOptions(int argc, char **argv) {
@@ -1689,6 +1704,8 @@ int parseOptions(int argc, char **argv) {
             config.tcpkeepalive = atoi(argv[++i]);
         else if (!strcmp("--tcp-backlog", arg) && !lastarg)
             config.tcp_backlog = atoi(argv[++i]);
+        else if (!strcmp("--connections-pool-size", arg) && !lastarg)
+            config.connections_pool_size = atoi(argv[++i]);
         else if (!strcmp("--dump-queries", arg))
             config.dump_queries = 1;
         else if (!strcmp("--dump-buffer", arg))
@@ -2104,6 +2121,57 @@ static void printClusterConfiguration(redisCluster *cluster) {
         cluster->masters_count, cluster->replicas_count);
 }
 
+static void populateConnectionsPool(proxyThread *thread) {
+    int max = config.connections_pool_size;
+    list *pool = thread->connections_pool;
+    if (pool == NULL) pool = thread->connections_pool = listCreate();
+    if (pool == NULL) {
+        proxyLogWarn("Failed to allocate connections_pool for thread %d\n",
+            thread->thread_id);
+        return;
+    }
+    redisCluster *cluster = thread->cluster;
+    if (pool == NULL || cluster == NULL) return;
+    if (cluster->broken || cluster->is_updating || cluster->update_required)
+        return;
+    int maxtries = max * 2, tries = 0;
+    aeEventLoop *el = thread->loop;
+    proxyLogDebug("Populating connections pool for thread %d\n",
+        thread->thread_id);
+    while (listLength(pool) < (unsigned long) max) {
+        if (++tries >= maxtries) break;
+        rax *connections = raxNew();
+        if (connections == NULL) continue;
+        listIter li;
+        listNode *ln;
+        listRewind(cluster->nodes, &li);
+        while ((ln = listNext(&li))) {
+            clusterNode *node = ln->value;
+            if (node->is_replica || !node->name || !node->ip) continue;
+            redisClusterConnection *conn = createClusterConnection();
+            if (conn == NULL) break;
+            conn->context = redisConnectNonBlock(node->ip, node->port);
+            if (conn->context == NULL) continue;
+            if (!installIOHandler(el, conn->context->fd, AE_WRITABLE,
+                writeToClusterHandler, conn, 0)) {
+                proxyLogWarn("Populate connection pool: failed to install "
+                    "write handler for node %s:%d\n", node->ip, node->port);
+                freeClusterConnection(conn);
+                continue;
+            }
+            raxInsert(connections, (unsigned char*) node->name,
+                      strlen(node->name), conn, NULL);
+        }
+        if (raxSize(connections) == 0) {
+            raxFree(connections);
+            continue;
+        }
+        listAddNodeTail(pool, connections);
+    }
+    proxyLogDebug("Connections pool for thread %d has %d connections\n",
+        thread->thread_id, listLength(pool));
+}
+
 static proxyThread *createProxyThread(int index) {
     int is_first = (index == 0);
     proxyThread *thread = zcalloc(sizeof(*thread));
@@ -2116,6 +2184,7 @@ static proxyThread *createProxyThread(int index) {
     }
     thread->thread_id = index;
     thread->next_client_id = 0;
+    thread->connections_pool = listCreate();
     thread->cluster = createCluster(index);
     if (thread->cluster == NULL) {
         proxyLogErr("ERROR: failed to allocate cluster for thread: %d",
@@ -2135,7 +2204,9 @@ static proxyThread *createProxyThread(int index) {
         printClusterConfiguration(thread->cluster);
         int nodecount = thread->cluster->masters_count +
                         thread->cluster->replicas_count;
-        proxy.min_reserved_fds += (nodecount * config.num_threads);
+        int poolsize = config.connections_pool_size;
+        if (poolsize <= 0) poolsize = 1;
+        proxy.min_reserved_fds += (nodecount * config.num_threads * poolsize);
         adjustOpenFilesLimit();
     }
     thread->clients = listCreate();
@@ -2162,6 +2233,7 @@ static proxyThread *createProxyThread(int index) {
         goto fail;
     }
     thread->msgbuffer = sdsempty();
+    if (config.connections_pool_size > 0) populateConnectionsPool(thread);
     return thread;
 fail:
     if (thread) freeProxyThread(thread);
@@ -2250,9 +2322,9 @@ static void freeProxyThread(proxyThread *thread) {
         aeDeleteEventLoop(thread->loop);
         thread->loop = NULL;
     }
+    listIter li;
+    listNode *ln;
     if (thread->clients != NULL) {
-        listIter li;
-        listNode *ln;
         listRewind(thread->clients, &li);
         while ((ln = listNext(&li)) != NULL) {
             client *c = ln->value;
@@ -2261,8 +2333,6 @@ static void freeProxyThread(proxyThread *thread) {
         }
     }
     if (thread->unlinked_clients != NULL) {
-        listIter li;
-        listNode *ln;
         listRewind(thread->unlinked_clients, &li);
         while ((ln = listNext(&li)) != NULL) {
             client *c = ln->value;
@@ -2291,6 +2361,15 @@ static void freeProxyThread(proxyThread *thread) {
     if (thread->io[1]) close(thread->io[1]);
     if (thread->msgbuffer) sdsfree(thread->msgbuffer);
     if (thread->cluster != NULL) freeCluster(thread->cluster);
+    if (thread->connections_pool != NULL) {
+        listRewind(thread->connections_pool, &li);
+        while ((ln = listNext(&li)) != NULL) {
+            rax *connections = ln->value;
+            raxFreeWithCallback(connections,
+                (void (*)(void *)) freeClusterConnection);
+        }
+        listRelease(thread->connections_pool);
+    }
     proxy.threads[thread->thread_id] = NULL;
     zfree(thread);
 }
@@ -2370,6 +2449,17 @@ static int disableMultiplexingForClient(client *c) {
     proxyThread *thread = proxy.threads[c->thread_id];
     c->cluster = duplicateCluster(thread->cluster);
     if (c->cluster == NULL) return 0;
+    rax *pool_connections = NULL;
+    /* Try to fetch an already-connected redisClusterConnection from thread's
+     * connections pool, only if client does not require a different
+     * authentication */
+    if (!clientRequiresAuth(c) && thread->connections_pool != NULL) {
+        listNode *cln = listFirst(thread->connections_pool);
+        if (cln != NULL) {
+            pool_connections = cln->value;
+            listDelNode(thread->connections_pool, cln);
+        }
+    }
     c->cluster->owner = c;
     listIter li;
     listNode *ln;
@@ -2379,6 +2469,36 @@ static int disableMultiplexingForClient(client *c) {
         clusterNode *source = node->duplicated_from;
         assert(source != NULL);
         redisClusterConnection *conn = source->connection;
+        if (pool_connections != NULL) {
+            redisClusterConnection *poolconn = NULL;
+            /* Try to find and remove the connection associated to the name
+             * of the node. */
+            if (!raxRemove(pool_connections, (unsigned char*) source->name,
+                 sdslen(source->name), (void **) &poolconn)) poolconn = NULL;
+            if (poolconn != NULL) {
+                if (!poolconn->connected || !poolconn->context) {
+                    freeClusterConnection(poolconn);
+                    poolconn = NULL;
+                } else {
+                    int fd = poolconn->context->fd;
+                    aeDeleteFileEvent(thread->loop, fd, AE_WRITABLE);
+                    /*if (!installIOHandler()thread->loop, fd,) {
+                        freeClusterConnection(poolconn);
+                        poolconn = NULL;
+                    }*/
+                }
+            }
+            if (poolconn != NULL) {
+                /* Associate the connection taken from pool to the new node. */
+                proxyLogDebug("Assigning connection taken from pool to "
+                              "node %s:%d on private connection for client "
+                              "%d:%" PRId64"\n", node->ip, node->port,
+                              c->thread_id, c->id);
+                freeClusterConnection(node->connection);
+                node->connection = poolconn;
+                poolconn->node = node;
+            }
+        }
 
         /* Move requests from shared connection to private connection. */
         listIter rli;
@@ -2422,6 +2542,10 @@ static int disableMultiplexingForClient(client *c) {
                           c->thread_id, c->id, c->pending_multiplex_requests,
                           node->ip, node->port);
         }
+    }
+    if (pool_connections != NULL) {
+        raxFreeWithCallback(pool_connections,
+            (void (*)(void*)) freeClusterConnection);
     }
     return 1;
 }
@@ -2588,12 +2712,20 @@ static void writeToClusterHandler(aeEventLoop *el, int fd, void *privdata,
                                   int mask)
 {
     UNUSED(mask);
-    clusterNode *node = privdata;
-    redisContext *ctx = getClusterNodeContext(node);
+    redisClusterConnection *connection = privdata;
+    if (connection == NULL) return;
+    clusterNode *node = connection->node;
+    redisContext *ctx = connection->context;
     if (ctx == NULL) return;
-    clientRequest *req = getFirstRequestToSend(node, NULL);
-    if (req && req->owned_by_client &&
-        req->client->status == CLIENT_STATUS_UNLINKED) {
+    clientRequest *req = NULL;
+    proxyThread *thread = el->privdata;
+    int thread_id = thread->thread_id;
+    char *ip = ctx->tcp.host;
+    int port = ctx->tcp.port;
+    if (node != NULL) req = getFirstRequestToSend(node, NULL);
+    if (req != NULL && req->owned_by_client &&
+        req->client->status == CLIENT_STATUS_UNLINKED)
+    {
         /* If client disconnected and the request's target is on a private
          * connection owned bu the client itself, uninstall the write handler,
          * free the request and stop proceeding. */
@@ -2603,7 +2735,7 @@ static void writeToClusterHandler(aeEventLoop *el, int fd, void *privdata,
         freeRequest(req);
         return;
     }
-    if (node->connection->authenticating) {
+    if (connection->authenticating) {
         if (redisBufferWrite(ctx, NULL) == REDIS_ERR) {
             if (req != NULL) {
                 addReplyError(req->client, "AUTH failed", req->id);
@@ -2613,22 +2745,22 @@ static void writeToClusterHandler(aeEventLoop *el, int fd, void *privdata,
         return;
     }
     if (ctx->err) {
-        proxyLogErr("Failed to connect to node %s:%d", node->ip, node->port);
+        proxyLogErr("Failed to connect to node %s:%d", ip, port);
         if (req != NULL) {
             sds err = sdsnew(ERROR_NODE_DISCONNECTED);
-            err = sdscatprintf(err, "%s:%d", node->ip, node->port);
+            err = sdscatprintf(err, "%s:%d", ip, port);
             addReplyError(req->client, err, req->id);
             sdsfree(err);
             freeRequest(req);
         }
         return;
     }
-    if (!node->connection->has_read_handler) {
+    if (!connection->has_read_handler) {
         if (!installIOHandler(el, ctx->fd, AE_READABLE, readClusterReply,
-                              node, 0))
+                              connection, 0))
         {
             proxyLogErr("Failed to create read reply handler for node %s:%d",
-                          node->ip, node->port);
+                        ip, port);
             if (req != NULL) {
                 addReplyError(req->client, ERROR_CLUSTER_READ_FAIL,
                               req->id);
@@ -2636,23 +2768,23 @@ static void writeToClusterHandler(aeEventLoop *el, int fd, void *privdata,
             }
             return;
         } else  {
-            node->connection->has_read_handler = 1;
+            connection->has_read_handler = 1;
             proxyLogDebug("Read reply handler installed "
-                          "for node %s:%d", node->ip, node->port);
+                          "for node %s:%d", ip, port);
         }
     }
-    if (!isClusterNodeConnected(node)) {
-        if (node->cluster->owner) {
+    if (!connection->connected) {
+        if (node != NULL && node->cluster->owner) {
             client *c = node->cluster->owner;
             proxyLogDebug("Connected to node %s:%d (private connection "
                           "for client %d:%" PRId64,
-                          node->ip, node->port, c->thread_id, c->id);
+                          ip, port, thread_id, c->id);
         } else {
             proxyLogDebug("Connected to node %s:%d (thread %d)",
-                          node->ip, node->port, node->cluster->thread_id);
+                          ip, port, thread_id);
         }
     }
-    node->connection->connected = 1;
+    connection->connected = 1;
     /* Try to automatically authenticate if config.auth has been set.
      * It the connection is private (no multiplexing), check if the client
      * tried to authenticate with different credentials from the ones
@@ -2660,18 +2792,23 @@ static void writeToClusterHandler(aeEventLoop *el, int fd, void *privdata,
      * since the client will send its AUTH query by itself. */
     char *auth = config.auth, *auth_user = config.auth_user;
     client *c = NULL;
-    if ((c = node->cluster->owner) && (c->auth_user || c->auth_passw)) {
-        if ((c->auth_user && (!auth_user || strcmp(auth_user, c->auth_user))) ||
-            (auth_user && !c->auth_user))
-        {
+    if (node && (c = node->cluster->owner) && (c->auth_user || c->auth_passw)) {
+        if (clientRequiresAuth(c)) {
             auth_user = NULL;
             auth = NULL;
         }
     }
-    if (auth && !node->connection->authenticated &&
-        !node->connection->authenticating)
-    {
+    if (auth && !connection->authenticated && !connection->authenticating) {
         char *autherr = NULL;
+        clusterNode tmpnode = {0};
+        if (node == NULL) {
+            /* Connections in the thread's connection pool have no node,
+             * so create a temporary node to be used with clusterNodeAuth. */
+            tmpnode.connection = connection;
+            tmpnode.ip = ip;
+            tmpnode.port = port;
+            node = &tmpnode;
+        }
         if (!clusterNodeAuth(node, config.auth, config.auth_user, &autherr)) {
             if (autherr) {
                 proxyLogDebug("AUTH: %s", autherr);
@@ -2681,7 +2818,7 @@ static void writeToClusterHandler(aeEventLoop *el, int fd, void *privdata,
                 }
                 zfree(autherr);
             }
-            node->connection->authenticating = 1;
+            connection->authenticating = 1;
             return;
         }
     }
@@ -3798,7 +3935,7 @@ static int sendRequestToCluster(clientRequest *req, sds *errmsg)
         /* Install the write handler since the connection to the cluster node
          * is asynchronous. */
         if (!installIOHandler(el, ctx->fd, AE_WRITABLE, writeToClusterHandler,
-                              req->node, 0))
+                              req->node->connection, 0))
         {
             addReplyError(req->client, ERROR_CLUSTER_WRITE_FAIL, req->id);
             proxyLogErr("Failed to create write handler for request "
@@ -3820,7 +3957,7 @@ static int sendRequestToCluster(clientRequest *req, sds *errmsg)
     assert(conn != NULL);
     if (!conn->has_read_handler) {
         if (!installIOHandler(el, ctx->fd, AE_READABLE, readClusterReply,
-                              req->node, 0))
+                              conn, 0))
         {
             proxyLogErr("Failed to create read reply handler for node %s:%d",
                           req->node->ip, req->node->port);
@@ -4219,6 +4356,7 @@ static int addChildRequestReply(clientRequest *req, char *replybuf, int len) {
 static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
                                      int thread_id)
 {
+    if (node == NULL) return 0;
     char *errmsg = NULL;
     void *_reply = NULL;
     redisReply *reply = NULL;
@@ -4399,27 +4537,33 @@ static void readClusterReply(aeEventLoop *el, int fd,
     UNUSED(fd);
     proxyThread *thread = el->privdata;
     int thread_id = thread->thread_id;
-    clusterNode *node = privdata;
-    clientRequest *req = getFirstRequestPending(node, NULL);
-    redisContext *ctx = getClusterNodeContext(node);
-    list *queue = node->connection->requests_pending;
+    redisClusterConnection *connection = privdata;
+    if (connection == NULL) return;
+    redisContext *ctx = connection->context;
+    clusterNode *node = connection->node;
+    clientRequest *req = NULL;
+    list *queue = connection->requests_pending;
+    if (node != NULL)
+        req = getFirstRequestPending(node, NULL);
     sds errmsg = NULL;
+    char *ip = ctx->tcp.host;
+    int port = ctx->tcp.port;
     proxyLogDebug("Reading reply from %s:%d on thread %d...",
-                  node->ip, node->port, thread_id);
+                  ip, port, thread_id);
     int success = (redisBufferRead(ctx) == REDIS_OK), replies = 0,
                   node_disconnected = 0;
     if (!success) {
         proxyLogDebug("Failed redisBufferRead from %s:%d on thread %d",
-                      node->ip, node->port, thread_id);
+                      ip, port, thread_id);
         int err = ctx->err;
         node_disconnected = (err & (REDIS_ERR_IO | REDIS_ERR_EOF));
         if (node_disconnected) errmsg = sdsnew(ERROR_NODE_DISCONNECTED);
         else {
-            proxyLogErr("Error from node %s:%d: %s", node->ip, node->port,
+            proxyLogErr("Error from node %s:%d: %s", ip, port,
                         ctx->errstr);
             errmsg = sdsnew("Failed to read reply from ");
         }
-        errmsg = sdscatfmt(errmsg, "%s:%u", node->ip, node->port);
+        errmsg = sdscatfmt(errmsg, "%s:%u", ip, port);
         /* An error occurred, so dequeue the request. If the request is not
          * NULL, send an error reply to the client and then free the requests
          * itself. If the node is down (node_disconnected), call
@@ -4437,18 +4581,18 @@ static void readClusterReply(aeEventLoop *el, int fd,
             listNode *first = listFirst(queue);
             if (first) listDelNode(queue, first);
         }
-        if (node->connection->authenticating) {
-            node->connection->authenticating = 0;
-            node->connection->authenticated = 0;
+        if (connection->authenticating) {
+            connection->authenticating = 0;
+            connection->authenticated = 0;
         }
         if (node_disconnected) {
             proxyLogDebug("%s", errmsg);
-            clusterNodeDisconnect(node);
+            if (node) clusterNodeDisconnect(node);
         }
         sdsfree(errmsg);
         /* Exit, since an error occurred. */
         return;
-    } else if (node->connection->authenticating) {
+    } else if (connection->authenticating) {
         /* Read the reply for the AUTH command sent to the node */
         void *r = NULL;
         int ok = (__hiredisReadReplyFromBuffer(ctx->reader, &r) != REDIS_ERR);
@@ -4456,21 +4600,20 @@ static void readClusterReply(aeEventLoop *el, int fd,
         if (!ok) {
             proxyLogErr("Failed to get reply for the AUTH command to node "
                         "%s:%d. Error: '%s'",
-                        node->ip, node->port,
-                        ctx->err ? ctx->errstr : "");
-            node->connection->authenticating = 0;
-            node->connection->authenticated = 0;
-            clusterNodeDisconnect(node);
+                        ip, port, ctx->err ? ctx->errstr : "");
+            connection->authenticating = 0;
+            connection->authenticated = 0;
+            if (node) clusterNodeDisconnect(node);
         } else if (authreply) {
             if (authreply->type != REDIS_REPLY_ERROR) {
-                node->connection->authenticating = 0;
-                node->connection->authenticated = 1;
+                connection->authenticating = 0;
+                connection->authenticated = 1;
             } else {
-                node->connection->authenticating = 0;
-                node->connection->authenticated = 0;
+                connection->authenticating = 0;
+                connection->authenticated = 0;
             }
             consumeRedisReaderBuffer(ctx);
-            handleNextRequestsToCluster(node, NULL);
+            if (node) handleNextRequestsToCluster(node, NULL);
         }
         if (authreply) freeReplyObject(authreply);
         return;
@@ -4588,6 +4731,11 @@ int main(int argc, char **argv) {
             zfree(config.logfile);
             config.logfile = NULL;
         } else config.use_colors = 0;
+    }
+    if (config.connections_pool_size > MAX_POOL_SIZE) {
+        config.connections_pool_size = MAX_POOL_SIZE;
+        proxyLogWarn("Limiting connections-pool-size to max. %d\n",
+            MAX_POOL_SIZE);
     }
     char *config_cluster_addr = config.cluster_address;
     if (parsed_opts >= argc) {

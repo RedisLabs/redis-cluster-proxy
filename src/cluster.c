@@ -78,7 +78,7 @@ static unsigned int clusterKeyHashSlot(char *key, int keylen) {
 
 /* Cluster functions. */
 
-static redisClusterConnection *createClusterConnection(void) {
+redisClusterConnection *createClusterConnection(void) {
     redisClusterConnection *conn = zmalloc(sizeof(*conn));
     if (conn == NULL) return NULL;
     conn->context = NULL;
@@ -97,10 +97,11 @@ static redisClusterConnection *createClusterConnection(void) {
         zfree(conn);
         return NULL;
     }
+    conn->node = NULL;
     return conn;
 }
 
-static void freeClusterConnection(redisClusterConnection *conn) {
+void freeClusterConnection(redisClusterConnection *conn) {
     freeRequestList(conn->requests_pending);
     freeRequestList(conn->requests_to_send);
     redisContext *ctx = conn->context;
@@ -352,6 +353,7 @@ static clusterNode *createClusterNode(char *ip, int port, redisCluster *c) {
         freeClusterNode(node);
         return NULL;
     }
+    node->connection->node = node;
     return node;
 }
 

@@ -55,6 +55,7 @@ typedef struct proxyThread {
     list *clients;
     list *unlinked_clients;
     list *pending_messages;
+    list *connections_pool;
     uint64_t next_client_id;
     sds msgbuffer;
 } proxyThread;
