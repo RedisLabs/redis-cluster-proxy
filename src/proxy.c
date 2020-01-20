@@ -257,7 +257,17 @@ static sds proxySubCommandConfig(clientRequest *r, sds option, sds value,
     } else if (strcmp("connections-pool-size", option) == 0) {
         is_int = 1;
         max_int = MAX_POOL_SIZE;
-        opt = &(config.connections_pool_size);
+        opt = &(config.connections_pool.size);
+    } else if (strcmp("connections-pool-min-size", option) == 0) {
+        is_int = 1;
+        max_int = config.connections_pool.size;
+        opt = &(config.connections_pool.min_size);
+    } else if (strcmp("connections-pool-spawn-every", option) == 0) {
+        is_int = 1;
+        opt = &(config.connections_pool.spawn_every);
+    } else if (strcmp("connections-pool-spawn-rate", option) == 0) {
+        is_int = 1;
+        opt = &(config.connections_pool.spawn_rate);
     } else if (strcmp("tcpkeepalive", option) == 0) {
         is_int = 1;
         opt = &(config.tcpkeepalive);
@@ -1676,7 +1686,9 @@ void printHelp(void) {
     fprintf(stderr, mainHelpString,
         DEFAULT_PORT, DEFAULT_MAX_CLIENTS, DEFAULT_THREADS, MAX_THREADS,
         DEFAULT_TCP_KEEPALIVE, DEFAULT_TCP_BACKLOG, DEFAULT_PID_FILE,
-        DEFAULT_UNIXSOCKETPERM, DEFAULT_CONNECTIONS_POOL_SIZE);
+        DEFAULT_UNIXSOCKETPERM, DEFAULT_CONNECTIONS_POOL_SIZE, MAX_POOL_SIZE,
+        DEFAULT_CONNECTIONS_POOL_MINSIZE, DEFAULT_CONNECTIONS_POOL_INTERVAL,
+        DEFAULT_CONNECTIONS_POOL_SPAWNRATE);
 }
 
 int parseOptions(int argc, char **argv) {
@@ -1705,7 +1717,13 @@ int parseOptions(int argc, char **argv) {
         else if (!strcmp("--tcp-backlog", arg) && !lastarg)
             config.tcp_backlog = atoi(argv[++i]);
         else if (!strcmp("--connections-pool-size", arg) && !lastarg)
-            config.connections_pool_size = atoi(argv[++i]);
+            config.connections_pool.size = atoi(argv[++i]);
+        else if (!strcmp("--connections-pool-min-size", arg) && !lastarg)
+            config.connections_pool.min_size = atoi(argv[++i]);
+        else if (!strcmp("--connections-pool-spawn-every", arg) && !lastarg)
+            config.connections_pool.spawn_every = atoi(argv[++i]);
+        else if (!strcmp("--connections-pool-spawn-rate", arg) && !lastarg)
+            config.connections_pool.spawn_rate = atoi(argv[++i]);
         else if (!strcmp("--dump-queries", arg))
             config.dump_queries = 1;
         else if (!strcmp("--dump-buffer", arg))
@@ -2121,19 +2139,21 @@ static void printClusterConfiguration(redisCluster *cluster) {
         cluster->masters_count, cluster->replicas_count);
 }
 
-static void populateConnectionsPool(proxyThread *thread) {
-    int max = config.connections_pool_size;
+static int populateConnectionsPool(proxyThread *thread, int rate) {
+    int max = config.connections_pool.size;
     list *pool = thread->connections_pool;
     if (pool == NULL) pool = thread->connections_pool = listCreate();
     if (pool == NULL) {
         proxyLogWarn("Failed to allocate connections_pool for thread %d\n",
             thread->thread_id);
-        return;
+        return -1;
     }
     redisCluster *cluster = thread->cluster;
-    if (pool == NULL || cluster == NULL) return;
+    if (pool == NULL || cluster == NULL) return -1;
     if (cluster->broken || cluster->is_updating || cluster->update_required)
-        return;
+        return -1;
+    if (rate > 0) max = listLength(pool) + rate;
+    if (max > config.connections_pool.size) max = config.connections_pool.size;
     int maxtries = max * 2, tries = 0;
     aeEventLoop *el = thread->loop;
     proxyLogDebug("Populating connections pool for thread %d\n",
@@ -2170,6 +2190,25 @@ static void populateConnectionsPool(proxyThread *thread) {
     }
     proxyLogDebug("Connections pool for thread %d has %d connections\n",
         thread->thread_id, listLength(pool));
+    return (int) listLength(pool);
+}
+
+static int threadConnectionPoolCron(aeEventLoop *el, long long id, void *data) {
+    proxyThread *thread = el->privdata;
+    UNUSED(id);
+    UNUSED(data);
+    int every = config.connections_pool.spawn_every;
+    if (thread->connections_pool == NULL) goto finished;
+    int size = listLength(thread->connections_pool);
+    int rate = config.connections_pool.spawn_rate;
+    if (size < config.connections_pool.min_size)
+        size = populateConnectionsPool(thread, rate);
+    else goto finished;
+    if (size >= config.connections_pool.size || size < 0) goto finished;
+    return every;
+finished:
+    thread->is_spawning_connections = 0;
+    return AE_NOMORE;
 }
 
 static proxyThread *createProxyThread(int index) {
@@ -2185,6 +2224,7 @@ static proxyThread *createProxyThread(int index) {
     thread->thread_id = index;
     thread->next_client_id = 0;
     thread->connections_pool = listCreate();
+    thread->is_spawning_connections = 0;
     thread->cluster = createCluster(index);
     if (thread->cluster == NULL) {
         proxyLogErr("ERROR: failed to allocate cluster for thread: %d",
@@ -2233,7 +2273,7 @@ static proxyThread *createProxyThread(int index) {
         goto fail;
     }
     thread->msgbuffer = sdsempty();
-    if (config.connections_pool_size > 0) populateConnectionsPool(thread);
+    if (config.connections_pool.size > 0) populateConnectionsPool(thread, 0);
     return thread;
 fail:
     if (thread) freeProxyThread(thread);
@@ -2458,6 +2498,17 @@ static int disableMultiplexingForClient(client *c) {
         if (cln != NULL) {
             pool_connections = cln->value;
             listDelNode(thread->connections_pool, cln);
+            /* When the size of the thread's connections pool is below the
+             * configured minimum, create a time event to re-populate it. */
+            int min_size = config.connections_pool.min_size;
+            if (!thread->is_spawning_connections &&
+                (int) listLength(thread->connections_pool) < min_size)
+            {
+                thread->is_spawning_connections = 1;
+                aeCreateTimeEvent(thread->loop,
+                    (long long) config.connections_pool.spawn_every,
+                    threadConnectionPoolCron, NULL,NULL);
+            }
         }
     }
     c->cluster->owner = c;
@@ -2475,18 +2526,9 @@ static int disableMultiplexingForClient(client *c) {
              * of the node. */
             if (!raxRemove(pool_connections, (unsigned char*) source->name,
                  sdslen(source->name), (void **) &poolconn)) poolconn = NULL;
-            if (poolconn != NULL) {
-                if (!poolconn->connected || !poolconn->context) {
-                    freeClusterConnection(poolconn);
-                    poolconn = NULL;
-                } else {
-                    int fd = poolconn->context->fd;
-                    aeDeleteFileEvent(thread->loop, fd, AE_WRITABLE);
-                    /*if (!installIOHandler()thread->loop, fd,) {
-                        freeClusterConnection(poolconn);
-                        poolconn = NULL;
-                    }*/
-                }
+            if (poolconn && (!poolconn->connected || !poolconn->context)) {
+                freeClusterConnection(poolconn);
+                poolconn = NULL;
             }
             if (poolconn != NULL) {
                 /* Associate the connection taken from pool to the new node. */
@@ -2821,6 +2863,12 @@ static void writeToClusterHandler(aeEventLoop *el, int fd, void *privdata,
             connection->authenticating = 1;
             return;
         }
+    }
+    /* Delete the write handler from the event loop if it's a connection in
+     * the thread's connections pool (node == NULL). */
+    if (node == NULL) {
+        aeDeleteFileEvent(el, ctx->fd, AE_WRITABLE);
+        return;
     }
     if (req == NULL) return;
     /* Ensure that all there's no more pending_multiplex_requests left in case
@@ -4737,11 +4785,13 @@ int main(int argc, char **argv) {
             config.logfile = NULL;
         } else config.use_colors = 0;
     }
-    if (config.connections_pool_size > MAX_POOL_SIZE) {
-        config.connections_pool_size = MAX_POOL_SIZE;
+    if (config.connections_pool.size > MAX_POOL_SIZE) {
+        config.connections_pool.size = MAX_POOL_SIZE;
         proxyLogWarn("Limiting connections-pool-size to max. %d\n",
             MAX_POOL_SIZE);
     }
+    if (config.connections_pool.min_size > config.connections_pool.size)
+        config.connections_pool.min_size = config.connections_pool.size;
     char *config_cluster_addr = config.cluster_address;
     if (parsed_opts >= argc) {
         if (config_cluster_addr == NULL) {

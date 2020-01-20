@@ -31,6 +31,9 @@
 #define DEFAULT_TCP_KEEPALIVE               300
 #define DEFAULT_TCP_BACKLOG                 511
 #define DEFAULT_CONNECTIONS_POOL_SIZE       10
+#define DEFAULT_CONNECTIONS_POOL_MINSIZE    10
+#define DEFAULT_CONNECTIONS_POOL_INTERVAL   50
+#define DEFAULT_CONNECTIONS_POOL_SPAWNRATE  2
 
 typedef struct {
     int port;
@@ -58,7 +61,12 @@ typedef struct {
     char *bindaddr[BINDADDR_MAX];
     char *pidfile;
     char *logfile;
-    int connections_pool_size;
+    struct {
+        int size;
+        int min_size;
+        int spawn_every;
+        int spawn_rate;
+    } connections_pool;
 } redisClusterProxyConfig;
 
 extern redisClusterProxyConfig config;

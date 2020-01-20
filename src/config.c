@@ -45,7 +45,10 @@ void initConfig(void) {
     config.bindaddr_count = 0;
     config.pidfile = NULL;
     config.logfile = NULL;
-    config.connections_pool_size = DEFAULT_CONNECTIONS_POOL_SIZE;
+    config.connections_pool.size = DEFAULT_CONNECTIONS_POOL_SIZE;
+    config.connections_pool.min_size = DEFAULT_CONNECTIONS_POOL_MINSIZE;
+    config.connections_pool.spawn_every = DEFAULT_CONNECTIONS_POOL_INTERVAL;
+    config.connections_pool.spawn_rate = DEFAULT_CONNECTIONS_POOL_SPAWNRATE;
 }
 
 int parseOptionsFromFile(const char *filename) {
