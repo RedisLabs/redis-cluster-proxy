@@ -2823,6 +2823,11 @@ static void writeToClusterHandler(aeEventLoop *el, int fd, void *privdata,
         }
     }
     if (req == NULL) return;
+    /* Ensure that all there's no more pending_multiplex_requests left in case
+     * of private (non-multiplex) connection (c->cluster != NULL). */
+    c = req->client;
+    if (c->cluster != NULL && req->owned_by_client &&
+        c->pending_multiplex_requests > 0) return;
     int ok = writeToCluster(el, fd, req);
     /* Try to send next requests enqueued to the same cluster node if
      * the request failed or if the request have been completely written. */
