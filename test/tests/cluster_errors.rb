@@ -52,7 +52,7 @@ end
 update_key_mutex = Mutex.new
 update_moved_mutex = Mutex.new
 living_threads_mutex = Mutex.new
-$living_threads = 0
+$living_threads = -1
 
 def key_for_num(n)
     if (n % $hash_key_every) == 0
@@ -107,6 +107,7 @@ $datalen.each_with_index{|len, lidx|
                         living = $living_threads
                     }
                     break if living == 0
+                    next if living < 0
                     key_n = nil
                     update_key_mutex.synchronize{
                         key_n = $biggest_key
@@ -147,6 +148,7 @@ $datalen.each_with_index{|len, lidx|
                 end
             else
                 living_threads_mutex.synchronize{
+                    $living_threads = 0 if $living_threads < 0
                     $living_threads += 1
                 }
                 begin
