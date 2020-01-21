@@ -3988,6 +3988,8 @@ int main(int argc, char **argv) {
     proxyLogInfo("OS: %s %s %s\n",
         proxy_os.sysname, proxy_os.release, proxy_os.machine);
     proxyLogInfo("Log level: %s\n", redisProxyLogLevels[config.loglevel]);
+    if (config.disable_multiplexing == CFG_DISABLE_MULTIPLEXING_ALWAYS)
+        proxyLogInfo("Multiplexing disabled by default for every client.\n");
     if (!parseAddress(config.cluster_address, &config.entry_node_host,
                       &config.entry_node_port, &config.entry_node_socket)) {
         proxyLogErr("Invalid address '%s'\n", config.cluster_address);
