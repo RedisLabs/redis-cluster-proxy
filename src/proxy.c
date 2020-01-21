@@ -2201,9 +2201,8 @@ static int threadConnectionPoolCron(aeEventLoop *el, long long id, void *data) {
     if (thread->connections_pool == NULL) goto finished;
     int size = listLength(thread->connections_pool);
     int rate = config.connections_pool.spawn_rate;
-    if (size < config.connections_pool.min_size)
-        size = populateConnectionsPool(thread, rate);
-    else goto finished;
+    if (size >= config.connections_pool.size) goto finished;
+    size = populateConnectionsPool(thread, rate);
     if (size >= config.connections_pool.size || size < 0) goto finished;
     return every;
 finished:
@@ -2864,10 +2863,11 @@ static void writeToClusterHandler(aeEventLoop *el, int fd, void *privdata,
             return;
         }
     }
-    /* Delete the write handler from the event loop if it's a connection in
+    /* Delete the file handlers from the event loop if it's a connection in
      * the thread's connections pool (node == NULL). */
     if (node == NULL) {
-        aeDeleteFileEvent(el, ctx->fd, AE_WRITABLE);
+        aeDeleteFileEvent(el, ctx->fd, AE_WRITABLE | AE_READABLE);
+        connection->has_read_handler = 0;
         return;
     }
     if (req == NULL) return;
