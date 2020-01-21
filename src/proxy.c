@@ -1690,22 +1690,23 @@ static void initProxy(void) {
         fprintf(stderr, "FATAL: failed to allocate memory for threads.\n");
         exit(1);
     }
-    proxyLogInfo("Starting %d threads...\n", config.num_threads);
+    proxyLogHdr("Starting %d threads...\n", config.num_threads);
     for (i = 0; i < config.num_threads; i++) {
         proxyLogDebug("Creating thread %d...\n", i);
         proxy.threads[i] = NULL;
         proxy.threads[i] = createProxyThread(i);
         if (proxy.threads[i] == NULL) {
-            fprintf(stderr, "FATAL: failed to create thread %d.\n", i);
+            proxyLogErr("FATAL: failed to create thread %d.\n", i);
             exit(1);
         }
         pthread_t *t = &(proxy.threads[i]->thread);
         if (pthread_create(t, NULL, execProxyThread, proxy.threads[i])){
             fprintf(stderr, "FATAL: Failed to start thread %d.\n", i);
+            proxyLogErr("FATAL: Failed to start thread %d.\n", i);
             exit(1);
         }
     }
-    proxyLogInfo("All thread(s) started!\n");
+    proxyLogHdr("All thread(s) started!\n");
 }
 
 void closeListeningSockets() {
@@ -1872,8 +1873,8 @@ static void printClusterConfiguration(redisCluster *cluster) {
         if (n->is_replica) replica_count++;
         else master_count++;
     }
-    proxyLogInfo("Cluster has %d masters and %d replica(s)\n", master_count,
-                 replica_count);
+    proxyLogHdr("Cluster has %d masters and %d replica(s)\n", master_count,
+                replica_count);
 }
 
 static proxyThread *createProxyThread(int index) {
@@ -1895,7 +1896,7 @@ static proxyThread *createProxyThread(int index) {
         freeProxyThread(thread);
         return NULL;
     }
-    if (is_first) proxyLogInfo("Fetching cluster configuration...\n");
+    if (is_first) proxyLogHdr("Fetching cluster configuration...\n");
     if (!fetchClusterConfiguration(thread->cluster, config.entry_node_host,
                                    config.entry_node_port,
                                    config.entry_node_socket)) {
@@ -3979,17 +3980,18 @@ int main(int argc, char **argv) {
     char *versiontype = "";
     if (strcmp("999.999.999", REDIS_CLUSTER_PROXY_VERSION) == 0)
         versiontype = " (unstable)";
-    proxyLogInfo("Redis Cluster Proxy v%s%s\n",
+    proxyLogHdr("Redis Cluster Proxy v%s%s\n",
         REDIS_CLUSTER_PROXY_VERSION, versiontype);
-    proxyLogInfo("Commit: (%s/%d)\n", redisClusterProxyGitSHA1(),
+    proxyLogHdr("Commit: (%s/%d)\n", redisClusterProxyGitSHA1(),
         strtol(redisClusterProxyGitDirty(), NULL, 10) > 0);
-    proxyLogInfo("Cluster Address: %s\n", config.cluster_address);
-    proxyLogInfo("PID: %d\n", (int) getpid());
-    proxyLogInfo("OS: %s %s %s\n",
+    proxyLogHdr("Cluster Address: %s\n", config.cluster_address);
+    proxyLogHdr("PID: %d\n", (int) getpid());
+    proxyLogHdr("OS: %s %s %s\n",
         proxy_os.sysname, proxy_os.release, proxy_os.machine);
-    proxyLogInfo("Log level: %s\n", redisProxyLogLevels[config.loglevel]);
+    proxyLogHdr("Bits: %d\n", (sizeof(long) == 4 ? 32 : 64));
+    proxyLogHdr("Log level: %s\n", redisProxyLogLevels[config.loglevel]);
     if (config.disable_multiplexing == CFG_DISABLE_MULTIPLEXING_ALWAYS)
-        proxyLogInfo("Multiplexing disabled by default for every client.\n");
+        proxyLogHdr("Multiplexing disabled by default for every client.\n");
     if (!parseAddress(config.cluster_address, &config.entry_node_host,
                       &config.entry_node_port, &config.entry_node_socket)) {
         proxyLogErr("Invalid address '%s'\n", config.cluster_address);

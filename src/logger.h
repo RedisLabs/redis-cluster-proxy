@@ -38,6 +38,7 @@
 #define proxyLogSuccess(...) proxyLog(LOGLEVEL_SUCCESS, __VA_ARGS__)
 #define proxyLogWarn(...) proxyLog(LOGLEVEL_WARNING, __VA_ARGS__)
 #define proxyLogErr(...) proxyLog(LOGLEVEL_ERROR, __VA_ARGS__)
+#define proxyLogHdr(...) proxyLog(LOGLEVEL_ERROR, __VA_ARGS__)
 
 extern const char *redisProxyLogLevels[5];
 
