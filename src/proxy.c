@@ -2244,7 +2244,7 @@ static proxyThread *createProxyThread(int index) {
         printClusterConfiguration(thread->cluster);
         int nodecount = thread->cluster->masters_count +
                         thread->cluster->replicas_count;
-        int poolsize = config.connections_pool_size;
+        int poolsize = config.connections_pool.size;
         if (poolsize <= 0) poolsize = 1;
         proxy.min_reserved_fds += (nodecount * config.num_threads * poolsize);
         adjustOpenFilesLimit();
@@ -4824,6 +4824,16 @@ int main(int argc, char **argv) {
     proxyLogHdr("Log level: %s", redisProxyLogLevels[config.loglevel]);
     if (config.disable_multiplexing == CFG_DISABLE_MULTIPLEXING_ALWAYS)
         proxyLogHdr("Multiplexing disabled by default for every client.");
+    if (config.connections_pool.size == 0)
+        proxyLogHdr("Connections pool: disabled");
+    else {
+        proxyLogHdr("Connections pool size: %d (respawn %d every %dms "
+                    "if below %d)",
+                    config.connections_pool.size,
+                    config.connections_pool.spawn_rate,
+                    config.connections_pool.spawn_every,
+                    config.connections_pool.min_size);
+    }
     if (!parseAddress(config.cluster_address, &config.entry_node_host,
                       &config.entry_node_port, &config.entry_node_socket)) {
         proxyLogErr("Invalid address '%s'", config.cluster_address);
