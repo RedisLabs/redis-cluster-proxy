@@ -1,5 +1,6 @@
 # Copyright (C) 2019  Giuseppe Fabio Nicotra <artix2 at gmail dot com>
 
+release_hdr := $(shell sh -c './mkreleasehdr.sh')
 uname_S := $(shell sh -c 'uname -s 2>/dev/null || echo not')
 uname_M := $(shell sh -c 'uname -m 2>/dev/null || echo not')
 OPTIMIZATION?=-O2
@@ -131,7 +132,7 @@ QUIET_INSTALL = @printf '    %b %b\n' $(LINKCOLOR)INSTALL$(ENDCOLOR) $(BINCOLOR)
 endif
 
 REDIS_CLUSTER_PROXY_NAME=redis-cluster-proxy
-REDIS_CLUSTER_PROXY_OBJ=adlist.o ae.o anet.o cluster.o commands.o config.o crc16.o dict.o endianconv.o help.o logger.o protocol.o proxy.o rax.o reply_order.o siphash.o sds.o util.o zmalloc.o
+REDIS_CLUSTER_PROXY_OBJ=adlist.o ae.o anet.o cluster.o commands.o config.o crc16.o dict.o endianconv.o help.o logger.o protocol.o proxy.o rax.o release.o reply_order.o siphash.o sds.o util.o zmalloc.o
 
 Makefile.dep:
 	-$(REDIS_CLUSTER_PROXY_CC) -MM *.c > Makefile.dep 2> /dev/null || true

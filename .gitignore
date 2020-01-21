@@ -8,6 +8,9 @@ tmp/
 Makefile.dep
 test/tmp/
 commands_cur_version.txt
+release
+release.h
+src/release.h
 utils/commands.c
 utils/commands.h
 utils/COMMANDS.md

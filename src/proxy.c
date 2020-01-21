@@ -90,6 +90,7 @@ typedef struct proxyThread {
 
 redisClusterProxy proxy;
 redisClusterProxyConfig config;
+static struct utsname proxy_os;
 redisCommandDef *authCommandDef = NULL;
 redisCommandDef *scanCommandDef = NULL;
 
@@ -117,6 +118,8 @@ static int sendMessageToThread(proxyThread *thread, sds buf);
 static int installIOHandler(aeEventLoop *el, int fd, int mask, aeFileProc *proc,
                             void *data, int retried);
 static int disableMultiplexingForClient(client *c);
+char *redisClusterProxyGitSHA1(void);
+char *redisClusterProxyGitDirty(void);
 
 /* Hiredis helpers */
 
@@ -474,18 +477,13 @@ static sds genInfoString(sds section) {
     if (default_section || all_sections ||
         !strcasecmp("proxy", section))
     {
-        static int call_uname = 1;
-        static struct utsname name;
-        time_t uptime = time(NULL) - proxy.start_time;
-        if (call_uname) {
-            /* Uname can be slow and is always the same output. Cache it. */
-            uname(&name);
-            call_uname = 0;
-        }
         if (sections++) info = sdscat(info,"\r\n");
+        time_t uptime = time(NULL) - proxy.start_time;
         info = sdscatprintf(info,
                     "#Proxy\r\n"
                     "proxy_version:%s\r\n"
+                    "proxy_git_sha1:%s\r\n"
+                    "proxy_git_dirty:%i\r\n"
                     "os:%s %s %s\r\n"
                     "gcc_version:%d.%d.%d\r\n"
                     "process_id:%ld\r\n"
@@ -496,7 +494,9 @@ static sds genInfoString(sds section) {
                     "config_file:%s\r\n"
                     "acl_user:%s\r\n",
                     REDIS_CLUSTER_PROXY_VERSION,
-                    name.sysname, name.release, name.machine,
+                    redisClusterProxyGitSHA1(),
+                    strtol(redisClusterProxyGitDirty(), NULL, 10) > 0,
+                    proxy_os.sysname, proxy_os.release, proxy_os.machine,
 #ifdef __GNUC__
                     __GNUC__,__GNUC_MINOR__,__GNUC_PATCHLEVEL__,
 #else
@@ -3951,6 +3951,7 @@ void createPidFile(void) {
 int main(int argc, char **argv) {
     int exit_status = 0, i;
     signal(SIGPIPE, SIG_IGN);
+    uname(&proxy_os);
     initConfig();
     proxy.configfile = NULL;
     int parsed_opts = parseOptions(argc, argv);
@@ -3980,8 +3981,13 @@ int main(int argc, char **argv) {
         versiontype = " (unstable)";
     proxyLogInfo("Redis Cluster Proxy v%s%s\n",
         REDIS_CLUSTER_PROXY_VERSION, versiontype);
+    proxyLogInfo("Commit: (%s/%d)\n", redisClusterProxyGitSHA1(),
+        strtol(redisClusterProxyGitDirty(), NULL, 10) > 0);
     proxyLogInfo("Cluster Address: %s\n", config.cluster_address);
     proxyLogInfo("PID: %d\n", (int) getpid());
+    proxyLogInfo("OS: %s %s %s\n",
+        proxy_os.sysname, proxy_os.release, proxy_os.machine);
+    proxyLogInfo("Log level: %s\n", redisProxyLogLevels[config.loglevel]);
     if (!parseAddress(config.cluster_address, &config.entry_node_host,
                       &config.entry_node_port, &config.entry_node_socket)) {
         proxyLogErr("Invalid address '%s'\n", config.cluster_address);
