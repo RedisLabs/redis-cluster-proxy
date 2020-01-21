@@ -413,13 +413,10 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
                 tvp = NULL; /* wait forever */
             }
         }
-    /*DELME*/int tid = -1;
-    /*DELME*/if (eventLoop->privdata) {tid = (int) *((int *) eventLoop->privdata); if (tid == 1 && tvp) printf("aeProcessEvents >>> thread: %d, sec: %ld, usec: %d\n", tid, tvp->tv_sec, tvp->tv_usec); else if (tvp == NULL && tid == 1) printf("NO TVP!!!\n");}
 
         /* Call the multiplexing API, will return only on timeout or when
          * some event fires. */
         numevents = aeApiPoll(eventLoop, tvp);
-    /*DELME*/if (eventLoop->privdata) {tid = (int) *((int *) eventLoop->privdata); if (tid == 1) printf("aeProcessEvents >>> thread: %d, numevents: %d\n", tid, numevents);}
 
         /* After sleep callback. */
         if (eventLoop->aftersleep != NULL && flags & AE_CALL_AFTER_SLEEP)
@@ -429,7 +426,6 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
             aeFileEvent *fe = &eventLoop->events[eventLoop->fired[j].fd];
             int mask = eventLoop->fired[j].mask;
             int fd = eventLoop->fired[j].fd;
-        /*DELME*/if (tid == 1) printf("EVENT[%d] fd: %d\n", j, fd);
             int fired = 0; /* Number of events fired for current fd. */
 
             /* Normally we execute the readable event first, and the writable
