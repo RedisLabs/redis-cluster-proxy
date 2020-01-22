@@ -480,51 +480,78 @@ static sds genInfoString(sds section) {
         if (sections++) info = sdscat(info,"\r\n");
         time_t uptime = time(NULL) - proxy.start_time;
         info = sdscatprintf(info,
-                    "#Proxy\r\n"
-                    "proxy_version:%s\r\n"
-                    "proxy_git_sha1:%s\r\n"
-                    "proxy_git_dirty:%i\r\n"
-                    "os:%s %s %s\r\n"
-                    "gcc_version:%d.%d.%d\r\n"
-                    "process_id:%ld\r\n"
-                    "threads:%d\n"
-                    "tcp_port:%d\r\n"
-                    "uptime_in_seconds:%jd\r\n"
-                    "uptime_in_days:%jd\r\n"
-                    "config_file:%s\r\n"
-                    "acl_user:%s\r\n",
-                    REDIS_CLUSTER_PROXY_VERSION,
-                    redisClusterProxyGitSHA1(),
-                    strtol(redisClusterProxyGitDirty(), NULL, 10) > 0,
-                    proxy_os.sysname, proxy_os.release, proxy_os.machine,
+            "# Proxy\r\n"
+            "proxy_version:%s\r\n"
+            "proxy_git_sha1:%s\r\n"
+            "proxy_git_dirty:%i\r\n"
+            "os:%s %s %s\r\n"
+            "arch_bits:%d\r\n"
+            "multiplexing_api:%s\r\n"
+            "gcc_version:%d.%d.%d\r\n"
+            "process_id:%ld\r\n"
+            "threads:%d\n"
+            "tcp_port:%d\r\n"
+            "uptime_in_seconds:%jd\r\n"
+            "uptime_in_days:%jd\r\n"
+            "config_file:%s\r\n"
+            "acl_user:%s\r\n",
+            REDIS_CLUSTER_PROXY_VERSION,
+            redisClusterProxyGitSHA1(),
+            strtol(redisClusterProxyGitDirty(), NULL, 10) > 0,
+            proxy_os.sysname, proxy_os.release, proxy_os.machine,
+            ((sizeof(long) == 8) ? 64 : 32),
+            aeGetApiName(),
 #ifdef __GNUC__
-                    __GNUC__,__GNUC_MINOR__,__GNUC_PATCHLEVEL__,
+            __GNUC__,__GNUC_MINOR__,__GNUC_PATCHLEVEL__,
 #else
-                    0,0,0,
+            0,0,0,
 #endif
-                    (long) getpid(),
-                    config.num_threads,
-                    config.port,
-                    (intmax_t)uptime,
-                    (intmax_t)(uptime/(3600*24)),
-                    (proxy.configfile ? proxy.configfile : ""),
-                    (config.auth_user ? config.auth_user : "default")
+            (long) getpid(),
+            config.num_threads,
+            config.port,
+            (intmax_t)uptime,
+            (intmax_t)(uptime/(3600*24)),
+            (proxy.configfile ? proxy.configfile : ""),
+            (config.auth_user ? config.auth_user : "default")
         );
         if (proxy.unixsocket_fd != -1) {
             info = sdscatprintf(info,
-                     "unix_socket:%s\r\n"
-                     "unix_socket_permissions:%o\r\n",
-                     config.unixsocket,
-                     config.unixsocketperm
+                 "unix_socket:%s\r\n"
+                 "unix_socket_permissions:%o\r\n",
+                 config.unixsocket,
+                 config.unixsocketperm
             );
         }
+    }
+    if (default_section || all_sections ||
+        !strcasecmp("memory", section))
+    {
+        char hmem[64];
+        char total_system_hmem[64];
+        size_t zmalloc_used = zmalloc_used_memory();
+        size_t total_system_mem = proxy.system_memory_size;
+
+        bytesToHuman(hmem,zmalloc_used);
+        bytesToHuman(total_system_hmem,total_system_mem);
+        if (sections++) info = sdscat(info,"\r\n");
+        info = sdscatprintf(info,
+            "# Memory\r\n"
+            "used_memory:%zu\r\n"
+            "used_memory_human:%s\r\n"
+            "total_system_memory:%lu\r\n"
+            "total_system_memory_human:%s\r\n",
+            zmalloc_used,
+            hmem,
+            (unsigned long)total_system_mem,
+            total_system_hmem
+        );
     }
     if (default_section || all_sections ||
         !strcasecmp("clients", section))
     {
         if (sections++) info = sdscat(info,"\r\n");
         info = sdscatprintf(info,
-                     "#Clients\r\n"
+                     "# Clients\r\n"
                      "connected_clients:%" PRId64 "\r\n",
                      proxy.numclients
         );
@@ -534,9 +561,9 @@ static sds genInfoString(sds section) {
     {
         if (sections++) info = sdscat(info,"\r\n");
         info = sdscatprintf(info,
-                     "#Cluster\r\n"
+                     "# Cluster\r\n"
                      "address:%s\r\n"
-                     "entry_node:%s:%d",
+                     "entry_node:%s:%d\r\n",
                      (config.cluster_address ? config.cluster_address : ""),
                      (config.entry_node_host ? config.entry_node_host : ""),
                      config.entry_node_port
@@ -1670,6 +1697,7 @@ static void initProxy(void) {
     int i;
     proxy.neterr[0] = '\0';
     proxy.numclients = 0;
+    proxy.system_memory_size = zmalloc_get_memory_size();
     proxy.min_reserved_fds = 10 + (config.num_threads * 3) +
                              (proxy.fd_count * 2);
     adjustOpenFilesLimit();

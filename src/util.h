@@ -21,5 +21,6 @@
 #include <hiredis.h>
 
 void consumeRedisReaderBuffer(redisContext *ctx);
+void bytesToHuman(char *s, unsigned long long n);
 
 #endif /* __REDIS_CLUSTER_PROXY_UTIL_H__ */

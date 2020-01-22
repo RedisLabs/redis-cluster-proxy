@@ -87,6 +87,7 @@ typedef struct {
     int min_reserved_fds;
     time_t start_time;
     sds configfile;
+    size_t system_memory_size;
 } redisClusterProxy;
 
 typedef struct client {

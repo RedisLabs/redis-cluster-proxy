@@ -24,3 +24,32 @@ void consumeRedisReaderBuffer(redisContext *ctx) {
     ctx->reader->pos = 0;
     ctx->reader->len = sdslen(ctx->reader->buf);
 }
+
+/* Convert an amount of bytes into a human readable string in the form
+ * of 100B, 2G, 100M, 4K, and so forth. */
+void bytesToHuman(char *s, unsigned long long n) {
+    double d;
+
+    if (n < 1024) {
+        /* Bytes */
+        sprintf(s,"%lluB",n);
+    } else if (n < (1024*1024)) {
+        d = (double)n/(1024);
+        sprintf(s,"%.2fK",d);
+    } else if (n < (1024LL*1024*1024)) {
+        d = (double)n/(1024*1024);
+        sprintf(s,"%.2fM",d);
+    } else if (n < (1024LL*1024*1024*1024)) {
+        d = (double)n/(1024LL*1024*1024);
+        sprintf(s,"%.2fG",d);
+    } else if (n < (1024LL*1024*1024*1024*1024)) {
+        d = (double)n/(1024LL*1024*1024*1024);
+        sprintf(s,"%.2fT",d);
+    } else if (n < (1024LL*1024*1024*1024*1024*1024)) {
+        d = (double)n/(1024LL*1024*1024*1024*1024);
+        sprintf(s,"%.2fP",d);
+    } else {
+        /* Let's hope we never need this */
+        sprintf(s,"%lluB",n);
+    }
+}
