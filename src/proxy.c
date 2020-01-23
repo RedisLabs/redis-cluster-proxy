@@ -2183,6 +2183,7 @@ static int disableMultiplexingForClient(client *c) {
 
 static void unlinkClient(client *c) {
     if (c->status == CLIENT_STATUS_UNLINKED) return;
+    proxyLogDebug("Unlink client %d:%" PRId64 "\n", c->thread_id, c->id);
     if (c->fd) {
         aeEventLoop *el = getClientLoop(c);
         if (el != NULL) {
@@ -2648,6 +2649,21 @@ static int parseRequest(clientRequest *req) {
     int buflen = sdslen(req->buffer);
     char *p = req->buffer + req->query_offset, *nl = NULL;
     sds line = NULL;
+    /* Ensure that parsing always start from a new line. */
+    if (p > req->buffer) {
+        if (*p == '\r') {
+            p++;
+            req->query_offset++;
+        }
+        if (req->query_offset < buflen && *p == '\n' && *(p - 1) == '\r') {
+            p++;
+            req->query_offset++;
+        }
+        if (req->query_offset >= buflen) {
+            status = PARSE_STATUS_INCOMPLETE;
+            goto cleanup;
+        }
+    }
     /* New request, so request type must be determinded. */
     if (req->is_multibulk == REQ_STATUS_UNKNOWN) {
         if (*p == '*') req->is_multibulk = 1;
@@ -2656,9 +2672,10 @@ static int parseRequest(clientRequest *req) {
     if (req->is_multibulk) {
         while (req->query_offset < buflen) {
             if (*p == '*') {
-                if (req->num_commands > 0) {/*TODO: make it configuable */
-                    /* Multiple commands, split into multiple requests */
-                    proxyLogDebug("Multiple commands %d, "
+                if (req->num_commands > 0) {
+                    /* Multiple commands (queries) from a pipelined request.
+                     * Split current requestinto multiple requests. */
+                    proxyLogDebug("Multiple queries (pipelined) %d, "
                                   "splitting request " REQID_PRINTF_FMT "...\n",
                                   req->num_commands,
                                   REQID_PRINTF_ARG(req));
@@ -2667,18 +2684,22 @@ static int parseRequest(clientRequest *req) {
                     req->query_offset = p - req->buffer;
                     sds newbuf = sdsnewlen(p, buflen - req->query_offset);
                     sds reqbuf = sdsnewlen(req->buffer, req->query_offset);
-                    if (req->buffer) sdsfree(req->buffer);
+                    sdsfree(req->buffer);
                     req->buffer = reqbuf;
                     req->num_commands = 1;
                     req->pending_bulks = 0;
+                    /* Create a new request with the remaining buffer */
                     clientRequest *new = createRequest(c);
                     new->buffer = sdscat(new->buffer, newbuf);
                     sdsfree(newbuf);
+                    /* Set the new request as current in order to accept
+                     * new bytes read from client. */
                     c->current_request = new;
                     buflen = req->query_offset;
                     listAddNodeTail(c->requests_to_process, new);
                     break;
                 } else {
+                    /* New query */
                     req->num_commands++;
                     req->query_offset++;
                     p++;
@@ -2691,6 +2712,8 @@ static int parseRequest(clientRequest *req) {
                 goto cleanup;
             }
             long long lc = req->pending_bulks;
+            /* If pending bulks count is still unkownn, try to determine
+             * it by reading the number after the '*' char. */
             if (lc == REQ_STATUS_UNKNOWN) {
                 nl = strchr(p, '\r');
                 if (nl == NULL) {
@@ -2710,19 +2733,25 @@ static int parseRequest(clientRequest *req) {
                 }
                 p = req->buffer + req->query_offset;
             }
+            /* Try to parse bulks */
             for (i = 0; i < lc; i++) {
+                if (req->query_offset >= buflen) {
+                    status = PARSE_STATUS_INCOMPLETE;
+                    goto cleanup;
+                }
                 int arglen = req->current_bulk_length;
+                /* Try to determine the bulk length by parsing the number
+                 * after the '$' char. */
                 if (arglen == REQ_STATUS_UNKNOWN) {
                     if (*p != '$') {
-                        proxyLogErr("Failed to parse multibulk query: '$' not "
-                                    "found!\n");
+                        proxyLogErr("Failed to parse multibulk query for "
+                                    "request " REQID_PRINTF_FMT  ": '$' not "
+                                    "found!\n", REQID_PRINTF_ARG(req));
                         status = PARSE_STATUS_ERROR;
                         goto cleanup;
                     }
-                    if ((req->query_offset + 1) >= buflen) {
-                        status = PARSE_STATUS_INCOMPLETE;
-                        goto cleanup;
-                    }
+                    /* Search the '\r' at the end of the bulk line and
+                     * advance the pointer from 1 position from '$'. */
                     nl = strchr(++p, '\r');
                     if (nl == NULL) {
                         status = PARSE_STATUS_INCOMPLETE;
@@ -2734,6 +2763,9 @@ static int parseRequest(clientRequest *req) {
                     arglen = atoi(line);
                     if (arglen < 0) arglen = 0;
                     req->current_bulk_length = arglen;
+                    /* Increment the query offset by the bulk length + 3,
+                     * since it still was pointing to '$', so '$' + '\r\n'
+                     * is three bytes. */
                     req->query_offset += (len + 3);
                     if (req->query_offset >= buflen) {
                         status = PARSE_STATUS_INCOMPLETE;
@@ -2741,9 +2773,13 @@ static int parseRequest(clientRequest *req) {
                     }
                     p = req->buffer + req->query_offset;
                 }
+                /* Try to parse the argument. */
                 if (arglen >= 0) {
                     int newargc = req->argc + 1;
                     if (!requestMakeRoomForArgs(req, newargc)) {
+                        proxyLogDebug("Failed to allocate args for "
+                            "request " REQID_PRINTF_FMT "\n",
+                            REQID_PRINTF_ARG(req));
                         status = PARSE_STATUS_ERROR;
                         goto cleanup;
                     }
@@ -2753,11 +2789,23 @@ static int parseRequest(clientRequest *req) {
                         goto cleanup;
                     }
                     int endarg = req->query_offset + arglen;
-                    if (endarg >= buflen || *(req->buffer+endarg) != '\r') {
+                    if (endarg >= buflen) {
                         status = PARSE_STATUS_INCOMPLETE;
+                        goto cleanup;
+                    } else if (*(req->buffer+endarg) != '\r') {
+                        /* The first byte after the argument of the declared
+                         * length must be '\r', otherwise the query format
+                         * is invalid. */
+                        proxyLogDebug("Failed to parse " REQID_PRINTF_FMT
+                            ", expected '\\r' at the end of the argument of "
+                            "declared length %d at offset %d\n",
+                            REQID_PRINTF_ARG(req),
+                            arglen, req->query_offset);
+                        status = PARSE_STATUS_ERROR;
                         goto cleanup;
                     }
                     int idx = req->argc++;
+                    /* Set the argument offset and length into the request. */
                     req->offsets[idx] = p - req->buffer;
                     req->lengths[idx] = arglen;
                     if (config.dump_queries) {
@@ -2771,6 +2819,7 @@ static int parseRequest(clientRequest *req) {
                     req->current_bulk_length = REQ_STATUS_UNKNOWN;
                     req->query_offset = endarg + 2;
                     p = req->buffer + req->query_offset;
+                    if (req->pending_bulks == 0) break;
                 }
             }
         }
@@ -2806,11 +2855,20 @@ cleanup:
     if (req->query_offset > buflen) req->query_offset = buflen;
     int remaining = buflen - req->query_offset;
     if (status == PARSE_STATUS_INCOMPLETE) {
-        if (req->is_multibulk && req->pending_bulks <= 0 && remaining == 0)
+        /* If a multibulk query has no more pending bulks and no more bytes to
+         * parse, set the status to PARSE_STATUS_OK since the parsing is
+         * complete. Also ensure that the last byte is '\n', in order to
+         * consume the whole query's buffer. */
+        if (req->is_multibulk && req->pending_bulks == 0 && remaining == 0 &&
+            req->buffer[buflen - 1] == '\n')
             status = PARSE_STATUS_OK;
     }
     req->parsing_status = status;
     if (line != NULL) sdsfree(line);
+    if (status == PARSE_STATUS_ERROR) {
+        proxyLogDebug("Failed to parse request " REQID_PRINTF_FMT "\n",
+                      REQID_PRINTF_ARG(req));
+    }
     return status;
 }
 
@@ -3430,6 +3488,8 @@ int processRequest(clientRequest *req, int *parsing_status) {
         if (status == PARSE_STATUS_ERROR) return 0;
         else if (status == PARSE_STATUS_INCOMPLETE) return 1;
         req->parsed = 1;
+        proxyLogDebug("Parsing complete for request " REQID_PRINTF_FMT "\n",
+            REQID_PRINTF_ARG(req));
     }
     client *c = req->client;
     if (req == c->current_request) c->current_request = NULL;
@@ -3569,6 +3629,9 @@ void readQuery(aeEventLoop *el, int fd, void *privdata, int mask){
         return;
     }
     sdsIncrLen(req->buffer, nread);
+    proxyLogDebug("Read %d bytes into req. " REQID_PRINTF_FMT ", buffer is "
+                  "%d bytes\n", nread, REQID_PRINTF_ARG(req),
+                  sdslen(req->buffer));
     /*TODO: support max query buffer length */
     int parsing_status = PARSE_STATUS_OK;
     if (!processRequest(req, &parsing_status)) freeClient(c);
@@ -3695,7 +3758,8 @@ static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
         int do_break = 0, is_cluster_err = 0;
         redisCluster *cluster = NULL;
         if (!ok) {
-            proxyLogErr("Error: %s\n", ctx->errstr);
+            proxyLogErr("Error reading from node %s:%d on thread %d: %s\n",
+                        node->ip, node->port, thread_id, ctx->errstr);
             errmsg = ERROR_CLUSTER_READ_FAIL;
         }
         reply = (redisReply *) _reply;
