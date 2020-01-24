@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <time.h>
+#include <sys/time.h>
 
 #include "logger.h"
 #include "config.h"
@@ -51,11 +52,14 @@ void proxyLog(int level, const char* format, ...) {
         fprintf(out, "\033[%dm", color);
     }
     time_t t;
-    char ts[26];
+    char ts[64];
     struct tm* tm_info;
+    struct timeval tv;
+    gettimeofday(&tv,NULL);
     time(&t);
     tm_info = localtime(&t);
-    strftime(ts, 26, "%Y-%m-%d %H:%M:%S", tm_info);
+    int offset = strftime(ts, 26, "%Y-%m-%d %H:%M:%S.", tm_info);
+    snprintf(ts + offset, sizeof(ts) - offset, "%03d", (int)tv.tv_usec/1000);
     fprintf(out, "[%s] ", ts);
     va_list ap;
     va_start(ap, format);
