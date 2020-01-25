@@ -71,6 +71,8 @@
 #define REQID_PRINTF_FMT "%d:%" PRId64 ":%" PRId64
 #define REQID_PRINTF_ARG(r) r->client->thread_id, r->client->id, r->id
 #define getClientPeerIP(c) (c->ip ? c->ip : config.unixsocket)
+#define strRepr(s) (sdscatrepr(sdsempty(), s, strlen(s)))
+#define sdsRepr(s) (sdscatrepr(sdsempty(), s, sdslen(s)))
 #define PROXY_CMD_LOG_MAX_LEN   4096
 
 typedef struct proxyThread {
@@ -1021,6 +1023,7 @@ int mergeReplies(void *_reply, void *_req, char *buf, int len) {
     sds reply = NULL;
     sds merged_replies = sdsempty();
     char *err = NULL;
+    sds replyrepr = NULL;
     while (raxNext(&iter)) {
         sds child_reply = (sds) iter.data;
         if (child_reply == NULL) continue;
@@ -1031,6 +1034,8 @@ int mergeReplies(void *_reply, void *_req, char *buf, int len) {
             raxStop(&iter);
             return 1;
         }
+        if (config.dump_buffer)
+            replyrepr = sdsRepr(child_reply);
         char *p = strchr(child_reply, '*'), *endl = NULL, *strptr = NULL;
         ok = (p != NULL);
         if (ok) endl = strchr(++p, '\r');
@@ -1038,7 +1043,7 @@ int mergeReplies(void *_reply, void *_req, char *buf, int len) {
         if (!ok) {
             if (config.dump_buffer) {
                 proxyLogDebug("Child reply:\n%s\np:\n%s\nendl:\n%s\n",
-                              child_reply, p, endl);
+                              replyrepr, p, endl);
             }
             err = ERROR_MERGE_REPLY_INVALID_FMT;
             goto final;
@@ -1050,7 +1055,7 @@ int mergeReplies(void *_reply, void *_req, char *buf, int len) {
         if (!ok) {
             if (config.dump_buffer) {
                 proxyLogDebug("Invalid count!\nChild reply:\n%s\np:\n%s\n"
-                              "endl:\n%s\n", child_reply, p, endl);
+                              "endl:\n%s\n", replyrepr, p, endl);
             }
             err = ERROR_MERGE_REPLY_INVALID_FMT;
             goto final;
@@ -1061,6 +1066,7 @@ int mergeReplies(void *_reply, void *_req, char *buf, int len) {
     }
 final:
     raxStop(&iter);
+    if (replyrepr != NULL) sdsfree(replyrepr);
     if (err != NULL) {
         addReplyError(req->client, err, req->id);
         proxyLogDebug("%s\n", err);
@@ -2642,11 +2648,13 @@ static int parseRequest(clientRequest *req) {
     proxyLogDebug("Parsing request " REQID_PRINTF_FMT ", status: %d\n",
                   REQID_PRINTF_ARG(req), status);
     if (status != PARSE_STATUS_INCOMPLETE) return status;
-    if (config.dump_buffer) {
-        proxyLogDebug("Request " REQID_PRINTF_FMT " buffer:\n%s\n",
-                      REQID_PRINTF_ARG(req), req->buffer);
-    }
     int buflen = sdslen(req->buffer);
+    if (config.dump_buffer) {
+        sds repr = sdscatrepr(sdsempty(), req->buffer, buflen);
+        proxyLogDebug("Request " REQID_PRINTF_FMT " buffer:\n%s\n",
+                      REQID_PRINTF_ARG(req), repr);
+        sdsfree(repr);
+    }
     char *p = req->buffer + req->query_offset, *nl = NULL;
     sds line = NULL;
     /* Ensure that parsing always start from a new line. */
@@ -3031,12 +3039,11 @@ static int splitMultiSlotRequest(clientRequest *req, int idx) {
                   " to parent " REQID_PRINTF_FMT "\n",
                   REQID_PRINTF_ARG(new), REQID_PRINTF_ARG(parent));
     if (config.dump_buffer) {
+        sds bufrepr = sdsRepr(req->buffer);
         proxyLogDebug("Req. " REQID_PRINTF_FMT " buffer:\n%s\n",
                       REQID_PRINTF_ARG(req),
-                      req->buffer);
-        proxyLogDebug("Req. " REQID_PRINTF_FMT " buffer:\n%s\n",
-                      REQID_PRINTF_ARG(new),
-                      new->buffer);
+                      bufrepr);
+        sdsfree(bufrepr);
     }
 cleanup:
     if (!success) {
@@ -3831,7 +3838,7 @@ static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
             size_t len = ctx->reader->pos;
             if (len > ctx->reader->len) len = ctx->reader->len;
             if (config.dump_buffer) {
-                sds rstr = sdsnewlen(obuf, len);
+                sds rstr = sdscatrepr(sdsempty(), obuf, len);
                 proxyLogDebug("\nReply for request " REQID_PRINTF_FMT
                              ":\n%s\n", REQID_PRINTF_ARG(req), rstr);
                 sdsfree(rstr);
