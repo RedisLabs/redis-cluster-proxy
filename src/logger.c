@@ -22,6 +22,7 @@
 
 #include "logger.h"
 #include "config.h"
+#include "sds.h"
 
 const char *redisProxyLogLevels[5] = {
     "debug",
@@ -39,7 +40,16 @@ void proxyLog(int level, const char* format, ...) {
         if (out == NULL) return;
     }
     if (out == NULL) out = stdout;
-    fflush(out);
+    time_t t;
+    char smallbuf[256];
+    char *buf = smallbuf;
+    struct tm* tm_info;
+    struct timeval tv;
+    int offset = 0, before_format_offset;
+    size_t maxlen = sizeof(smallbuf) - 1;
+    gettimeofday(&tv,NULL);
+    time(&t);
+    tm_info = localtime(&t);
     if (config.use_colors) {
         int color = LOG_COLOR_DEFAULT;
         switch (level) {
@@ -49,22 +59,30 @@ void proxyLog(int level, const char* format, ...) {
         case LOGLEVEL_WARNING: color = LOG_COLOR_YELLOW; break;
         case LOGLEVEL_ERROR: color = LOG_COLOR_RED; break;
         }
-        fprintf(out, "\033[%dm", color);
+        offset = sprintf(buf, "\033[%dm", color);
+        maxlen -= 4; /* Keep enough space for final "\33[0m"  */
     }
-    time_t t;
-    char ts[64];
-    struct tm* tm_info;
-    struct timeval tv;
-    gettimeofday(&tv,NULL);
-    time(&t);
-    tm_info = localtime(&t);
-    int offset = strftime(ts, 26, "%Y-%m-%d %H:%M:%S.", tm_info);
-    snprintf(ts + offset, sizeof(ts) - offset, "%03d", (int)tv.tv_usec/1000);
-    fprintf(out, "[%s] ", ts);
+    offset += strftime(buf + offset, maxlen - offset,
+                       "[%Y-%m-%d %H:%M:%S.", tm_info);
+    offset += snprintf(buf + offset, maxlen - offset, "%03d] ",
+                       (int) tv.tv_usec/1000);
+    before_format_offset = offset;
     va_list ap;
     va_start(ap, format);
-    vfprintf(out, format, ap);
+    offset += vsnprintf(buf + offset, maxlen - offset, format, ap);
     va_end(ap);
-    if (config.use_colors) fprintf(out, "\33[0m");
+    if (level == LOGLEVEL_DEBUG && (size_t) offset >= maxlen) {
+        offset = before_format_offset;
+        buf = sdsnewlen(buf, offset);
+        va_start(ap, format);
+        buf = sdscatvprintf(buf, format, ap);
+        va_end(ap);
+        if (config.use_colors) buf = sdscat(buf, "\33[0m");
+    } else if (config.use_colors) {
+        snprintf(buf + offset, maxlen - offset, "\33[0m");
+    }
+    fflush(out);
+    fprintf(out, "%s", buf);
     if (config.logfile != NULL) fclose(out);
+    if (buf != smallbuf) sdsfree(buf);
 }
