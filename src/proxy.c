@@ -43,6 +43,7 @@
 #define PARSE_STATUS_ERROR                  0
 #define PARSE_STATUS_OK                     1
 #define UNDEFINED_SLOT                      -1
+#define PROTO_INLINE_MAX_SIZE               (1024*64)
 
 #define MAX_ACCEPTS                         1000
 #define NET_IP_STR_LEN                      46
@@ -52,6 +53,8 @@
 
 #define QUEUE_TYPE_SENDING                  1
 #define QUEUE_TYPE_PENDING                  2
+
+#define CLIENT_CLOSE_AFTER_REPLY            (1 << 1)
 
 #define UNUSED(V) ((void) V)
 
@@ -2083,6 +2086,7 @@ static client *createClient(int fd, char *ip) {
         return NULL;
     }
     c->status = CLIENT_STATUS_NONE;
+    c->flags = 0;
     c->fd = fd;
     c->ip = ip ? sdsnew(ip) : NULL;
     c->obuf = sdsempty();
@@ -2318,6 +2322,7 @@ static int writeToClient(client *c) {
             aeDeleteFileEvent(el, c->fd, AE_WRITABLE);
             c->has_write_handler = 0;
         }
+        if (c->flags & CLIENT_CLOSE_AFTER_REPLY) unlinkClient(c);
     }
     return success;
 }
@@ -2643,7 +2648,7 @@ static int requestMakeRoomForArgs(clientRequest *req, int argc) {
     return 1;
 }
 
-static int parseRequest(clientRequest *req) {
+static int parseRequest(clientRequest *req, sds *err) {
     int status = req->parsing_status, lf_len = 2, len, i;
     proxyLogDebug("Parsing request " REQID_PRINTF_FMT ", status: %d\n",
                   REQID_PRINTF_ARG(req), status);
@@ -2725,14 +2730,28 @@ static int parseRequest(clientRequest *req) {
             if (lc == REQ_STATUS_UNKNOWN) {
                 nl = strchr(p, '\r');
                 if (nl == NULL) {
-                    status = PARSE_STATUS_INCOMPLETE;
+                    if (((req->buffer+buflen) - p) > PROTO_INLINE_MAX_SIZE) {
+                        if (err) {
+                            *err = sdsnew("Protocol error: too big bulk count "
+                                "string");
+                        }
+                        status = PARSE_STATUS_ERROR;
+                    } else status = PARSE_STATUS_INCOMPLETE;
                     goto cleanup;
                 }
                 int len = nl - p;
                 if (line != NULL) sdsfree(line);
                 line = sdsnewlen(p, len);
-                lc = atoll(line);
-                if (lc < 0) lc = 0;
+                char *errptr = NULL;
+                lc = strtoll(line, &errptr, 10);
+                if (lc <= 0 || (errptr && errptr < (line + len))) {
+                    if (err) {
+                        *err = sdsnew("Protocol error: invalid multibulk "
+                                      "length");
+                        status = PARSE_STATUS_ERROR;
+                        goto cleanup;
+                    }
+                }
                 req->query_offset += (len + 2);
                 req->pending_bulks = lc;
                 if (req->query_offset >= buflen) {
@@ -2747,7 +2766,7 @@ static int parseRequest(clientRequest *req) {
                     status = PARSE_STATUS_INCOMPLETE;
                     goto cleanup;
                 }
-                int arglen = req->current_bulk_length;
+                long long arglen = req->current_bulk_length;
                 /* Try to determine the bulk length by parsing the number
                  * after the '$' char. */
                 if (arglen == REQ_STATUS_UNKNOWN) {
@@ -2755,6 +2774,10 @@ static int parseRequest(clientRequest *req) {
                         proxyLogErr("Failed to parse multibulk query for "
                                     "request " REQID_PRINTF_FMT  ": '$' not "
                                     "found!\n", REQID_PRINTF_ARG(req));
+                        if (err) {
+                            *err = sdscatprintf(sdsempty(),
+                                "Protocol error: expected '$', got '%c'", *p);
+                        }
                         status = PARSE_STATUS_ERROR;
                         goto cleanup;
                     }
@@ -2768,8 +2791,16 @@ static int parseRequest(clientRequest *req) {
                     len = nl - p;
                     if (line != NULL) sdsfree(line);
                     line = sdsnewlen(p, len);
-                    arglen = atoi(line);
-                    if (arglen < 0) arglen = 0;
+                    char *errptr = NULL;
+                    arglen = strtoll(line, &errptr, 10);
+                    if (arglen <= 0 || (errptr && errptr < (line + len))) {
+                        if (err) {
+                            *err =
+                                sdsnew("Protocol error: invalid bulk length");
+                        }
+                        status = PARSE_STATUS_ERROR;
+                        goto cleanup;
+                    }
                     req->current_bulk_length = arglen;
                     /* Increment the query offset by the bulk length + 3,
                      * since it still was pointing to '$', so '$' + '\r\n'
@@ -2791,11 +2822,6 @@ static int parseRequest(clientRequest *req) {
                         status = PARSE_STATUS_ERROR;
                         goto cleanup;
                     }
-                    nl = strchr(p, '\r');
-                    if (nl == NULL) {
-                        status = PARSE_STATUS_INCOMPLETE;
-                        goto cleanup;
-                    }
                     int endarg = req->query_offset + arglen;
                     if (endarg >= buflen) {
                         status = PARSE_STATUS_INCOMPLETE;
@@ -2809,6 +2835,11 @@ static int parseRequest(clientRequest *req) {
                             "declared length %d at offset %d\n",
                             REQID_PRINTF_ARG(req),
                             arglen, req->query_offset);
+                        if (err) {
+                            *err = sdscatprintf(sdsempty(), "Protocol error: "
+                                "expected '\\r' at the end of the bulk, got "
+                                "'%c'", *(req->buffer+endarg));
+                        }
                         status = PARSE_STATUS_ERROR;
                         goto cleanup;
                     }
@@ -2844,6 +2875,11 @@ static int parseRequest(clientRequest *req) {
         }
         int qrylen = nl - p;
         int remaining = qrylen;
+        if (remaining > PROTO_INLINE_MAX_SIZE) {
+            if (err) *err = sdsnew("Protocol error: too big inline string");
+            status = PARSE_STATUS_ERROR;
+            goto cleanup;
+        }
         while (remaining > 0) {
             int idx = req->argc++;
             if (!requestMakeRoomForArgs(req, idx)) {
@@ -3489,16 +3525,28 @@ static void checkForMultiplexingRequestsToBeConsumed(clientRequest *req) {
 }
 
 int processRequest(clientRequest *req, int *parsing_status) {
+    client *c = req->client;
     if (!req->parsed) {
-        int status = parseRequest(req);
+        sds parsing_err = NULL;
+        int status = parseRequest(req, &parsing_err);
         if (parsing_status != NULL) *parsing_status = status;
-        if (status == PARSE_STATUS_ERROR) return 0;
-        else if (status == PARSE_STATUS_INCOMPLETE) return 1;
+        if (status == PARSE_STATUS_INCOMPLETE) return 1;
+        else if (status == PARSE_STATUS_ERROR) {
+            if (parsing_err != NULL) {
+                /* Reply with the parsing error and set the client to be
+                 * closed after the reply. Return 1 just like if processing
+                 * were complete. */
+                addReplyError(c, parsing_err, req->id);
+                c->flags |= CLIENT_CLOSE_AFTER_REPLY;
+                sdsfree(parsing_err);
+                return 1;
+            }
+            return 0;
+        }
         req->parsed = 1;
         proxyLogDebug("Parsing complete for request " REQID_PRINTF_FMT "\n",
             REQID_PRINTF_ARG(req));
     }
-    client *c = req->client;
     if (req == c->current_request) c->current_request = NULL;
     if (req->id < c->min_reply_id) c->min_reply_id = req->id;
     sds command_name = NULL;
@@ -3606,6 +3654,9 @@ void readQuery(aeEventLoop *el, int fd, void *privdata, int mask){
     UNUSED(el);
     UNUSED(mask);
     client *c = (client *) privdata;
+    /* Do not process incoming queries anymore if client is set to be closed
+     * after all replies are written. */
+    if (c->flags & CLIENT_CLOSE_AFTER_REPLY) return;
     int nread, readlen = (1024*16);
     clientRequest *req = c->current_request;
     if (req == NULL) {
@@ -3641,9 +3692,12 @@ void readQuery(aeEventLoop *el, int fd, void *privdata, int mask){
                   sdslen(req->buffer));
     /*TODO: support max query buffer length */
     int parsing_status = PARSE_STATUS_OK;
-    if (!processRequest(req, &parsing_status)) freeClient(c);
+    if (!processRequest(req, &parsing_status)) unlinkClient(c);
     else {
-        if (parsing_status == PARSE_STATUS_INCOMPLETE) return;
+        /* If parsing status of the current request is incomplete or the
+         * client is set to be closed after reply, just stop here. */
+        if (parsing_status == PARSE_STATUS_INCOMPLETE ||
+            c->flags & CLIENT_CLOSE_AFTER_REPLY) return;
         clientRequest *processed_req = req;
         while (listLength(c->requests_to_process) > 0) {
             listNode *ln = listFirst(c->requests_to_process);

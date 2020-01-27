@@ -54,7 +54,7 @@ typedef struct clientRequest {
     int argc;
     int num_commands;
     long long pending_bulks;
-    int current_bulk_length;
+    long long current_bulk_length;
     int *offsets;
     int *lengths;
     int offsets_size;
@@ -100,6 +100,7 @@ typedef struct client {
     list *reply_array;
     int status;
     int has_write_handler;
+    int flags;
     uint64_t next_request_id;
     struct clientRequest *current_request; /* Currently reading */
     uint64_t min_reply_id;

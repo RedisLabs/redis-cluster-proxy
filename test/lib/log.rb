@@ -68,6 +68,10 @@ module RedisProxyTestLogger
 
     def log_same_line(msg, color = nil, *styles, linesize: 79)
         pad = linesize - msg.length
+        if pad < 0
+            msg = msg[0, linesize]
+            pad = 0
+        end
         STDOUT.flush
         msg = RedisProxyTestLogger::colorized(msg, color, *styles)
         print("\r#{msg}#{' ' * pad}")

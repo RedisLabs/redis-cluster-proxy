@@ -9,7 +9,7 @@ def redis_raw_query(redis, qry, raw_reply: false, split: nil, wait: 0.1,
     sock = redis._client.connection.instance_eval{@sock}
     raise "Missing sock!" if !sock
     pipeline_c = 1
-    commands = redis_query_from_raw qry
+    commands = redis_query_from_raw qry, verbose: verbose
     pipeline_c = commands.length if commands
     if !split
         sock.write qry
@@ -93,7 +93,7 @@ def redis_query_from_raw(rawquery, verbose: false)
                 match = rawquery.match(/^\$(\d+)\r\n/)
                 if !match
                     puts "Invalid query: missing '$'" if verbose
-                    puts rawquery[0,5].inspect + '...'
+                    puts rawquery[0,5].inspect + '...' if verbose
                     return nil
                 end
                 cur_bulk_len = match[1].to_i
@@ -107,8 +107,10 @@ def redis_query_from_raw(rawquery, verbose: false)
                 rawquery = rawquery[cur_bulk_len..-1]
                 break if !rawquery || rawquery.empty?
                 if !rawquery[/^\r\n/]
-                    puts "Invalid query: missing \\r\\n after argument: " +
-                          arg.inspect
+                    if verbose
+                        puts "Invalid query: missing \\r\\n after argument: " +
+                              arg.inspect
+                    end
                     return nil
                 end
                 rawquery = rawquery[2..-1]
@@ -139,7 +141,7 @@ nk = $numkeys
 nc = $numclients
 $datalen.each{|len|
 
-    test "SET #{nk} keys (s=#{len}b, c=#{nc}), fragment buffer" do
+    test "SET #{nk} keys (s=#{len}b, c=#{nc}), split buffer" do
         spawn_clients($numclients){|client, idx|
             (0...$numkeys).each{|n|
                 val = n.to_s * len
@@ -150,7 +152,7 @@ $datalen.each{|len|
                 (1..(qlen - 1)).step(step){|i|
                     begin
                         log_test_update "key #{n + 1}/#{$numkeys} " +
-                                        "#{i},#{qlen - i} (#{qlen})"
+                                        "#{i}-#{qlen - i} (buflen: #{qlen})"
                         reply = redis_raw_query client, query , split: [i]
                     rescue Redis::CommandError => err
                         reply = err
@@ -162,7 +164,7 @@ $datalen.each{|len|
         }
     end
 
-    test "GET #{nk} keys (s=#{len}b, c=#{nc}), fragment buffer" do
+    test "GET #{nk} keys (s=#{len}b, c=#{nc}), split buffer" do
         spawn_clients($numclients){|client, idx|
             (0...$numkeys).each{|n|
                 val = n.to_s * len
@@ -173,7 +175,7 @@ $datalen.each{|len|
                 (1..(qlen - 1)).step(step){|i|
                     begin
                         log_test_update "key #{n + 1}/#{$numkeys} " +
-                                        "#{i},#{qlen - i} (#{qlen})"
+                                        "#{i}-#{qlen - i} (buflen: #{qlen})"
                         reply = redis_raw_query client, query , split: [i]
                     rescue Redis::CommandError => err
                         reply = err
@@ -186,7 +188,7 @@ $datalen.each{|len|
         }
     end
 
-    test "GET #{nk} keys (s=#{len}b, c=#{nc}, pipeline), fragment buffer" do
+    test "GET #{nk} keys (s=#{len}b, c=#{nc}, pipeline), split buffer" do
         spawn_clients($numclients){|client, idx|
             (0...$numkeys).each{|n|
                 log_test_update "key #{n + 1}/#{$numkeys}"
@@ -199,7 +201,7 @@ $datalen.each{|len|
                 (1..(qlen - 1)).step(step){|i|
                     begin
                         log_test_update "key #{n + 1}/#{$numkeys} " +
-                                        "#{i},#{qlen - i} (#{qlen})"
+                                        "#{i}-#{qlen - i} (buflen: #{qlen})"
                         reply = redis_raw_query client, query , split: [i]
                     rescue Redis::CommandError => err
                         reply = err
@@ -212,3 +214,35 @@ $datalen.each{|len|
         }
     end
 }
+
+test "INVALID QUERIES" do
+    spawn_clients(1){|client, idx|
+        query = redis_format_command :get, 'mykey'
+        qlen = query.length
+        (1..(qlen - 2)).each{|i|
+            log_test_update "removing byte at #{i}"
+            q = query
+            q = q[0...i] + q[(i+1)..-1]
+            reply = redis_raw_query client, q
+            assert_redis_err(reply)
+            assert_not_nil(reply.to_s.downcase['protocol error'],
+                "Expected 'Protocol error', got #{reply.to_s}")
+            disconnected = false
+            begin
+                reply = redis_raw_query client, redis_format_command(:ping)
+            rescue Redis::ConnectionError => e
+                disconnected = true
+            rescue Errno::EPIPE => e
+                disconnected = true
+            end
+            if !disconnected
+                disconnected = (
+                    reply.is_a?(Redis::ConnectionError) ||
+                    reply.is_a?(Errno::EPIPE)
+                )
+            end
+            assert(disconnected, "Expected client to be disconnected")
+            client._client.connect
+        }
+    }
+end
