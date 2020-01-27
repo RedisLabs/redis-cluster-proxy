@@ -2685,7 +2685,8 @@ static int parseRequest(clientRequest *req, sds *err) {
     if (req->is_multibulk) {
         while (req->query_offset < buflen) {
             int parsing_bulks = (
-                req->pending_bulks >= 0 || req->current_bulk_length >= 0
+                req->pending_bulks != REQ_STATUS_UNKNOWN &&
+                req->current_bulk_length != REQ_STATUS_UNKNOWN
             );
             if (*p == '*' && !parsing_bulks) {
                 if (req->num_commands > 0) {
