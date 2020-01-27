@@ -128,7 +128,7 @@ def redis_query_from_raw(rawquery, verbose: false)
 end
 
 $options ||= {}
-$numkeys = 3
+$numkeys = 4
 $numclients = $options[:clients] || 1
 $datalen = [1, 64]
 
@@ -144,8 +144,12 @@ $datalen.each{|len|
     test "SET #{nk} keys (s=#{len}b, c=#{nc}), split buffer" do
         spawn_clients($numclients){|client, idx|
             (0...$numkeys).each{|n|
-                val = n.to_s * len
-                val += "\r\n!\r\n" if n == $numkeys - 1
+                if n == $numkeys - 1
+                    val = '*' * len
+                else
+                    val = n.to_s * len
+                    val += "\r\n!\r\n" if n == $numkeys - 2
+                end
                 query = redis_format_command :set, "k:#{n}", val
                 qlen = query.length
                 step = len > 1 ? 8 : 1
@@ -167,8 +171,12 @@ $datalen.each{|len|
     test "GET #{nk} keys (s=#{len}b, c=#{nc}), split buffer" do
         spawn_clients($numclients){|client, idx|
             (0...$numkeys).each{|n|
-                val = n.to_s * len
-                val += "\r\n!\r\n" if n == $numkeys - 1
+                if n == $numkeys - 1
+                    val = '*' * len
+                else
+                    val = n.to_s * len
+                    val += "\r\n!\r\n" if n == $numkeys - 2
+                end
                 query = redis_format_command :get, "k:#{n}"
                 qlen = query.length
                 step = len > 1 ? 8 : 1
@@ -192,8 +200,12 @@ $datalen.each{|len|
         spawn_clients($numclients){|client, idx|
             (0...$numkeys).each{|n|
                 log_test_update "key #{n + 1}/#{$numkeys}"
-                val = n.to_s * len
-                val += "\r\n!\r\n" if n == $numkeys - 1
+                if n == $numkeys - 1
+                    val = '*' * len
+                else
+                    val = n.to_s * len
+                    val += "\r\n!\r\n" if n == $numkeys - 2
+                end
                 query = redis_format_command :get, "k:#{n}"
                 query *= 2
                 qlen = query.length
