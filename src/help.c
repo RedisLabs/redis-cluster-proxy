@@ -32,6 +32,7 @@ const char *proxyCommandHelp[] = {
                                    "`PROXY CLIENT HELP` for more info)",
     "CLUSTER [subcmd]           -- Execute cluster specific actions (type "
                                    "`PROXY CLUSTER HELP` for more info)",
+    "DEBUG <subcmd>             -- Utilities for debugging the proxy",
     "LOG [level] <message>      -- Log message to Proxy's log, for debugging "
                                    "purpose",
     NULL
@@ -55,6 +56,13 @@ const char *proxyCommandSubcommandClusterHelp[] = {
     "              with the calling client. Type can be: shared|private",
     "UPDATE     -- Request an update of the configuration for the cluster "
     "              associated with the current client.",
+    NULL
+};
+
+const char *proxyCommandSubcommandDebugtHelp[] = {
+    "PROXY DEBUG <subcommand>",
+    "SEGFAULT   -- Cause a SEGFAULT on the proxy",
+    "ASSERT     -- Cause an assertion failure  on the proxy",
     NULL
 };
 

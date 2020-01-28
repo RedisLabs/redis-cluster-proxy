@@ -43,7 +43,19 @@
 #define getClientLoop(c) (proxy.threads[c->thread_id]->loop)
 
 struct client;
-struct proxyThread;
+typedef struct proxyThread {
+    int thread_id;
+    int io[2];
+    pthread_t thread;
+    redisCluster *cluster;
+    aeEventLoop *loop;
+    list *clients;
+    list *unlinked_clients;
+    list *pending_messages;
+    uint64_t next_client_id;
+    sds msgbuffer;
+} proxyThread;
+
 
 typedef struct clientRequest {
     struct client *client;

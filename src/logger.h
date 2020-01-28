@@ -24,6 +24,8 @@
 #define LOGLEVEL_WARNING    3
 #define LOGLEVEL_ERROR      4
 
+#define LOG_RAW             (1 << 8)
+
 #define LOG_COLOR_RED       31
 #define LOG_COLOR_GREEN     32
 #define LOG_COLOR_YELLOW    33
@@ -39,6 +41,7 @@
 #define proxyLogWarn(...) proxyLog(LOGLEVEL_WARNING, __VA_ARGS__)
 #define proxyLogErr(...) proxyLog(LOGLEVEL_ERROR, __VA_ARGS__)
 #define proxyLogHdr(...) proxyLog(LOGLEVEL_ERROR, __VA_ARGS__)
+#define proxyLogRaw(...) proxyLog(LOGLEVEL_ERROR | LOG_RAW, __VA_ARGS__)
 
 extern const char *redisProxyLogLevels[5];
 

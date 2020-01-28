@@ -15,6 +15,8 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "fmacros.h"
+#include "redis_config.h"
 #include "proxy.h"
 #include "logger.h"
 #include "zmalloc.h"
@@ -28,12 +30,12 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <signal.h>
-#include <assert.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <inttypes.h>
 #include <sys/stat.h>
 #include <sys/utsname.h>
+#include "assert.h" /* Use proxy's assert */
 
 #define QUERY_OFFSETS_MIN_SIZE              10
 #define MAX_THREADS                         500
@@ -78,19 +80,6 @@
 #define sdsRepr(s) (sdscatrepr(sdsempty(), s, sdslen(s)))
 #define PROXY_CMD_LOG_MAX_LEN   4096
 
-typedef struct proxyThread {
-    int thread_id;
-    int io[2];
-    pthread_t thread;
-    redisCluster *cluster;
-    aeEventLoop *loop;
-    list *clients;
-    list *unlinked_clients;
-    list *pending_messages;
-    uint64_t next_client_id;
-    sds msgbuffer;
-} proxyThread;
-
 /* Globals */
 
 redisClusterProxy proxy;
@@ -125,6 +114,9 @@ static int installIOHandler(aeEventLoop *el, int fd, int mask, aeFileProc *proc,
 static int disableMultiplexingForClient(client *c);
 char *redisClusterProxyGitSHA1(void);
 char *redisClusterProxyGitDirty(void);
+#ifdef HAVE_BACKTRACE
+void sigsegvHandler(int sig, siginfo_t *info, void *secret);
+#endif
 
 /* Hiredis helpers */
 
@@ -472,7 +464,7 @@ static void proxySubCommandCluster(clientRequest *req, sds subcmd) {
     }
 }
 
-static sds genInfoString(sds section) {
+sds genInfoString(sds section) {
     int default_section = (section == NULL ||
                            strcasecmp("default", section) == 0);
     int all_sections = (!default_section && section &&
@@ -991,6 +983,26 @@ int proxyCommand(void *r) {
         proxyLog(loglvl, msg);
         sdsfree(msg);
         addReplyString(req->client, "OK", req->id);
+    } else if (strcasecmp("debug", subcmd) == 0) {
+        if (req->argc < 3) {
+            addReplyErrorUnknownSubcommand(req->client, "PROXY DEBUG",
+                "PROXY DEBUG HELP", req->id);
+            goto final;
+        }
+        assert(req->offsets_size >= 3);
+        int offset = req->offsets[2];
+        int len = req->lengths[2];
+        sds type = sdsnewlen(req->buffer + offset, len);
+        if (strcasecmp("segfault", type) == 0) *((char*)-1) = 'x';
+        else if (strcasecmp("assert", type) == 0) assert(1 == 2);
+        else if (strcasecmp("help", type) == 0)
+            addReplyHelp(req->client,proxyCommandSubcommandDebugtHelp,req->id);
+        else {
+            addReplyErrorUnknownSubcommand(req->client, "PROXY DEBUG",
+                "PROXY DEBUG HELP", req->id);
+            goto final;
+        }
+        sdsfree(type);
     } else if (strcasecmp("help", subcmd) == 0) {
         addReplyHelp(req->client, proxyCommandHelp, req->id);
     } else {
@@ -4077,6 +4089,46 @@ static void *execProxyThread(void *ptr) {
     return NULL;
 }
 
+static void sigShutdownHandler(int sig) {
+    UNUSED(sig);
+    char *msg;
+    switch (sig) {
+    case SIGINT:
+        msg = "Received SIGINT";
+        break;
+    case SIGTERM:
+        msg = "Received SIGTERM";
+        break;
+    default:
+        msg = "Received shutdown signal";
+    };
+    proxyLogHdr("%s\n", msg);
+    exit(0);
+}
+
+static void setupSignalHandlers(void) {
+    struct sigaction act;
+
+    /* When the SA_SIGINFO flag is set in sa_flags then sa_sigaction is used.
+     * Otherwise, sa_handler is used. */
+    sigemptyset(&act.sa_mask);
+    act.sa_flags = 0;
+    act.sa_handler = sigShutdownHandler;
+    sigaction(SIGTERM, &act, NULL);
+    sigaction(SIGINT, &act, NULL);
+
+#ifdef HAVE_BACKTRACE
+    sigemptyset(&act.sa_mask);
+    act.sa_flags = SA_NODEFER | SA_RESETHAND | SA_SIGINFO;
+    act.sa_sigaction = sigsegvHandler;
+    sigaction(SIGSEGV, &act, NULL);
+    sigaction(SIGBUS, &act, NULL);
+    sigaction(SIGFPE, &act, NULL);
+    sigaction(SIGILL, &act, NULL);
+#endif
+    return;
+}
+
 void daemonize(void) {
     int fd;
 
@@ -4109,6 +4161,7 @@ void createPidFile(void) {
 int main(int argc, char **argv) {
     int exit_status = 0, i;
     signal(SIGPIPE, SIG_IGN);
+    setupSignalHandlers();
     uname(&proxy_os);
     initConfig();
     proxy.configfile = NULL;

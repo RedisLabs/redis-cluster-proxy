@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019  Giuseppe Fabio Nicotra <artix2 at gmail dot com>
+ * Copyright (C) 2020  Giuseppe Fabio Nicotra <artix2 at gmail dot com>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published
@@ -15,15 +15,13 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef __REDIS_CLUSTER_PROXY_HELP_H__
-#define __REDIS_CLUSTER_PROXY_HELP_H__
+#ifndef __REDIS_CLUSTER_PROXY_ASSERT_H__
+#define __REDIS_CLUSTER_PROXY_ASSERT_H__
 
-extern const char *proxyCommandHelp[];
-extern const char *proxyCommandSubcommandClientHelp[];
-extern const char *proxyCommandSubcommandClusterHelp[];
-extern const char *proxyCommandSubcommandDebugtHelp[];
-extern const char *mainHelpString;
+#include <unistd.h> /* for _exit() */
 
-void printHelp(void);
+#define assert(_e) ((_e)?(void)0 : (_proxyAssert(#_e,__FILE__,__LINE__),_exit(1)))
 
-#endif /* __REDIS_CLUSTER_PROXY_HELP_H__ */
+void _proxyAssert(char *estr, char *file, int line);
+
+#endif

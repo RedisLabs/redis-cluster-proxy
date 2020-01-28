@@ -34,6 +34,11 @@ const char *redisProxyLogLevels[5] = {
 
 void proxyLog(int level, const char* format, ...) {
     if (level < config.loglevel) return;
+    int is_raw = 0, use_colors = config.use_colors;
+    if ((is_raw = (level & LOG_RAW))) {
+        level &= ~(LOG_RAW);
+        use_colors = 0;
+    }
     FILE *out = NULL;
     if (config.logfile != NULL) {
         out = fopen(config.logfile, "a");
@@ -50,7 +55,7 @@ void proxyLog(int level, const char* format, ...) {
     gettimeofday(&tv,NULL);
     time(&t);
     tm_info = localtime(&t);
-    if (config.use_colors) {
+    if (use_colors) {
         int color = LOG_COLOR_DEFAULT;
         switch (level) {
         case LOGLEVEL_DEBUG: color = LOG_COLOR_GRAY; break;
@@ -62,23 +67,25 @@ void proxyLog(int level, const char* format, ...) {
         offset = sprintf(buf, "\033[%dm", color);
         maxlen -= 4; /* Keep enough space for final "\33[0m"  */
     }
-    offset += strftime(buf + offset, maxlen - offset,
-                       "[%Y-%m-%d %H:%M:%S.", tm_info);
-    offset += snprintf(buf + offset, maxlen - offset, "%03d] ",
-                       (int) tv.tv_usec/1000);
+    if (!is_raw) {
+        offset += strftime(buf + offset, maxlen - offset,
+                           "[%Y-%m-%d %H:%M:%S.", tm_info);
+        offset += snprintf(buf + offset, maxlen - offset, "%03d] ",
+                           (int) tv.tv_usec/1000);
+    }
     before_format_offset = offset;
     va_list ap;
     va_start(ap, format);
     offset += vsnprintf(buf + offset, maxlen - offset, format, ap);
     va_end(ap);
-    if (level == LOGLEVEL_DEBUG && (size_t) offset >= maxlen) {
+    if ((is_raw || level == LOGLEVEL_DEBUG) && (size_t) offset >= maxlen) {
         offset = before_format_offset;
         buf = sdsnewlen(buf, offset);
         va_start(ap, format);
         buf = sdscatvprintf(buf, format, ap);
         va_end(ap);
-        if (config.use_colors) buf = sdscat(buf, "\33[0m");
-    } else if (config.use_colors) {
+        if (use_colors) buf = sdscat(buf, "\33[0m");
+    } else if (use_colors) {
         snprintf(buf + offset, maxlen - offset, "\33[0m");
     }
     fflush(out);

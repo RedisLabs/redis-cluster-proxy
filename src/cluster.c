@@ -19,7 +19,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
-#include <assert.h>
 #include <hiredis.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -30,6 +29,7 @@
 #include "config.h"
 #include "proxy.h"
 #include "util.h"
+#include "assert.h" /* Use proxy's assert */
 
 #define CLUSTER_NODE_KEEPALIVE_INTERVAL 15
 #define CLUSTER_PRINT_REPLY_ERROR(n, err) \
