@@ -45,7 +45,7 @@ class RedisClusterProxy
         @redis_cli = @redis_paths['redis-cli']
         ts = Time.now.strftime('%Y%m%d-%H%M%S')
         @logfile = File.join(RedisProxyTestCase::LOGDIR,
-                             "redis-cluster-proxy-#{ts}.log")
+                             "redis-cluster-proxy-#{@port}-#{ts}.log")
         @valgrind = (valgrind == true)
         if @valgrind
             @valgrind_logfile = File.join(RedisProxyTestCase::LOGDIR,
