@@ -41,7 +41,6 @@
 
 #define QUERY_OFFSETS_MIN_SIZE              10
 #define MAX_THREADS                         500
-#define MAX_POOL_SIZE                       50
 #define EL_INSTALL_HANDLER_FAIL             9999
 #define REQ_STATUS_UNKNOWN                  -1
 #define PARSE_STATUS_INCOMPLETE             -1
@@ -4780,20 +4779,7 @@ int main(int argc, char **argv) {
     proxy.configfile = NULL;
     proxy.threads = NULL;
     int parsed_opts = parseOptions(argc, argv);
-    if (config.logfile != NULL) {
-        /* If the logfile is an empty string, set it NULL and use STDOUT */
-        if (config.logfile[0] == '\0') {
-            zfree(config.logfile);
-            config.logfile = NULL;
-        } else config.use_colors = 0;
-    }
-    if (config.connections_pool.size > MAX_POOL_SIZE) {
-        config.connections_pool.size = MAX_POOL_SIZE;
-        proxyLogWarn("Limiting connections-pool-size to max. %d\n",
-            MAX_POOL_SIZE);
-    }
-    if (config.connections_pool.min_size > config.connections_pool.size)
-        config.connections_pool.min_size = config.connections_pool.size;
+    checkConfig();
     char *config_cluster_addr = config.cluster_address;
     if (parsed_opts >= argc) {
         if (config_cluster_addr == NULL) {

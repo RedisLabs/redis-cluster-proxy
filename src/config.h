@@ -23,6 +23,7 @@
 #define CFG_DISABLE_MULTIPLEXING_AUTO       1
 #define CFG_DISABLE_MULTIPLEXING_ALWAYS     2
 #define BINDADDR_MAX                        16
+#define MAX_POOL_SIZE                       50
 #define DEFAULT_PID_FILE                    "/var/run/redis-cluster-proxy.pid"
 #define DEFAULT_PORT                        7777
 #define DEFAULT_UNIXSOCKETPERM              0
@@ -73,5 +74,6 @@ extern redisClusterProxyConfig config;
 void initConfig(void);
 int parseOptions(int argc, char **argv);
 int parseOptionsFromFile(const char *filename);
+void checkConfig(void);
 
 #endif /* __REDIS_CLUSTER_PROXY_CONFIG_H__ */

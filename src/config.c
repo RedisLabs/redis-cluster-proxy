@@ -153,3 +153,22 @@ cleanup:
     }
     return success;
 }
+
+void checkConfig(void) {
+    if (config.logfile != NULL) {
+        /* If the logfile is an empty string, set it NULL and use STDOUT */
+        if (config.logfile[0] == '\0') {
+            zfree(config.logfile);
+            config.logfile = NULL;
+        } else config.use_colors = 0;
+    }
+    if (config.connections_pool.size > MAX_POOL_SIZE) {
+        config.connections_pool.size = MAX_POOL_SIZE;
+        proxyLogWarn("Limiting connections-pool-size to max. %d\n",
+            MAX_POOL_SIZE);
+    }
+    if (config.connections_pool.min_size > config.connections_pool.size)
+        config.connections_pool.min_size = config.connections_pool.size;
+    if (config.connections_pool.spawn_every < 0)
+        config.connections_pool.spawn_every = 0;
+}
