@@ -32,7 +32,11 @@ const char *proxyCommandHelp[] = {
                                    "`PROXY CLIENT HELP` for more info)",
     "CLUSTER [subcmd]           -- Execute cluster specific actions (type "
                                    "`PROXY CLUSTER HELP` for more info)",
-    "DEBUG <subcmd>             -- Utilities for debugging the proxy",
+    "DEBUG <subcmd>             -- Utilities for debugging the proxy (type "
+                                   "`PROXY DEBUG HELP` for more info)",
+    "SHUTDOWN [ASAP]            -- Shutdown the proxy. If `ASAP` is used, "
+                                   "perform an immeditae dirty exit, "
+                                   "otherwise send a SIGINT.",
     "LOG [level] <message>      -- Log message to Proxy's log, for debugging "
                                    "purpose",
     NULL

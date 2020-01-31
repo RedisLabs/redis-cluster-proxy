@@ -56,6 +56,8 @@
 #define QUEUE_TYPE_SENDING                  1
 #define QUEUE_TYPE_PENDING                  2
 
+#define THREAD_MSG_STOP                     ((void*) 1)
+
 #define CLIENT_CLOSE_AFTER_REPLY            (1 << 1)
 
 #define UNUSED(V) ((void) V)
@@ -1003,6 +1005,18 @@ int proxyCommand(void *r) {
             goto final;
         }
         sdsfree(type);
+    } else if (strcasecmp("shutdown", subcmd) == 0) {
+        int asap = 0;
+        if (req->argc > 2) {
+            assert(req->offsets_size >= 2);
+            int offset = req->offsets[2];
+            int len = req->lengths[2];
+            sds mode = sdsnewlen(req->buffer + offset, len);
+            asap = (strcasecmp("asap", mode) == 0);
+            sdsfree(mode);
+        }
+        if (asap) exit(0);
+        else kill(getpid(), SIGINT);
     } else if (strcasecmp("help", subcmd) == 0) {
         addReplyHelp(req->client, proxyCommandHelp, req->id);
     } else {
@@ -1716,6 +1730,7 @@ static void checkTcpBacklogSettings(void) {
 
 static void initProxy(void) {
     int i;
+    proxy.exit_asap = 0;
     proxy.neterr[0] = '\0';
     proxy.numclients = 0;
     proxy.system_memory_size = zmalloc_get_memory_size();
@@ -1773,6 +1788,7 @@ static void releaseProxy(void) {
     if (proxy.main_loop != NULL) {
         aeStop(proxy.main_loop);
         aeDeleteEventLoop(proxy.main_loop);
+        proxy.main_loop = NULL;
     }
     if (proxy.threads != NULL) {
         for (i = 0; i < config.num_threads; i++) {
@@ -1791,6 +1807,7 @@ static void releaseProxy(void) {
     for (i = 0; i < config.bindaddr_count; i++) {
         zfree(config.bindaddr[i]);
     }
+    if (config.pidfile && config.pidfile[0] != '\0') unlink(config.pidfile);
 }
 
 void writeHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
@@ -1855,6 +1872,11 @@ static int processThreadPipeBufferForNewClients(proxyThread *thread) {
         char *p = thread->msgbuffer + (i * msgsize);
         client **pc = (void*) p;
         c = (client *) *pc;
+        if (c == THREAD_MSG_STOP) {
+            proxyLogDebug("Stopping thread %d\n", thread->thread_id);
+            aeStop(thread->loop);
+            return processed;
+        }
         aeEventLoop *el = thread->loop;
         listAddNodeTail(thread->clients, c);
         proxyLogDebug("Client %" PRId64 " added to thread %d\n",
@@ -2047,8 +2069,22 @@ static int awakeThreadForNewClient(proxyThread *thread, client *c) {
     return sendMessageToThread(thread, buf);
 }
 
+static int sendStopMessageToThread(proxyThread *thread) {
+    proxyLogDebug("Sending stop message to thread %d\n", thread->thread_id);
+    sds buf = sdsempty();
+    buf = sdsMakeRoomFor(buf, sizeof(void*));
+    int msg = (int) THREAD_MSG_STOP;
+    memset(buf, 0, sizeof(void*));
+    memcpy(buf, &msg, sizeof(msg));
+    sdsIncrLen(buf, sizeof(void*));
+    return sendMessageToThread(thread, buf);
+}
+
 static void freeProxyThread(proxyThread *thread) {
-    if (thread->loop != NULL) aeDeleteEventLoop(thread->loop);
+    if (thread->loop != NULL) {
+        aeDeleteEventLoop(thread->loop);
+        thread->loop = NULL;
+    }
     if (thread->clients != NULL) {
         listIter li;
         listNode *ln;
@@ -2066,7 +2102,7 @@ static void freeProxyThread(proxyThread *thread) {
         listRewind(thread->unlinked_clients, &li);
         while ((ln = listNext(&li)) != NULL) {
             client *c = ln->value;
-            freeClient(c);
+            if (c != NULL) freeClient(c);
         }
         listRelease(thread->unlinked_clients);
         thread->unlinked_clients = NULL;
@@ -2076,7 +2112,9 @@ static void freeProxyThread(proxyThread *thread) {
     }
     if (thread->io[0]) close(thread->io[0]);
     if (thread->io[1]) close(thread->io[1]);
+    if (thread->msgbuffer) sdsfree(thread->msgbuffer);
     if (thread->cluster != NULL) freeCluster(thread->cluster);
+    proxy.threads[thread->thread_id] = NULL;
     zfree(thread);
 }
 
@@ -2272,7 +2310,8 @@ static void freeClient(client *c) {
      * possibile to free it soon, as those requests would be truncated and
      * they could break all other following requests in a multiplexing
      * context. */
-    if (c->requests_with_write_handler > 0) return;
+    aeEventLoop *el = getClientLoop(c);
+    if (c->requests_with_write_handler > 0 && el != NULL) return;
     proxyLogDebug("Freeing client %" PRId64 " (thread: %d)\n",
                   c->id, c->thread_id);
     int thread_id = c->thread_id;
@@ -3226,9 +3265,10 @@ static clusterNode *getRequestNode(clientRequest *req, sds *err) {
 
 void freeRequest(clientRequest *req) {
     if (req == NULL) return;
-    if (req->need_reprocessing) return;
+    aeEventLoop *el = getClientLoop(req->client);
+    if (req->need_reprocessing && el != NULL) return;
     proxyLogDebug("Free Request " REQID_PRINTF_FMT "\n",REQID_PRINTF_ARG(req));
-    if (req->has_write_handler && req->written > 0) {
+    if (req->has_write_handler && req->written > 0 && el != NULL) {
         proxyLogDebug("Request " REQID_PRINTF_FMT " is still writting, "
                       "cannot free it now...\n", REQID_PRINTF_ARG(req));
         return;
@@ -3242,8 +3282,7 @@ void freeRequest(clientRequest *req) {
         req->client->multi_request = NULL;
     redisContext *ctx = NULL;
     if (req->node) ctx = getClusterNodeContext(req->node);
-    aeEventLoop *el = getClientLoop(req->client);
-    if (ctx != NULL && req->has_write_handler)
+    if (ctx != NULL && req->has_write_handler && el != NULL)
         aeDeleteFileEvent(el, ctx->fd, AE_WRITABLE);
     if (req->child_requests != NULL) {
         if (listLength(req->child_requests) > 0) {
@@ -4084,8 +4123,8 @@ static void readClusterReply(aeEventLoop *el, int fd,
 
 static void *execProxyThread(void *ptr) {
     proxyThread *thread = (proxyThread *) ptr;
-    /* proxyLogDebug("Starting thread %d...\n", thread->thread_id); */
     aeMain(thread->loop);
+    proxyLogDebug("Thread %d ended\n", thread->thread_id);
     return NULL;
 }
 
@@ -4103,7 +4142,13 @@ static void sigShutdownHandler(int sig) {
         msg = "Received shutdown signal";
     };
     proxyLogHdr("%s\n", msg);
-    exit(0);
+    if (pthread_self() == proxy.main_thread && !proxy.exit_asap) {
+        proxy.exit_asap = 1;
+        aeStop(proxy.main_loop);
+    } else {
+        proxyLogHdr("Dirty exit!\n");
+        exit(0);
+    }
 }
 
 static void setupSignalHandlers(void) {
@@ -4234,10 +4279,18 @@ int main(int argc, char **argv) {
             goto cleanup;
         }
     }
+    proxy.main_thread = pthread_self();
     proxy.start_time = time(NULL);
     aeMain(proxy.main_loop);
 cleanup:
+    proxyLogHdr("Redis Cluster Proxy is going to exit...\n");
+    for (i = 0; i < config.num_threads; i++)
+        sendStopMessageToThread(proxy.threads[i]);
+    for (i = 0; i < config.num_threads; i++)
+        pthread_join(proxy.threads[i]->thread, NULL);
+    proxyLogHdr("All thread(s) stopped.\n");
     if (config_cluster_addr) sdsfree((sds) config_cluster_addr);
     releaseProxy();
+    proxyLogHdr("Bye bye!\n");
     return exit_status;
 }

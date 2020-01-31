@@ -280,7 +280,13 @@ int resetCluster(redisCluster *cluster) {
 }
 
 void freeCluster(redisCluster *cluster) {
-    proxyLogDebug("Free cluster\n");
+    if (cluster->owner) {
+        client *c = cluster->owner;
+        proxyLogDebug("Free private cluster for client %d:%" PRId64  "\n",
+            c->thread_id, c->id);
+    } else {
+        proxyLogDebug("Free shared cluster on thread %d\n", cluster->thread_id);
+    }
     if (cluster->slots_map) raxFree(cluster->slots_map);
     if (cluster->nodes_by_name) raxFree(cluster->nodes_by_name);
     if (cluster->master_names) listRelease(cluster->master_names);

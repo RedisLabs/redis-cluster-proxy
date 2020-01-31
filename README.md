@@ -240,13 +240,25 @@ The `PROXY` command will allow you to get specific info or perform actions that 
 
   ```
 
-- PROXY LOG <level> MESSAGE
+- PROXY LOG [level] MESSAGE
 
     Log `MESSAGE` to Proxy's log, for debugging purposes.
 
     The optional `level` can be used to define the log level:
 
     `debug`, `info`, `success`, `warning`, `error` (default is `debug`)
+    
+- PROXY DEBUG <subcommand>
+
+    Perform different actions for debugging purpose, where `subcommand` can be:
+
+    - `SEGFAULT`: crash the proxy with sigsegv
+
+    - `ASSERT`: crash the proxy with an assertion failure
+
+- PROXY SHUTDOWN [ASAP]
+
+    Shutdown the proxy. The optional `ASAP` option makes the proxy exit immeditely (dirty exit).
 
 - PROXY HELP
 

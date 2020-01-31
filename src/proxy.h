@@ -100,6 +100,8 @@ typedef struct {
     time_t start_time;
     sds configfile;
     size_t system_memory_size;
+    pthread_t main_thread;
+    int exit_asap;
 } redisClusterProxy;
 
 typedef struct client {

@@ -34,8 +34,12 @@
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#include <pthread.h>
 
 #define UNUSED(V) ((void) V)
+
+#define PROXY_MAIN_THREAD_ID -1
+#define PROXY_UNKN_THREAD_ID -999
 
 extern redisClusterProxy proxy;
 extern redisClusterProxyConfig config;
@@ -89,6 +93,18 @@ typedef ucontext_t sigcontext_t;
         }
     }
 }*/
+
+int getCurrentThreadID(void) {
+    pthread_t self = pthread_self();
+    if (self == proxy.main_thread) return PROXY_MAIN_THREAD_ID;
+    int i;
+    for (i = 0; i < config.num_threads; i++) {
+        proxyThread *t = proxy.threads[i];
+        if (t == NULL) continue;
+        if (t->thread == self) return i;
+    }
+    return PROXY_UNKN_THREAD_ID;
+}
 
 /* =========================== Crash handling  ============================== */
 
@@ -617,6 +633,7 @@ void sigsegvHandler(int sig, siginfo_t *info, void *secret) {
     struct sigaction act;
     UNUSED(info);
 
+    int cur_thread_id = getCurrentThreadID();
     bugReportStart();
     proxyLogErr("Redis Cluster Prxoy %s crashed by signal: %d\n",
         REDIS_CLUSTER_PROXY_VERSION, sig);
@@ -626,6 +643,12 @@ void sigsegvHandler(int sig, siginfo_t *info, void *secret) {
     if (sig == SIGSEGV || sig == SIGBUS) {
         proxyLogErr("Accessing address: %p\n", (void*)info->si_addr);
     }
+    if (cur_thread_id == PROXY_MAIN_THREAD_ID)
+        proxyLogErr("Handling crash on main thread\n");
+    else if (cur_thread_id == PROXY_UNKN_THREAD_ID)
+        proxyLogErr("Handling crash on thread: unknown\n");
+    else
+        proxyLogErr("Handling crash on thread: %d\n", cur_thread_id);
     if (assert_failed != NULL) {
         proxyLogErr("Failed assertion: %s (%s:%d)\n",
             assert_failed, assert_file, assert_line);
