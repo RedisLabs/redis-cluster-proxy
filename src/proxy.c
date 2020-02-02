@@ -1143,6 +1143,47 @@ int getFirstMultipleReply(void *_reply, void *_req, char *buf, int len) {
     return 1;
 }
 
+int getRandomReply(void *_reply, void *_req, char *buf, int len) {
+    UNUSED(_reply);
+    UNUSED(buf);
+    UNUSED(len);
+    clientRequest *req = _req;
+    raxIterator iter;
+    raxStart(&iter, req->child_replies);
+    sds random_reply = NULL;
+    while (random_reply == NULL) {
+        if (raxSize(req->child_replies) == 0) break;
+        if (!raxSeek(&iter, "^", NULL, 0)) {
+            raxStop(&iter);
+            char *err = (errno == ENOMEM ? ERROR_OOM :
+                                           ERROR_MULTIPLE_REPLIES_ITER_FAIL);
+            addReplyError(req->client, err, req->id);
+            return 0;
+        }
+        if (!raxRandomWalk(&iter, 0)) {
+            raxStop(&iter);
+            char *err = (errno == ENOMEM ? ERROR_OOM :
+                                           ERROR_MULTIPLE_REPLIES_ITER_FAIL);
+            addReplyError(req->client, err, req->id);
+            return 0;
+        }
+        while (raxNext(&iter)) {
+            random_reply = (sds) iter.data;
+            if (random_reply == NULL ||random_reply[0] == '-') {
+                if (raxRemove(req->child_replies, iter.key, iter.key_len, NULL))
+                    raxSeek(&iter,">",iter.key,iter.key_len);
+                continue;
+            }
+            if (random_reply != NULL)  break;
+        }
+    }
+    raxStop(&iter);
+    if (random_reply == NULL) addReplyNull(req->client, req->id);
+    else addReplyRaw(req->client, random_reply, sdslen(random_reply), req->id);
+    req->client->min_reply_id = req->max_child_reply_id + 1;
+    return 1;
+}
+
 int sumReplies(void *_reply, void *_req, char *buf, int len) {
     UNUSED(_reply);
     UNUSED(buf);

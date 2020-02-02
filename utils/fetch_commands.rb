@@ -27,7 +27,7 @@ UNSUPPORTED_COMMANDS = %w(
     slaveof replconf time monitor config latency unsubscribe
     replicaof pfselftest lastslave slowlog 
     publish cluster sync readwrite asking
-    script randomkey module pfdebug pubsub
+    script module pfdebug pubsub
     hello memory psync client readonly punsubscribe
 )
 COMMAND_HANDLERS = {
@@ -70,6 +70,7 @@ REPLY_HANDLERS = {
     'unwatch' => 'getFirstMultipleReply',
     'scan' => 'handleScanReply',
     'command' => 'getFirstMultipleReply',
+    'randomkey' => 'getRandomReply',
 }
 GET_KEYS_PROC = {
     'zunionstore' => 'zunionInterGetKeys',
