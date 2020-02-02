@@ -91,6 +91,7 @@
  - POST
  - PSETEX
  - PTTL
+ - RANDOMKEY
  - RENAME
  - RENAMENX
  - RESTORE
@@ -194,7 +195,6 @@ Those commands are currently not supported by Redis Cluster Proxy.
  - PUBLISH
  - PUBSUB
  - PUNSUBSCRIBE
- - RANDOMKEY
  - READONLY
  - READWRITE
  - REPLCONF
