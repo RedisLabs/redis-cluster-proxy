@@ -2571,6 +2571,7 @@ void onClusterNodeDisconnection(clusterNode *node) {
         proxyThread *thread = proxy.threads[thread_id];
         if (thread != NULL && (el = thread->loop))
             aeDeleteFileEvent(el, ctx->fd, AE_WRITABLE | AE_READABLE);
+        connection->has_read_handler = 0;
         redisCluster *cluster = node->cluster;
         assert(cluster != NULL);
         if (cluster->is_updating) return;
