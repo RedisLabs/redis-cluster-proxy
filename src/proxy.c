@@ -116,6 +116,7 @@ static int installIOHandler(aeEventLoop *el, int fd, int mask, aeFileProc *proc,
 static int disableMultiplexingForClient(client *c);
 char *redisClusterProxyGitSHA1(void);
 char *redisClusterProxyGitDirty(void);
+char *redisClusterProxyGitBranch(void);
 #ifdef HAVE_BACKTRACE
 void sigsegvHandler(int sig, siginfo_t *info, void *secret);
 #endif
@@ -483,6 +484,7 @@ sds genInfoString(sds section) {
             "proxy_version:%s\r\n"
             "proxy_git_sha1:%s\r\n"
             "proxy_git_dirty:%i\r\n"
+            "proxy_git_branch:%s\r\n"
             "os:%s %s %s\r\n"
             "arch_bits:%d\r\n"
             "multiplexing_api:%s\r\n"
@@ -497,6 +499,7 @@ sds genInfoString(sds section) {
             REDIS_CLUSTER_PROXY_VERSION,
             redisClusterProxyGitSHA1(),
             strtol(redisClusterProxyGitDirty(), NULL, 10) > 0,
+            redisClusterProxyGitBranch(),
             proxy_os.sysname, proxy_os.release, proxy_os.machine,
             ((sizeof(long) == 8) ? 64 : 32),
             aeGetApiName(),

@@ -24,3 +24,7 @@ char *redisClusterProxyGitSHA1(void) {
 char *redisClusterProxyGitDirty(void) {
     return REDIS_CLUSTER_PROXY_GIT_DIRTY;
 }
+
+char *redisClusterProxyGitBranch(void) {
+    return REDIS_CLUSTER_PROXY_GIT_BRANCH;
+}

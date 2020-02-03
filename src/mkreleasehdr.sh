@@ -1,6 +1,7 @@
 #!/bin/sh
 GIT_SHA1=`(git show-ref --head --hash=8 2> /dev/null || echo 00000000) | head -n1`
 GIT_DIRTY=`git diff --no-ext-diff 2> /dev/null | wc -l`
+GIT_BRANCH=`git rev-parse --abbrev-ref HEAD`
 BUILD_ID=`uname -n`"-"`date +%s`
 if [ -n "$SOURCE_DATE_EPOCH" ]; then
   BUILD_ID=$(date -u -d "@$SOURCE_DATE_EPOCH" +%s 2>/dev/null || date -u -r "$SOURCE_DATE_EPOCH" +%s 2>/dev/null || date -u +%s)
@@ -10,5 +11,6 @@ test -f release.h || touch release.h
 (cat release.h | grep DIRTY | grep $GIT_DIRTY) && exit 0 # Already up-to-date
 echo "#define REDIS_CLUSTER_PROXY_GIT_SHA1 \"$GIT_SHA1\"" > release.h
 echo "#define REDIS_CLUSTER_PROXY_GIT_DIRTY \"$GIT_DIRTY\"" >> release.h
+echo "#define REDIS_CLUSTER_PROXY_GIT_BRANCH \"$GIT_BRANCH\"" >> release.h
 echo "#define REDIS_CLUSTER_PROXY_BUILD_ID \"$BUILD_ID\"" >> release.h
 touch release.c # Force recompile of release.c
