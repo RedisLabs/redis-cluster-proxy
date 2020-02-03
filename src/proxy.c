@@ -187,7 +187,7 @@ static sds proxySubCommandConfig(clientRequest *r, sds option, sds value,
         is_int = 1;
         opt = &(config.num_threads);
         read_only = 1;
-    } else if (strcmp("max-clients", option) == 0) {
+    } else if (strcmp("maxclients", option) == 0) {
         is_int = 1;
         opt = &(config.maxclients);
         read_only = 1;
@@ -2290,8 +2290,8 @@ static void unlinkClient(client *c) {
         if (el != NULL) {
             aeDeleteFileEvent(el, c->fd, AE_READABLE);
             aeDeleteFileEvent(el, c->fd, AE_WRITABLE);
-            close(c->fd);
         }
+        close(c->fd);
     }
     proxyThread *thread = getThread(c);
     listAddNodeTail(thread->unlinked_clients, c);
@@ -3485,7 +3485,11 @@ static int installIOHandler(aeEventLoop *el, int fd, int mask, aeFileProc *proc,
         return 1;
     } else {
         if (!retried && errno == ERANGE) {
+            proxyThread *thread = el->privdata;
+            assert(thread != NULL);
             int newsize = fd + proxy.min_reserved_fds;
+            proxyLogDebug("Resizing event loop on thread %d to %d\n",
+                thread->thread_id, newsize);
             if (aeResizeSetSize(el, newsize) == AE_ERR)
                 return 0;
             return installIOHandler(el, fd, mask, proc, data, 1);
@@ -3814,6 +3818,14 @@ void readQuery(aeEventLoop *el, int fd, void *privdata, int mask){
 }
 
 static void acceptHandler(int fd, char *ip) {
+    if (proxy.numclients >= (uint64_t) config.maxclients) {
+        char *err = "-ERR max number of clients reached\r\n";
+        static int errlen = 0;
+        if (errlen == 0) errlen = strlen(err);
+        write(fd, err, errlen);
+        close(fd);
+        return;
+    }
     client *c = createClient(fd, ip);
     if (c == NULL) return;
     proxyLogDebug("Client %" PRId64 " connected from %s (thread: %d)\n",
