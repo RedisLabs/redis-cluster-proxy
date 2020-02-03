@@ -4264,6 +4264,7 @@ int main(int argc, char **argv) {
     uname(&proxy_os);
     initConfig();
     proxy.configfile = NULL;
+    proxy.threads = NULL;
     int parsed_opts = parseOptions(argc, argv);
     if (config.logfile != NULL) {
         /* If the logfile is an empty string, set it NULL and use STDOUT */
@@ -4338,11 +4339,13 @@ int main(int argc, char **argv) {
     aeMain(proxy.main_loop);
 cleanup:
     proxyLogHdr("Redis Cluster Proxy is going to exit...\n");
-    for (i = 0; i < config.num_threads; i++)
-        sendStopMessageToThread(proxy.threads[i]);
-    for (i = 0; i < config.num_threads; i++)
-        pthread_join(proxy.threads[i]->thread, NULL);
-    proxyLogHdr("All thread(s) stopped.\n");
+    if (proxy.threads != NULL) {
+        for (i = 0; i < config.num_threads; i++)
+            sendStopMessageToThread(proxy.threads[i]);
+        for (i = 0; i < config.num_threads; i++)
+            pthread_join(proxy.threads[i]->thread, NULL);
+        proxyLogHdr("All thread(s) stopped.\n");
+    }
     if (config_cluster_addr) sdsfree((sds) config_cluster_addr);
     releaseProxy();
     proxyLogHdr("Bye bye!\n");
