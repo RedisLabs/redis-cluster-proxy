@@ -75,6 +75,8 @@ typedef struct redisCluster {
     rax  *slots_map;
     rax  *nodes_by_name;
     list *master_names;
+    int masters_count;
+    int replicas_count;
     rax  *requests_to_reprocess;
     int is_updating;
     int update_required;

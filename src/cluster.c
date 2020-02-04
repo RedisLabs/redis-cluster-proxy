@@ -134,6 +134,8 @@ redisCluster *createCluster(int thread_id) {
     cluster->duplicated_from = NULL;
     cluster->duplicates = NULL;
     cluster->owner = NULL;
+    cluster->masters_count = 0;
+    cluster->replicas_count = 0;
     cluster->nodes = listCreate();
     if (cluster->nodes == NULL) {
         zfree(cluster);
@@ -177,6 +179,8 @@ redisCluster *duplicateCluster(redisCluster *source) {
     redisCluster *cluster = createCluster(source->thread_id);
     if (cluster == NULL) return NULL;
     cluster->duplicated_from = source;
+    cluster->masters_count = source->masters_count;
+    cluster->replicas_count = source->replicas_count;
     rax *nodes_by_name = raxNew();
     if (nodes_by_name == NULL) {
         freeCluster(cluster);
@@ -266,6 +270,8 @@ static void freeClusterNodes(redisCluster *cluster) {
 }
 
 int resetCluster(redisCluster *cluster) {
+    cluster->masters_count = 0;
+    cluster->replicas_count = 0;
     if (cluster->slots_map) raxFree(cluster->slots_map);
     if (cluster->nodes_by_name) raxFree(cluster->nodes_by_name);
     if (cluster->master_names) listRelease(cluster->master_names);
@@ -537,7 +543,10 @@ int clusterNodeLoadInfo(redisCluster *cluster, clusterNode *node, list *friends,
         if (name != NULL && node->name == NULL) node->name = sdsnew(name);
         node->is_replica = (strstr(flags, "slave") != NULL ||
                            (master_id != NULL && master_id[0] != '-'));
-        if (node->is_replica) node->replicate = sdsnew(master_id);
+        if (node->is_replica) {
+            node->replicate = sdsnew(master_id);
+            cluster->replicas_count++;
+        } else cluster->masters_count++;
         /* If authentication failed on a master node, exit with success = 0 */
         if (!node->is_replica && auth_failed) {
             success = 0;

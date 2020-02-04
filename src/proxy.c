@@ -1780,7 +1780,6 @@ static void initProxy(void) {
     proxy.system_memory_size = zmalloc_get_memory_size();
     proxy.min_reserved_fds = 10 + (config.num_threads * 3) +
                              (proxy.fd_count * 2);
-    adjustOpenFilesLimit();
     /* Populate commands table. */
     proxy.commands = raxNew();
     int command_count = sizeof(redisCommandTable) / sizeof(redisCommandDef);
@@ -1979,17 +1978,8 @@ static void printClusterConfiguration(redisCluster *cluster) {
             }
         }
     }
-    int master_count = 0, replica_count = 0;
-    listIter li;
-    listNode *ln;
-    listRewind(cluster->nodes, &li);
-    while ((ln = listNext(&li)) != NULL) {
-        clusterNode *n = ln->value;
-        if (n->is_replica) replica_count++;
-        else master_count++;
-    }
-    proxyLogHdr("Cluster has %d masters and %d replica(s)\n", master_count,
-                replica_count);
+    proxyLogHdr("Cluster has %d masters and %d replica(s)\n",
+        cluster->masters_count, cluster->replicas_count);
 }
 
 static proxyThread *createProxyThread(int index) {
@@ -2019,7 +2009,13 @@ static proxyThread *createProxyThread(int index) {
         freeProxyThread(thread);
         return NULL;
     }
-    if (is_first) printClusterConfiguration(thread->cluster);
+    if (is_first) {
+        printClusterConfiguration(thread->cluster);
+        int nodecount = thread->cluster->masters_count +
+                        thread->cluster->replicas_count;
+        proxy.min_reserved_fds += (nodecount * config.num_threads);
+        adjustOpenFilesLimit();
+    }
     thread->clients = listCreate();
     if (thread->clients == NULL) goto fail;
     thread->unlinked_clients = listCreate();
@@ -2028,7 +2024,6 @@ static proxyThread *createProxyThread(int index) {
     if (thread->pending_messages == NULL) goto fail;
     listSetFreeMethod(thread->pending_messages, zfree);
     int loopsize = proxy.min_reserved_fds +
-       (listLength(thread->cluster->nodes) * (config.num_threads)) +
        (config.maxclients / config.num_threads) + 1;
     thread->loop = aeCreateEventLoop(loopsize);
     if (thread->loop == NULL) {
@@ -4297,6 +4292,9 @@ int main(int argc, char **argv) {
         REDIS_CLUSTER_PROXY_VERSION, versiontype);
     proxyLogHdr("Commit: (%s/%d)\n", redisClusterProxyGitSHA1(),
         strtol(redisClusterProxyGitDirty(), NULL, 10) > 0);
+    char *gitbranch = redisClusterProxyGitBranch();
+    if (strlen(gitbranch) > 0)
+        proxyLogHdr("Git Branch: %s\n", gitbranch);
     proxyLogHdr("Cluster Address: %s\n", config.cluster_address);
     proxyLogHdr("PID: %d\n", (int) getpid());
     proxyLogHdr("OS: %s %s %s\n",
