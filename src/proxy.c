@@ -554,8 +554,10 @@ sds genInfoString(sds section) {
         if (sections++) info = sdscat(info,"\r\n");
         info = sdscatprintf(info,
                      "# Clients\r\n"
-                     "connected_clients:%" PRId64 "\r\n",
-                     proxy.numclients
+                     "connected_clients:%" PRId64 "\r\n"
+                     "max_clients:%d\r\n",
+                     proxy.numclients,
+                     config.maxclients
         );
     }
     if (default_section || all_sections ||
