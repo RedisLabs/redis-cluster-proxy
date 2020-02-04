@@ -2259,6 +2259,7 @@ static int disableMultiplexingForClient(client *c) {
             listRewind(conn->requests_pending, &rli);
             while ((rln = listNext(&rli))) {
                 clientRequest *req = rln->value;
+                if (req == NULL) continue;
                 if (req->client == c) c->pending_multiplex_requests++;
             }
         }
