@@ -2066,7 +2066,10 @@ static void handlePendingAwakeMessages(aeEventLoop *el, int fd, void *privdata,
         if (sent == -1) continue;
         else {
             listDelNode(thread->pending_messages, ln);
-            if (!sent) proxyLogErr("Failed to send message to thread!\n");
+            if (!sent) {
+                proxyLogErr("Failed to send message to thread %d\n",
+                            thread->thread_id);
+            }
         }
     }
 }
@@ -2097,10 +2100,12 @@ install_write_handler:
     if (!installIOHandler(thread->loop, fd, AE_WRITABLE,
         handlePendingAwakeMessages, thread, 0))
     {
-        proxyLogDebug("Failed to create thread awake write handler!\n");
+        proxyLogDebug("Failed to create thread awake write handler on "
+                      "thread %d\n", thread->thread_id);
         listNode *ln = listSearchKey(thread->pending_messages, buf);
         if (ln != NULL) listDelNode(thread->pending_messages, ln);
         sdsfree(buf);
+        return 0;
     }
     return -1;
 }
@@ -3828,14 +3833,25 @@ static void acceptHandler(int fd, char *ip) {
         return;
     }
     client *c = createClient(fd, ip);
-    if (c == NULL) return;
+    if (c == NULL) {
+        proxyLogDebug("Failed to allocate memory for client from %s\n",
+            ip ? ip : config.unixsocket);
+        sds err = sdscatprintf(sdsempty(), "-ERR %s\r\n", ERROR_OOM);
+        write(fd, err, sdslen(err));
+        close(fd);
+        sdsfree(err);
+        return;
+    }
     proxyLogDebug("Client %" PRId64 " connected from %s (thread: %d)\n",
                   c->id, ip ? ip : config.unixsocket, c->thread_id);
     proxyThread *thread = proxy.threads[c->thread_id];
     assert(thread != NULL);
     if (!awakeThreadForNewClient(thread, c)) {
-        /* TODO: append client to a list of pending clients to be handled
-         * by a beforeSleep (which should call awakeThread again*/
+        proxyLogDebug("Failed to awake thread %d for client %d:%" PRId64
+                      "\n", thread->thread_id, c->id);
+        char *err = "-ERR failed to awake thread\r\n";
+        write(fd, err, strlen(err));
+        freeClient(c);
     }
 }
 
