@@ -56,7 +56,7 @@
 #define QUEUE_TYPE_SENDING                  1
 #define QUEUE_TYPE_PENDING                  2
 
-#define THREAD_MSG_STOP                     ((void*) 1)
+#define THREAD_MSG_STOP                     1
 
 #define CLIENT_CLOSE_AFTER_REPLY            (1 << 1)
 
@@ -1915,7 +1915,7 @@ static int processThreadPipeBufferForNewClients(proxyThread *thread) {
         char *p = thread->msgbuffer + (i * msgsize);
         client **pc = (void*) p;
         c = (client *) *pc;
-        if (c == THREAD_MSG_STOP) {
+        if (c == (void*) THREAD_MSG_STOP) {
             proxyLogDebug("Stopping thread %d\n", thread->thread_id);
             aeStop(thread->loop);
             return processed;
@@ -2112,7 +2112,7 @@ static int sendStopMessageToThread(proxyThread *thread) {
     proxyLogDebug("Sending stop message to thread %d\n", thread->thread_id);
     sds buf = sdsempty();
     buf = sdsMakeRoomFor(buf, sizeof(void*));
-    int msg = (int) THREAD_MSG_STOP;
+    int msg = THREAD_MSG_STOP;
     memset(buf, 0, sizeof(void*));
     memcpy(buf, &msg, sizeof(msg));
     sdsIncrLen(buf, sizeof(void*));
