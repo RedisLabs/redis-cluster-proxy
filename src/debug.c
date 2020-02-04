@@ -77,22 +77,23 @@ typedef ucontext_t sigcontext_t;
 #endif
 #endif
 
-/*static void killThreads(void) {
+static void killThreads(int exclude) {
     int err, j;
 
     for (j = 0; j < config.num_threads; j++) {
+        if (j == exclude) continue;
         proxyThread *thread = proxy.threads[j];
         if (pthread_cancel(thread->thread) == 0) {
-            if ((err = pthread_join(thread->thread,NULL)) != 0) {
-                proxyLogErr("Thread %d can be joined: %s",
+            if ((err = pthread_join(thread->thread, NULL)) != 0) {
+                proxyLogErr("Thread %d can be joined: %s\n",
                         j, strerror(err));
             } else {
                 proxyLogErr(
-                    "Thread %d terminated",j);
+                    "Thread %d terminated\n",j);
             }
         }
     }
-}*/
+}
 
 int getCurrentThreadID(void) {
     pthread_t self = pthread_self();
@@ -632,8 +633,9 @@ void sigsegvHandler(int sig, siginfo_t *info, void *secret) {
     void *eip = getMcontextEip(uc);
     struct sigaction act;
     UNUSED(info);
-
     int cur_thread_id = getCurrentThreadID();
+    killThreads(cur_thread_id);
+
     bugReportStart();
     proxyLogErr("Redis Cluster Prxoy %s crashed by signal: %d\n",
         REDIS_CLUSTER_PROXY_VERSION, sig);
@@ -670,7 +672,6 @@ void sigsegvHandler(int sig, siginfo_t *info, void *secret) {
 #if defined(HAVE_PROC_MAPS)
     /* Test memory */
     proxyLogRaw("\n------ FAST MEMORY TEST ------\n");
-    /*killThreads();*/
     if (memtest_test_linux_anonymous_maps()) {
         proxyLogRaw("!!! MEMORY ERROR DETECTED! Check your memory ASAP !!!\n");
     } else {
@@ -679,8 +680,6 @@ void sigsegvHandler(int sig, siginfo_t *info, void *secret) {
             "Please run a memory test for several hours if possible.\n"
         );
     }
-#else
-    /*UNUSED(killThreads);*/
 #endif
 
     if (eip != NULL) {
@@ -715,7 +714,7 @@ void sigsegvHandler(int sig, siginfo_t *info, void *secret) {
 "\n\n=== PROXY BUG REPORT END. Make sure to include from START to END. ===\n\n"
 "       Please report the crash by opening an issue on github:\n\n"
 "           https://github.com/artix75/redis-cluster-proxy/issues\n\n"
-);
+    );
 
     if (config.daemonize && config.pidfile) unlink(config.pidfile);
 

@@ -88,8 +88,8 @@ void proxyLog(int level, const char* format, ...) {
     } else if (use_colors) {
         snprintf(buf + offset, maxlen - offset, "\33[0m");
     }
-    fflush(out);
     fprintf(out, "%s", buf);
+    fflush(out);
     if (config.logfile != NULL) fclose(out);
     if (buf != smallbuf) sdsfree(buf);
 }
