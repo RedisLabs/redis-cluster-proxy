@@ -108,7 +108,9 @@ class RedisClusterProxy
         end
         threads = (@options[:threads] || 8).to_i
         sleep(threads / 2)
-        log "Proxy started with PID #{@pid}", :gray
+        ts = Time.now.strftime '%Y-%m-%d %H:%M:%S'
+        log "Proxy started with PID #{@pid} on #{ts}", :gray
+        log "Log file: #{File.basename(@logfile)}", :gray, :dim
         @pid
     end
 

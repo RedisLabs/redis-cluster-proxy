@@ -17,6 +17,7 @@
 
 require 'rubygems'
 require 'bundler/setup'
+require 'time'
 
 $redis_proxy_test_dir = File.expand_path(File.dirname(__FILE__))
 load File.join($redis_proxy_test_dir, 'lib/test.rb')
@@ -106,6 +107,9 @@ end
 failures_count = 0
 succeeded_count = 0
 skipped_count = 0
+puts RedisProxyTestLogger::colorized(
+    "STARTING TESTS ON: #{Time.now.strftime('%Y-%m-%d %H:%M:%S')}", nil, :bold
+)
 started = Time.now.to_f
 begin
     $tests.each{|name|
