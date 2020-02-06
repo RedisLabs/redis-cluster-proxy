@@ -39,6 +39,7 @@
 #include <errno.h>
 #include <ctype.h>
 #include <limits.h>
+#include <strings.h>
 #include <math.h>
 
 #include "read.h"
