@@ -2747,6 +2747,36 @@ static int requestMakeRoomForArgs(clientRequest *req, int argc) {
     return 1;
 }
 
+static int splitPipelinedQueries(clientRequest *req, char *p, int is_inline) {
+    /* Multiple commands (queries) from a pipelined request.
+     * Split current requestinto multiple requests. */
+    proxyLogDebug("Multiple %squeries (pipelined) %d, "
+                  "splitting request " REQID_PRINTF_FMT "...\n",
+                  (is_inline ? "inline " : ""),
+                  req->num_commands,
+                  REQID_PRINTF_ARG(req));
+    int buflen = sdslen(req->buffer);
+    client *c = req->client;
+    /* Truncate current request buffer */
+    req->query_offset = p - req->buffer;
+    sds newbuf = sdsnewlen(p, buflen - req->query_offset);
+    sds reqbuf = sdsnewlen(req->buffer, req->query_offset);
+    sdsfree(req->buffer);
+    req->buffer = reqbuf;
+    req->num_commands = 1;
+    req->pending_bulks = 0;
+    /* Create a new request with the remaining buffer */
+    clientRequest *new = createRequest(c);
+    new->buffer = sdscat(new->buffer, newbuf);
+    sdsfree(newbuf);
+    /* Set the new request as current in order to accept
+     * new bytes read from client. */
+    c->current_request = new;
+    listAddNodeTail(c->requests_to_process, new);
+    buflen = req->query_offset;
+    return buflen;
+}
+
 static int parseRequest(clientRequest *req, sds *err) {
     int status = req->parsing_status, lf_len = 2, len, i;
     proxyLogDebug("Parsing request " REQID_PRINTF_FMT ", status: %d\n",
@@ -2789,30 +2819,8 @@ static int parseRequest(clientRequest *req, sds *err) {
             );
             if (*p == '*' && !parsing_bulks) {
                 if (req->num_commands > 0) {
-                    /* Multiple commands (queries) from a pipelined request.
-                     * Split current requestinto multiple requests. */
-                    proxyLogDebug("Multiple queries (pipelined) %d, "
-                                  "splitting request " REQID_PRINTF_FMT "...\n",
-                                  req->num_commands,
-                                  REQID_PRINTF_ARG(req));
-                    client *c = req->client;
-                    /* Truncate current request buffer */
-                    req->query_offset = p - req->buffer;
-                    sds newbuf = sdsnewlen(p, buflen - req->query_offset);
-                    sds reqbuf = sdsnewlen(req->buffer, req->query_offset);
-                    sdsfree(req->buffer);
-                    req->buffer = reqbuf;
-                    req->num_commands = 1;
-                    req->pending_bulks = 0;
-                    /* Create a new request with the remaining buffer */
-                    clientRequest *new = createRequest(c);
-                    new->buffer = sdscat(new->buffer, newbuf);
-                    sdsfree(newbuf);
-                    /* Set the new request as current in order to accept
-                     * new bytes read from client. */
-                    c->current_request = new;
-                    buflen = req->query_offset;
-                    listAddNodeTail(c->requests_to_process, new);
+                    /* Pipelined queries */
+                    buflen = splitPipelinedQueries(req, p, 0);
                     break;
                 } else {
                     /* New query */
@@ -2966,37 +2974,52 @@ static int parseRequest(clientRequest *req, sds *err) {
             }
         }
     } else {
-        nl = strchr(p, '\n');
-        if (nl == NULL) {
-            status = PARSE_STATUS_INCOMPLETE;
-            goto cleanup;
-        }
-        lf_len = 1;
-        if (nl != p && *(nl - 1) == '\r') {
-            lf_len++;
-            nl--;
-        }
-        int qrylen = nl - p;
-        int remaining = qrylen;
-        if (remaining > PROTO_INLINE_MAX_SIZE) {
-            if (err) *err = sdsnew("Protocol error: too big inline string");
-            status = PARSE_STATUS_ERROR;
-            goto cleanup;
-        }
-        while (remaining > 0) {
-            int idx = req->argc++;
-            if (!requestMakeRoomForArgs(req, idx)) {
+        while (req->query_offset < buflen) {
+            if (req->num_commands > 0) {
+                /* Pipelined query */
+                buflen = splitPipelinedQueries(req, p, 1);
+                break;
+            }
+            nl = strchr(p, '\n');
+            if (nl == NULL) {
+                status = PARSE_STATUS_INCOMPLETE;
+                goto cleanup;
+            }
+            lf_len = 1;
+            if (nl != p && *(nl - 1) == '\r') {
+                lf_len++;
+                nl--;
+            }
+            char *qry = p;
+            int qrylen = nl - p;
+            int remaining = qrylen;
+            if (qrylen > PROTO_INLINE_MAX_SIZE) {
+                if (err) *err = sdsnew("Protocol error: too big inline string");
+                status = PARSE_STATUS_ERROR;
+                goto cleanup;
+            } else if (qrylen == 0) {
+                if (err) *err = sdsnew("Protocol error: empry inline query");
                 status = PARSE_STATUS_ERROR;
                 goto cleanup;
             }
-            char *sep = strchr(p, ' ');
-            if (!sep) sep = nl;
-            req->offsets[idx] = p - req->buffer;
-            req->lengths[idx] = sep - p;
-            p = sep + 1;
-            remaining = nl - p;
+            while (remaining > 0) {
+                int idx = req->argc++;
+                if (!requestMakeRoomForArgs(req, idx)) {
+                    status = PARSE_STATUS_ERROR;
+                    goto cleanup;
+                }
+                char *sep = strchr(p, ' ');
+                if (!sep) sep = nl;
+                req->offsets[idx] = p - req->buffer;
+                req->lengths[idx] = sep - p;
+                p = sep + 1;
+                remaining = nl - p;
+            }
+            status = PARSE_STATUS_OK;
+            req->num_commands++;
+            p = qry + qrylen + lf_len;
+            req->query_offset = (p - req->buffer);
         }
-        status = PARSE_STATUS_OK;
     }
 cleanup:
     if (req->query_offset > buflen) req->query_offset = buflen;
