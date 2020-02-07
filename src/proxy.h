@@ -119,10 +119,12 @@ typedef struct client {
     struct clientRequest *current_request; /* Currently reading */
     uint64_t min_reply_id;
     rax *unordered_replies;
+    list *requests;                  /* All client's requests */
     list *requests_to_process;       /* Requests not completely parsed */
     int requests_with_write_handler; /* Number of request that are still
                                       * being writing to cluster */
-    list *requests_to_reprocess;
+    list *requests_to_reprocess;     /* Requestst to re-process after cluster
+                                      * re-configuration completes */
     int pending_multiplex_requests;  /* Number of request that have to be
                                       * written/read before sending requests
                                       * to private cluster connection */

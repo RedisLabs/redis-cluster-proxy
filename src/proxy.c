@@ -117,6 +117,7 @@ static int disableMultiplexingForClient(client *c);
 char *redisClusterProxyGitSHA1(void);
 char *redisClusterProxyGitDirty(void);
 char *redisClusterProxyGitBranch(void);
+static int processThreadPipeBufferForNewClients(proxyThread *thread);
 #ifdef HAVE_BACKTRACE
 void sigsegvHandler(int sig, siginfo_t *info, void *secret);
 #endif
@@ -1846,9 +1847,6 @@ static void releaseProxy(void) {
     if (proxy.commands)
         raxFree(proxy.commands);
     closeListeningSockets();
-    if (config.unixsocket) zfree(config.unixsocket);
-    if (config.pidfile) zfree(config.pidfile);
-    if (config.logfile) zfree(config.logfile);
     for (i = 0; i < config.bindaddr_count; i++) {
         zfree(config.bindaddr[i]);
     }
@@ -1891,6 +1889,7 @@ static void writeRepliesToClients(struct aeEventLoop *el) {
 void beforeThreadSleep(struct aeEventLoop *eventLoop) {
     proxyThread *thread = eventLoop->privdata;
     writeRepliesToClients(eventLoop);
+    processThreadPipeBufferForNewClients(thread);
     if (thread->cluster->is_updating ||
         thread->cluster->broken) return;
     listIter li;
@@ -1917,9 +1916,18 @@ static int processThreadPipeBufferForNewClients(proxyThread *thread) {
         char *p = thread->msgbuffer + (i * msgsize);
         client **pc = (void*) p;
         c = (client *) *pc;
+        /* If thread is going to be freed, free all clients that were
+         * still waiting to be added on the thread itself. */
+        if (thread->loop == NULL) {
+            if (c != NULL) freeClient(c);
+            processed++;
+            continue;
+        }
         if (c == (void*) THREAD_MSG_STOP) {
             proxyLogDebug("Stopping thread %d\n", thread->thread_id);
             aeStop(thread->loop);
+            processed++;
+            sdsrange(thread->msgbuffer, processed * msgsize, -1);
             return processed;
         }
         aeEventLoop *el = thread->loop;
@@ -2154,6 +2162,9 @@ static void freeProxyThread(proxyThread *thread) {
         thread->unlinked_clients = NULL;
     }
     if (thread->pending_messages != NULL) {
+        /* Check if there are still clients that have to be added and
+         * free them. */
+        processThreadPipeBufferForNewClients(thread);
         listRelease(thread->pending_messages);
     }
     if (thread->io[0]) close(thread->io[0]);
@@ -2169,6 +2180,11 @@ static client *createClient(int fd, char *ip) {
     if (c == NULL) {
         proxyLogErr("Failed to allocate memory for client: %s\n", ip);
         close(fd);
+        return NULL;
+    }
+    c->requests = listCreate();
+    if (c->requests == NULL) {
+        freeClient(c);
         return NULL;
     }
     c->requests_to_process = listCreate();
@@ -2305,49 +2321,18 @@ static void unlinkClient(client *c) {
 }
 
 static void freeAllClientRequests(client *c) {
+    aeEventLoop *el = getClientLoop(c);
+    int unlinked = (c->status == CLIENT_STATUS_UNLINKED);
     listIter li;
     listNode *ln;
-    redisCluster *cluster = getCluster(c);
-    listRewind(c->requests_to_reprocess, &li);
+    listRewind(c->requests, &li);
     while ((ln = listNext(&li))) {
         clientRequest *req = ln->value;
-        clusterRemoveRequestToReprocess(cluster, req);
-    }
-    listEmpty(c->requests_to_reprocess);
-    listRewind(cluster->nodes, &li);
-    while ((ln = listNext(&li))) {
-        clusterNode *node = ln->value;
-        redisClusterConnection *conn = node->connection;
-        if (!conn) continue;
-        listIter nli;
-        listNode *nln;
-        listRewind(conn->requests_to_send, &nli);
-        while ((nln = listNext(&nli))) {
-            clientRequest *req = nln->value;
-            if (req == NULL) {
-                /*listDelNode(conn->requests_to_send, nln);*/
-                continue;
-            }
-            if (req->client != c) continue;
-            if (c->status == CLIENT_STATUS_UNLINKED && req->has_write_handler)
-                continue;
-            listDelNode(conn->requests_to_send, nln);
-            freeRequest(req);
-        }
-        listRewind(conn->requests_pending, &nli);
-        while ((nln = listNext(&nli))) {
-            clientRequest *req = nln->value;
-            if (req == NULL) continue;
-            if (req->client != c) continue;
-            /* We cannot delete the request's list node from the queue, since
-             * this would break the processing order of the replies, so we
-             * we create a NULL placeholder (a 'ghost request') by simply
-             * setting the list node's value to NULL. */
-            nln->value = NULL;
-            freeRequest(req);
-        }
-        if (config.dump_queues)
-            dumpQueue(node, c->thread_id, QUEUE_TYPE_PENDING);
+        if (req->client != c) continue;
+        if (el && unlinked && req->has_write_handler && req->written > 0)
+            continue;
+        listDelNode(c->requests, ln);
+        freeRequest(req);
     }
 }
 
@@ -2370,7 +2355,6 @@ static void freeClient(client *c) {
     if (c->obuf != NULL) sdsfree(c->obuf);
     if (c->reply_array != NULL) listRelease(c->reply_array);
     if (c->current_request) freeRequest(c->current_request);
-    freeAllClientRequests(c);
     listIter li;
     listRewind(c->requests_to_process, &li);
     while ((ln = listNext(&li))) {
@@ -2378,8 +2362,10 @@ static void freeClient(client *c) {
         listDelNode(c->requests_to_process, ln);
         if (req != NULL) freeRequest(req);
     }
+    freeAllClientRequests(c);
     listRelease(c->requests_to_process);
     listRelease(c->requests_to_reprocess);
+    listRelease(c->requests);
     if (c->unordered_replies)
         raxFreeWithCallback(c->unordered_replies, (void (*)(void*))sdsfree);
     if (c->cluster != NULL) freeCluster(c->cluster);
@@ -2636,7 +2622,7 @@ void onClusterNodeDisconnection(clusterNode *node) {
             assert(req->node == node);
             /* If the request has a write handler installed, it means that
              * it could not have completely written its buffer to the node.
-             * In this case, the client shpuld receive the reply error and
+             * In this case, the client should receive the reply error and
              * the request itself should be dequeued and freed. */
             if (req->has_write_handler) {
                 req->has_write_handler = 0;
@@ -3340,7 +3326,7 @@ void freeRequest(clientRequest *req) {
     if (req->need_reprocessing && el != NULL) return;
     proxyLogDebug("Free Request " REQID_PRINTF_FMT "\n",REQID_PRINTF_ARG(req));
     if (req->has_write_handler && req->written > 0 && el != NULL) {
-        proxyLogDebug("Request " REQID_PRINTF_FMT " is still writting, "
+        proxyLogDebug("Request " REQID_PRINTF_FMT " is still writing, "
                       "cannot free it now...\n", REQID_PRINTF_ARG(req));
         return;
     }
@@ -3393,6 +3379,8 @@ void freeRequest(clientRequest *req) {
     if (cluster) clusterRemoveRequestToReprocess(cluster, req);
     if (config.dump_queues)
         dumpQueue(req->node, req->client->thread_id, QUEUE_TYPE_PENDING);
+    ln = listSearchKey(req->client->requests, req);
+    if (ln) listDelNode(req->client->requests, ln);
     zfree(req);
 }
 
@@ -3459,6 +3447,7 @@ static void dequeueRequest(clientRequest *req, int queue_type) {
 static clientRequest *createRequest(client *c) {
     clientRequest *req = zcalloc(sizeof(*req));
     if (req == NULL) goto alloc_failure;
+    listAddNodeTail(c->requests, req);
     req->client = c;
     req->buffer = sdsempty();
     if (req->buffer ==  NULL) goto alloc_failure;
@@ -3890,7 +3879,7 @@ void acceptTcpHandler(aeEventLoop *el, int fd, void *privdata, int mask)
                                   sizeof(client_ip), &client_port);
         if (client_fd == ANET_ERR) {
             if (errno != EWOULDBLOCK)
-                proxyLogWarn("Accepting client connection: %s\n",
+                proxyLogWarn("Error accepting client connection: %s\n",
                              proxy.neterr);
             return;
         }
@@ -4392,5 +4381,8 @@ cleanup:
     if (config_cluster_addr) sdsfree((sds) config_cluster_addr);
     releaseProxy();
     proxyLogHdr("Bye bye!\n");
+    if (config.unixsocket) zfree(config.unixsocket);
+    if (config.pidfile) zfree(config.pidfile);
+    if (config.logfile) zfree(config.logfile);
     return exit_status;
 }

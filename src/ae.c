@@ -449,6 +449,10 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
              * inverted. */
             if (!invert && fe->mask & mask & AE_READABLE) {
                 fe->rfileProc(eventLoop,fd,fe->clientData,mask);
+                /* Get the pointer to the event again since events could
+                 * have be reallocated if aeResizeSetSize has been called
+                 * inside the handler. */
+                fe = &eventLoop->events[eventLoop->fired[j].fd];
                 fired++;
             }
 
@@ -456,6 +460,10 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
             if (fe->mask & mask & AE_WRITABLE) {
                 if (!fired || fe->wfileProc != fe->rfileProc) {
                     fe->wfileProc(eventLoop,fd,fe->clientData,mask);
+                    /* Get the pointer to the event again since events could
+                     * have be reallocated if aeResizeSetSize has been called
+                     * inside the handler. */
+                    fe = &eventLoop->events[eventLoop->fired[j].fd];
                     fired++;
                 }
             }
@@ -465,6 +473,10 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
             if (invert && fe->mask & mask & AE_READABLE) {
                 if (!fired || fe->wfileProc != fe->rfileProc) {
                     fe->rfileProc(eventLoop,fd,fe->clientData,mask);
+                    /* Get the pointer to the event again since events could
+                     * have be reallocated if aeResizeSetSize has been called
+                     * inside the handler. */
+                    fe = &eventLoop->events[eventLoop->fired[j].fd];
                     fired++;
                 }
             }
