@@ -2033,8 +2033,7 @@ static proxyThread *createProxyThread(int index) {
     thread->pending_messages = listCreate();
     if (thread->pending_messages == NULL) goto fail;
     listSetFreeMethod(thread->pending_messages, zfree);
-    int loopsize = proxy.min_reserved_fds +
-       (config.maxclients / config.num_threads) + 1;
+    int loopsize = proxy.min_reserved_fds + config.maxclients;
     thread->loop = aeCreateEventLoop(loopsize);
     if (thread->loop == NULL) {
         proxyLogErr("Failed to allocate event loop for thread %d\n", index);
