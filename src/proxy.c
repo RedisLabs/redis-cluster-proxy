@@ -106,7 +106,8 @@ static void writeToClusterHandler(aeEventLoop *el, int fd, void *privdata,
                                   int mask);
 static void readClusterReply(aeEventLoop *el, int fd, void *privdata, int mask);
 static clusterNode *getRequestNode(clientRequest *req, sds *err);
-static clientRequest *handleNextRequestToCluster(clusterNode *node);
+static clientRequest *handleNextRequestToCluster(clusterNode *node,
+    clientRequest **failed);
 static clientRequest *getFirstQueuedRequest(list *queue, int *is_empty);
 static int enqueueRequest(clientRequest *req, int queue_type);
 static void dequeueRequest(clientRequest *req, int queue_type);
@@ -1897,7 +1898,7 @@ void beforeThreadSleep(struct aeEventLoop *eventLoop) {
     listRewind(thread->cluster->nodes, &li);
     while ((ln = listNext(&li))) {
         clusterNode *node = ln->value;
-        handleNextRequestToCluster(node);
+        handleNextRequestToCluster(node, NULL);
     }
     listRewind(thread->unlinked_clients, &li);
     while ((ln = listNext(&li))) {
@@ -2292,7 +2293,7 @@ static int disableMultiplexingForClient(client *c) {
                           c->thread_id, c->id);
         }
         if (c->pending_multiplex_requests == 0)
-            handleNextRequestToCluster(node);
+            handleNextRequestToCluster(node, NULL);
         else {
             proxyLogDebug("Client %d:%" PRId64 " has %d pending requests to "
                           " node %s:%d on the multiplexing context\n",
@@ -2578,7 +2579,7 @@ static int writeToCluster(aeEventLoop *el, int fd, clientRequest *req) {
                           node->ip, node->port, c->thread_id, c->id);
         }
         /* Try to send the next available request to send, if one. */
-        handleNextRequestToCluster(node);
+        handleNextRequestToCluster(node, NULL);
     }
     return success;
 }
@@ -3604,12 +3605,18 @@ static int sendRequestToCluster(clientRequest *req, sds *errmsg)
 /* Try to send the next request in requests_to_send list, by calling
  * sendRequestToCluster. If an error occurs (sendRequestToCluster returns 0)
  * keep cycling the queue until sendRequestsToCluster returns 1.
+ * If **failed is not NULL, set the first failed request pointer to **failed,
+ * and it can be used to check if the request has already been freed.
  * Return the handled request, if any. */
 
-static clientRequest *handleNextRequestToCluster(clusterNode *node) {
+static clientRequest *handleNextRequestToCluster(clusterNode *node,
+                                                 clientRequest **failed)
+{
     clientRequest *req = getFirstRequestToSend(node, NULL);
     if (req == NULL) return NULL;
-    while (!sendRequestToCluster(req, NULL)) {
+    int sent;
+    while (!(sent = sendRequestToCluster(req, NULL))) {
+        if (failed != NULL && *failed == NULL) *failed = req;
         req = getFirstRequestToSend(node, NULL);
         if (req == NULL) break;
     }
@@ -3631,7 +3638,7 @@ static void checkForMultiplexingRequestsToBeConsumed(clientRequest *req) {
             listRewind(req->client->cluster->nodes, &li);
             while ((ln = listNext(&li))) {
                 clusterNode *node = ln->value;
-                handleNextRequestToCluster(node);
+                handleNextRequestToCluster(node, NULL);
             }
         } else {
             proxyLogDebug("Client %d:" PRId64 " still has %d pending requests "
@@ -3643,6 +3650,7 @@ static void checkForMultiplexingRequestsToBeConsumed(clientRequest *req) {
 }
 
 int processRequest(clientRequest *req, int *parsing_status) {
+    uint64_t req_id = req->id;
     client *c = req->client;
     if (!req->parsed) {
         sds parsing_err = NULL;
@@ -3739,7 +3747,19 @@ int processRequest(clientRequest *req, int *parsing_status) {
         else node = req->node = req->client->multi_transaction_node;
     }
     if (!enqueueRequestToSend(req)) goto invalid_request;
-    handleNextRequestToCluster(req->node);
+    clientRequest *failed_req = NULL;
+    uint64_t min_reply_id = c->min_reply_id;
+    handleNextRequestToCluster(req->node, &failed_req);
+    /* If requests has failed, it has been already freed, so jump directly to
+     * invalid_request. */
+    if (failed_req == req) {
+        req = NULL;
+        /* If no reply has been added during failed sending, add an error
+         * reply. */
+        if (c->min_reply_id == min_reply_id)
+            errmsg = sdsnew(ERROR_CLUSTER_WRITE_FAIL);
+        goto invalid_request;
+    }
     if (req->child_requests && listLength(req->child_requests) > 0) {
         listIter li;
         listNode *ln;
@@ -3749,8 +3769,10 @@ int processRequest(clientRequest *req, int *parsing_status) {
             clientRequest *r = ln->value;
             if (!enqueueRequestToSend(r)) goto invalid_request;
             if (r->node != last_node) {
-                handleNextRequestToCluster(r->node);
                 last_node = r->node;
+                clientRequest *failed_req = NULL;
+                handleNextRequestToCluster(r->node, &failed_req);
+                if (failed_req == r) goto invalid_request;
             }
         }
     }
@@ -3759,12 +3781,12 @@ int processRequest(clientRequest *req, int *parsing_status) {
 invalid_request:
     if (command_name) sdsfree(command_name);
     if (errmsg != NULL) {
-        addReplyError(c, (char *) errmsg, req->id);
+        addReplyError(c, (char *) errmsg, req_id);
         sdsfree(errmsg);
-        freeRequest(req);
+        if (req) freeRequest(req);
         return 1;
     }
-    freeRequest(req);
+    if (req) freeRequest(req);
     return 0;
 }
 
@@ -4194,7 +4216,7 @@ static void readClusterReply(aeEventLoop *el, int fd,
                 node->connection->authenticated = 0;
             }
             consumeRedisReaderBuffer(ctx);
-            handleNextRequestToCluster(node);
+            handleNextRequestToCluster(node, NULL);
         }
         if (authreply) freeReplyObject(authreply);
         return;

@@ -26,10 +26,19 @@ include RedisProxyTestLogger
 opts =RedisProxyTestUtils::OptionParser.new help_banner_arguments: '[TESTS]' do
 
     option   '',   '--proxy-threads NUM', 'Number of proxy threads'
+    option   '',   '--proxy-log-level LEVEL', 'Proxy log level'
+    option  '',   '--valgrind', 'Enable Valgrind'
     option   '',   '--benchmark-threads NUM', 'Number of benchmark threads'
     option   '',   '--benchmark-pipeline NUM', 'Pipeline queries'
+    option   '',   '--benchmark-clients NUM',
+             'Benchmark clients (use `max` to use `maxclients` from proxy)'
     option   '',   '--benchmark-opts OPTS', 'Other redis-benchmark options'
     option '-r',   '--repeat NUM', 'Repeat tests multiple times'
+    option '-w',   '--wait SEC',
+            'Wait time in seconds between each benchmark (default: 0, ' +
+            'can be < 1, e.g. 0.5)'
+    option '-d',   '--display OPTS',
+           'Display benchmark results: none|short|normal (default: normal)'
     option '-o',   '--output PATH', 'Output results to a file'
     option   '',   '--csv', 'Set output format to CSV'
 
@@ -38,10 +47,22 @@ end
 opts.auto_help!
 opts.parse!
 $options = opts.options
+$display = :normal
+if (display_opts = $options[:display])
+    if display_opts == 'none'
+        $display = false
+    else
+        $display = :"#{display_opts}"
+    end
+end
+if $options[:wait]
+    $options[:wait] = $options[:wait].to_f
+end
 $tests = ARGV
 if $tests.length == 0
     $tests = %w(get)
 end
+$bm_err_log = "/tmp/proxy-redis-benchmark.#{urand2hex(4)}.err"
 
 def setup(proxy_threads: nil)
     if !$main_cluster
@@ -51,9 +72,26 @@ def setup(proxy_threads: nil)
     end
     if !$main_proxy
         @proxy = RedisClusterProxy.new @cluster, verbose: true,
-                                       threads: proxy_threads
+                                       threads: proxy_threads,
+                                       valgrind: $options[:valgrind],
+                                       log_level: $options[:proxy_log_level] ||
+                                                  :error
         @proxy.start
         $main_proxy = @proxy
+    end
+    if $options[:benchmark_clients] == 'max'
+        reply = @proxy.redis_command :proxy, :config, :get, :maxclients
+        if reply.is_a? Redis::CommandError
+            puts reply.to_s
+            final_cleanup
+            exit
+        end
+        c = reply[1].to_i
+        if c > 0
+            $options[:benchmark_clients] = c
+        end
+        client = @proxy.redis.instance_eval{@client}
+        client.disconnect
     end
 end
 
@@ -96,6 +134,7 @@ def redis_benchmark(port, tests, **kwargs)
     elsif tests.is_a?(String) && tests.length > 0
         cmd += " #{tests}"
     end
+    cmd << " 2>#{$bm_err_log}"
     puts cmd
     `#{cmd}`
 end
@@ -145,6 +184,10 @@ Signal.trap("TERM") do
     final_cleanup
 end
 
+Signal.trap("INT") do
+    final_cleanup
+end
+
 $redis_benchmark = find_redis!["redis-benchmark"]
 if !$redis_benchmark
     STDERR.puts "Could not find 'redis-benchmark' in your path"
@@ -182,26 +225,45 @@ proxy_threads.each{|pthreads|
         begin
             log "PROXY THREADS: #{pthreads}",nil,:bold if pthreads
             log "BENCHMARK THREADS: #{bthreads}",nil,:bold if bthreads
-            repeat.times{
+            repeat.times{|repeat_i|
                 out = redis_benchmark($main_proxy.port, $tests, r: 10,
                                       threads: bthreads,
+                                      c: $options[:benchmark_clients],
                                       P: $options[:benchmark_pipeline])
                 if !$?.success?
+                    if File.exists? $bm_err_log
+                        out = "#{File.read($bm_err_log)}\n#{out}"
+                    end
                     raise out
                 end
-                puts RedisProxyTestLogger::colorized(out, :cyan)
+                if $display == :normal
+                    puts RedisProxyTestLogger::colorized(out, :cyan)
+                end
                 total_tests += $tests.length
                 tests = parse_benchmark(out)
+                if $display == :short
+                    short_out = tests.map{|t|
+                        "#{repeat_i + 1}. #{(t[:name] || '')}: " +
+                        [:rps, :min_latency, :max_latency].map{|prop|
+                            val = t[prop]
+                            "#{prop}=#{val}"
+                        }.join(', ')
+                    }.join("\n")
+                    puts RedisProxyTestLogger::colorized(short_out, :cyan)
+                end
                 benchmarks.push({
                     proxy_threads: pthreads,
                     benchmark_threads: bthreads,
                     output: out,
                     tests: tests
                 })
+                sleep($options[:wait]) if $options[:wait]
             }
         rescue Exception => e
             STDERR.puts e.to_s.red
-            STDERR.puts e.backtrace.join("\n").yellow
+            if $?.success?
+                STDERR.puts e.backtrace.join("\n").yellow
+            end
             failed = true
         end
         if failed
