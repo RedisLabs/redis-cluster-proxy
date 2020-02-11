@@ -15,14 +15,23 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <stdint.h>
+#include <inttypes.h>
 #include "reply_order.h"
 #include "logger.h"
 #include "endianconv.h"
 
 void addUnorderedReply(client *c, sds reply, uint64_t req_id) {
     uint64_t be_id = htonu64(req_id); /* Big-endian request ID */
+    sds oldreply = NULL;
     raxInsert(c->unordered_replies, (unsigned char *) &be_id,
-              sizeof(be_id), reply, NULL);
+              sizeof(be_id), reply, (void **)&oldreply);
+    if (oldreply != NULL) {
+        proxyLogDebug("WARN: Unordered reply for request %d:%" PRId64 ":%"
+            PRId64 " was alredy set to: '%s', and new reply " " is '%s'\n",
+            c->thread_id, c->id, req_id, oldreply, reply);
+        sdsfree(oldreply);
+    }
 }
 
 int appendUnorderedRepliesToBuffer(client *c) {
