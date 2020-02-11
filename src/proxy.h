@@ -111,6 +111,8 @@ typedef struct client {
     uint64_t id;
     int fd;
     sds ip;
+    int port;
+    sds addr;
     int thread_id;
     sds obuf;
     size_t written;

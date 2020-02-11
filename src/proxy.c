@@ -1973,7 +1973,7 @@ static int processThreadPipeBufferForNewClients(proxyThread *thread) {
             continue;
         }
         if (c == (void*) THREAD_MSG_STOP) {
-            proxyLogDebug("Stopping thread %d\n", thread->thread_id);
+            proxyLogInfo("Stopping thread %d\n", thread->thread_id);
             aeStop(thread->loop);
             processed++;
             sdsrange(thread->msgbuffer, processed * msgsize, -1);
@@ -2253,6 +2253,8 @@ static client *createClient(int fd, char *ip) {
     c->flags = 0;
     c->fd = fd;
     c->ip = ip ? sdsnew(ip) : NULL;
+    c->port = 0;
+    c->addr = NULL;
     c->obuf = sdsempty();
     c->reply_array = NULL;
     c->current_request = NULL;
@@ -2465,6 +2467,7 @@ static void freeClient(client *c) {
     listNode *ln = c->clients_node;
     if (ln != NULL) listDelNode(thread->clients, ln);
     if (c->ip != NULL) sdsfree(c->ip);
+    if (c->addr != NULL) sdsfree(c->addr);
     if (c->obuf != NULL) sdsfree(c->obuf);
     if (c->reply_array != NULL) listRelease(c->reply_array);
     if (c->current_request) freeRequest(c->current_request);
@@ -4010,7 +4013,7 @@ void readQuery(aeEventLoop *el, int fd, void *privdata, int mask){
     }
 }
 
-static void acceptHandler(int fd, char *ip) {
+static void acceptHandler(int fd, char *ip, int port) {
     if (proxy.numclients >= (uint64_t) config.maxclients) {
         char *err = "-ERR max number of clients reached\r\n";
         static int errlen = 0;
@@ -4029,8 +4032,11 @@ static void acceptHandler(int fd, char *ip) {
         sdsfree(err);
         return;
     }
-    proxyLogDebug("Client %" PRId64 " connected from %s (thread: %d)\n",
-                  c->id, ip ? ip : config.unixsocket, c->thread_id);
+    c->port = port;
+    if (ip) c->addr = sdscatprintf(sdsempty(), "%s:%d", ip, port);
+    else c->addr = sdscatprintf(sdsempty(), "unix://%s", config.unixsocket);
+    proxyLogDebug("Client %d:%" PRId64 " connected from %s (thread: %d)\n",
+                  c->thread_id, c->id, c->addr, c->thread_id);
     proxyThread *thread = proxy.threads[c->thread_id];
     assert(thread != NULL);
     if (!awakeThreadForNewClient(thread, c)) {
@@ -4060,7 +4066,7 @@ void acceptTcpHandler(aeEventLoop *el, int fd, void *privdata, int mask)
         }
         proxyLogDebug("Accepted connection from %s:%d\n", client_ip,
                       client_port);
-        acceptHandler(client_fd, client_ip);
+        acceptHandler(client_fd, client_ip, client_port);
     }
 }
 
@@ -4078,7 +4084,7 @@ void acceptUnixHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
             return;
         }
         proxyLogDebug("Accepted connection to %s\n", config.unixsocket);
-        acceptHandler(client_fd, NULL);
+        acceptHandler(client_fd, NULL, 0);
     }
 }
 
@@ -4385,7 +4391,7 @@ static void readClusterReply(aeEventLoop *el, int fd,
 static void *execProxyThread(void *ptr) {
     proxyThread *thread = (proxyThread *) ptr;
     aeMain(thread->loop);
-    proxyLogDebug("Thread %d ended\n", thread->thread_id);
+    proxyLogInfo("Thread %d ended\n", thread->thread_id);
     return NULL;
 }
 
