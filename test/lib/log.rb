@@ -13,6 +13,8 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+require 'time'
+
 module RedisProxyTestLogger
 
     STYLES = {
@@ -83,6 +85,12 @@ module RedisProxyTestLogger
         STDERR.flush
         STDOUT.flush
         STDERR.puts ''
+        t = RedisProxyTestCase::set_exception_time(e, t)
+        if t
+            ts = t.strftime '%Y-%m-%d %H:%M:%S'
+            ts = "#{ts}.#{t.tv_usec / 1000}"
+            STDERR.puts("Exception #{e.class} raised on #{ts}".red)
+        end
         STDERR.puts(e.to_s.red)
         STDERR.puts(e.backtrace.join("\n").yellow)
         STDERR.flush

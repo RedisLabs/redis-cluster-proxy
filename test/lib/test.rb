@@ -279,6 +279,8 @@ class RedisProxyTestCase
 
     def on_exception(e)
         if !e.is_a? Interrupt
+            t = Time.now
+            RedisProxyTestCase::set_exception_time(e, t)
             @@exceptions << e
             log_exception(e)
         else
@@ -300,6 +302,22 @@ class RedisProxyTestCase
 
     def RedisProxyTestCase::exceptions
         @@exceptions
+    end
+
+    def RedisProxyTestCase::set_exception_time(e, t = nil)
+        t ||= Time.now
+        begin
+            e.instance_eval{@_proxy_exception_t = t}
+        rescue Exception => e
+        end
+    end
+
+    def RedisProxyTestCase::get_exception_time(e)
+        begin
+            e.instance_eval{@_proxy_exception_t}
+        rescue Exception => e
+            nil
+        end
     end
 
     class AssertionFailure < Exception

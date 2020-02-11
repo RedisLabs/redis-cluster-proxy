@@ -81,8 +81,17 @@ def log_exceptions(exceptions)
             end
             f.puts "Tests: #{$tests.join(', ')}"
             exceptions.each_with_index{|e, i|
+                ts = nil
+                t = RedisProxyTestCase::get_exception_time(e)
+                if t
+                    ts = t.strftime '%Y-%m-%d %H:%M:%S'
+                    ts = "#{ts}.#{t.tv_usec / 1000}"
+                end
                 f.puts "\n-----------------------------\n\n"
                 f.puts "Exception ##{i + 1}: #{e.class}"
+                if ts
+                    f.puts "Time: #{ts}"
+                end
                 f.puts "Message: #{e.to_s}"
                 f.puts "Backtrace:"
                 e.backtrace.each{|bt|

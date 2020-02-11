@@ -66,6 +66,21 @@
 #define getThread(c) (proxy.threads[c->thread_id])
 #define getCluster(c) \
     (c->cluster ? c->cluster : proxy.threads[c->thread_id]->cluster)
+#define addObjectToList(obj, listowner, listname, success) do {\
+    if (listAddNodeTail(listowner->listname, obj) == NULL) {\
+        if (success != NULL) *success = 0;\
+        obj->listname ## _node = NULL;\
+        break;\
+    }\
+    if (success != NULL) *success = 1;\
+    obj->listname ## _node = listLast(listowner->listname);\
+} while (0)
+#define removeObjectFromList(obj, listowner, listname) do {\
+    if (obj->listname ## _node != NULL) {\
+        listDelNode(listowner->listname, obj->listname ## _node);\
+        obj->listname ## _node = NULL;\
+    }\
+} while (0)
 #define enqueueRequestToSend(req) (enqueueRequest(req, QUEUE_TYPE_SENDING))
 #define dequeueRequestToSend(req) (dequeueRequest(req, QUEUE_TYPE_SENDING))
 #define enqueuePendingRequest(req) (enqueueRequest(req, QUEUE_TYPE_PENDING))
@@ -1934,7 +1949,10 @@ void beforeThreadSleep(struct aeEventLoop *eventLoop) {
     while ((ln = listNext(&li))) {
         client *c = ln->value;
         listDelNode(thread->unlinked_clients, ln);
-        if (c != NULL) freeClient(c);
+        if (c != NULL) {
+            c->unlinked_clients_node = NULL;
+            freeClient(c);
+        }
     }
 }
 
@@ -1962,7 +1980,16 @@ static int processThreadPipeBufferForNewClients(proxyThread *thread) {
             return processed;
         }
         aeEventLoop *el = thread->loop;
-        listAddNodeTail(thread->clients, c);
+        int added = 0;
+        int *p_added = &added;
+        addObjectToList(c, thread, clients, p_added);
+        if (!added) {
+            proxyLogErr("Failed to add client %" PRId64 " to thread %d\n",
+                thread->thread_id);
+            freeClient(c);
+            processed++;
+            continue;
+        }
         proxyLogDebug("Client %" PRId64 " added to thread %d\n",
                       c->id, c->thread_id);
         errno = 0;
@@ -2217,11 +2244,6 @@ static client *createClient(int fd, char *ip) {
         freeClient(c);
         return NULL;
     }
-    c->requests_to_process = listCreate();
-    if (c->requests_to_process == NULL) {
-        freeClient(c);
-        return NULL;
-    }
     c->unordered_replies = raxNew();
     if (c->unordered_replies == NULL) {
         freeClient(c);
@@ -2255,6 +2277,8 @@ static client *createClient(int fd, char *ip) {
     c->multi_transaction_node = NULL;
     c->auth_user = NULL;
     c->auth_passw = NULL;
+    c->clients_node = NULL;
+    c->unlinked_clients_node = NULL;
     if (config.disable_multiplexing == CFG_DISABLE_MULTIPLEXING_ALWAYS) {
         if (!disableMultiplexingForClient(c)) {
             unlinkClient(c);
@@ -2302,7 +2326,8 @@ static int disableMultiplexingForClient(client *c) {
             }
             /* Replace request node with duplicated node owned by the client */
             req->node = node;
-            listAddNodeTail(node->connection->requests_to_send, req);
+            int *p_ok = NULL;
+            addObjectToList(req, node->connection, requests_to_send, p_ok);
             listDelNode(conn->requests_to_send, ln);
             req->owned_by_client = 1;
         }
@@ -2385,10 +2410,12 @@ static void unlinkClient(client *c) {
         }
         close(c->fd);
         c->fd = -1;
+        proxy.numclients--;
     }
     if (c->cluster != NULL) closeClientPrivateConnection(c);
     proxyThread *thread = getThread(c);
-    listAddNodeTail(thread->unlinked_clients, c);
+    int *p_ok = NULL;
+    addObjectToList(c, thread, unlinked_clients, p_ok);
     c->status = CLIENT_STATUS_UNLINKED;
 }
 
@@ -2400,6 +2427,7 @@ static void freeAllClientRequests(client *c) {
     listRewind(c->requests, &li);
     while ((ln = listNext(&li))) {
         clientRequest *req = ln->value;
+        if (req == NULL) continue;
         if (req->client != c) continue;
         if (el && unlinked && req->has_write_handler && req->written > 0) {
             /* If the request is still being written to a shared (multiplex)
@@ -2416,6 +2444,7 @@ static void freeAllClientRequests(client *c) {
             } else continue;
         }
         listDelNode(c->requests, ln);
+        req->requests_node = NULL;
         freeRequest(req);
     }
 }
@@ -2433,32 +2462,23 @@ static void freeClient(client *c) {
     int thread_id = c->thread_id;
     proxyThread *thread = proxy.threads[thread_id];
     assert(thread != NULL);
-    listNode *ln = listSearchKey(thread->clients, c);
+    listNode *ln = c->clients_node;
     if (ln != NULL) listDelNode(thread->clients, ln);
     if (c->ip != NULL) sdsfree(c->ip);
     if (c->obuf != NULL) sdsfree(c->obuf);
     if (c->reply_array != NULL) listRelease(c->reply_array);
     if (c->current_request) freeRequest(c->current_request);
-    listIter li;
-    listRewind(c->requests_to_process, &li);
-    while ((ln = listNext(&li))) {
-        clientRequest *req = ln->value;
-        listDelNode(c->requests_to_process, ln);
-        if (req != NULL) freeRequest(req);
-    }
     freeAllClientRequests(c);
-    listRelease(c->requests_to_process);
     listRelease(c->requests_to_reprocess);
     listRelease(c->requests);
     if (c->unordered_replies)
         raxFreeWithCallback(c->unordered_replies, (void (*)(void*))sdsfree);
     if (c->cluster != NULL) freeCluster(c->cluster);
-    ln = listSearchKey(thread->unlinked_clients, c);
+    ln = c->unlinked_clients_node;
     if (ln) ln->value = NULL;
     if (c->auth_user != NULL) sdsfree(c->auth_user);
     if (c->auth_passw != NULL) sdsfree(c->auth_passw);
     zfree(c);
-    proxy.numclients--;
 }
 
 static int writeToClient(client *c) {
@@ -2624,7 +2644,7 @@ static int writeToCluster(aeEventLoop *el, int fd, clientRequest *req) {
         if (errno == EAGAIN) {
             nwritten = 0;
         } else {
-            proxyLogDebug("Error writing to cluster: %s\n", strerror(errno));
+            proxyLogWarn("Error writing to cluster: %s\n", strerror(errno));
             if (errno == EPIPE) {
                 clusterNodeDisconnect(req->node);
             } else {
@@ -2664,6 +2684,7 @@ static int writeToCluster(aeEventLoop *el, int fd, clientRequest *req) {
             list *pending_queue =
                 node->connection->requests_pending;
             listAddNodeTail(pending_queue, NULL);
+            req->requests_pending_node = NULL;
             freeRequest(req);
             if (owned_by_client) return 0;
             else success = 0;
@@ -2885,7 +2906,6 @@ static int splitPipelinedQueries(clientRequest *req, char *p, int is_inline) {
     /* Set the new request as current in order to accept
      * new bytes read from client. */
     c->current_request = new;
-    listAddNodeTail(c->requests_to_process, new);
     buflen = req->query_offset;
     return buflen;
 }
@@ -3490,28 +3510,25 @@ void freeRequest(clientRequest *req) {
     if (req->node != NULL) {
         redisClusterConnection *conn = req->node->connection;
         assert(conn != NULL);
-        listNode *ln = listSearchKey(conn->requests_to_send, req);
+        listNode *ln = req->requests_to_send_node;
         if (ln) listDelNode(conn->requests_to_send, ln);
+        req->requests_to_send_node = NULL;
         /* We cannot delete the request's list node from the requests_pending
          * queue, since this would break the reply processing order. So we just
          * set its value to NULL. The resulting NULL placeholder (we can call
          * it a 'ghost request') will be simply skipped during reply buffer
          * processing. */
-        ln = listSearchKey(conn->requests_pending, req);
+        ln = req->requests_pending_node;
         if (ln) ln->value = NULL;
+        req->requests_pending_node = NULL;
     }
-    /* If request is inside requests_to_process, just set the list's node
-     * value to NULL since we could be inside an interation of the list
-     * itself. */
-    listNode *ln = listSearchKey(req->client->requests_to_process, req);
-    if (ln) ln->value = NULL;
-    ln = listSearchKey(req->client->requests_to_reprocess, req);
+    listNode *ln = listSearchKey(req->client->requests_to_reprocess, req);
     if (ln) listDelNode(req->client->requests_to_reprocess, ln);
     redisCluster *cluster = getCluster(req->client);
     if (cluster) clusterRemoveRequestToReprocess(cluster, req);
     if (config.dump_queues)
         dumpQueue(req->node, req->client->thread_id, QUEUE_TYPE_PENDING);
-    ln = listSearchKey(req->client->requests, req);
+    ln = req->requests_node;
     if (ln) listDelNode(req->client->requests, ln);
     zfree(req);
 }
@@ -3524,6 +3541,12 @@ void freeRequestList(list *request_list) {
     while ((ln = listNext(&li))) {
         clientRequest *req = ln->value;
         listDelNode(request_list, ln);
+        if (req == NULL) continue;
+        if (ln == req->requests_node) req->requests_node = NULL;
+        else if (ln == req->requests_to_send_node)
+            req->requests_to_send_node = NULL;
+        else if (ln == req->requests_pending_node)
+            req->requests_pending_node = NULL;
         freeRequest(req);
     }
     listRelease(request_list);
@@ -3554,32 +3577,33 @@ static redisClusterConnection *getRequestConnection(clientRequest *req) {
 static int enqueueRequest(clientRequest *req, int queue_type) {
     redisClusterConnection *conn = getRequestConnection(req);
     if (conn == NULL) return 0;
-    list *queue = NULL;
-    if (queue_type == QUEUE_TYPE_SENDING)
-        queue = listAddNodeTail(conn->requests_to_send, req);
-    else if (queue_type == QUEUE_TYPE_PENDING)
-        queue = listAddNodeTail(conn->requests_pending, req);
-    return (queue != NULL);
+    int success = 0;
+    int *sp = &success;
+    if (queue_type == QUEUE_TYPE_SENDING) {
+        addObjectToList(req, conn, requests_to_send, sp);
+    } else if (queue_type == QUEUE_TYPE_PENDING) {
+        addObjectToList(req, conn, requests_pending, sp);
+    }
+    return success;
 }
 
 static void dequeueRequest(clientRequest *req, int queue_type) {
     redisClusterConnection *conn = getRequestConnection(req);
     if (conn == NULL) return;
-    list *queue = NULL;
-    if (queue_type == QUEUE_TYPE_SENDING)
-        queue = conn->requests_to_send;
-    else if (queue_type == QUEUE_TYPE_PENDING)
-        queue = conn->requests_pending;
-    if (queue == NULL) return;
-    listNode *ln = listSearchKey(queue, req);
-    if (ln != NULL)
-        listDelNode(queue, ln);
+    if (queue_type == QUEUE_TYPE_SENDING) {
+        removeObjectFromList(req, conn, requests_to_send);
+    } else if (queue_type == QUEUE_TYPE_PENDING) {
+        removeObjectFromList(req, conn, requests_pending);
+    }
 }
 
 static clientRequest *createRequest(client *c) {
     clientRequest *req = zcalloc(sizeof(*req));
     if (req == NULL) goto alloc_failure;
-    listAddNodeTail(c->requests, req);
+    int added = 0;
+    int *p_added = &added;
+    addObjectToList(req, c, requests, p_added);
+    if (!added) goto alloc_failure;
     req->client = c;
     req->buffer = sdsempty();
     if (req->buffer ==  NULL) goto alloc_failure;
@@ -3613,6 +3637,8 @@ static clientRequest *createRequest(client *c) {
     req->parent_request = NULL;
     req->child_requests = NULL;
     req->child_replies = NULL;
+    req->requests_pending_node = NULL;
+    req->requests_to_send_node = NULL;
     req->max_child_reply_id = 0;
     proxyLogDebug("Created Request " REQID_PRINTF_FMT  "\n",
                   REQID_PRINTF_ARG(req));
@@ -3774,9 +3800,13 @@ static void checkForMultiplexingRequestsToBeConsumed(clientRequest *req) {
     }
 }
 
-int processRequest(clientRequest *req, int *parsing_status) {
+int processRequest(clientRequest *req, int *parsing_status,
+                   clientRequest **next)
+{
     uint64_t req_id = req->id;
+    int invalid_request_replied = 0;
     client *c = req->client;
+    if (next != NULL) *next = NULL;
     if (!req->parsed) {
         sds parsing_err = NULL;
         int status = parseRequest(req, &parsing_err);
@@ -3797,6 +3827,11 @@ int processRequest(clientRequest *req, int *parsing_status) {
         req->parsed = 1;
         proxyLogDebug("Parsing complete for request " REQID_PRINTF_FMT "\n",
             REQID_PRINTF_ARG(req));
+    }
+    if (next != NULL && req->requests_node != NULL) {
+        listNode *next_node = listNextNode(req->requests_node);
+        if (next_node == NULL) *next = NULL;
+        else *next = next_node->value;
     }
     if (req == c->current_request) c->current_request = NULL;
     if (req->id < c->min_reply_id) c->min_reply_id = req->id;
@@ -3875,6 +3910,7 @@ int processRequest(clientRequest *req, int *parsing_status) {
     if (!enqueueRequestToSend(req)) goto invalid_request;
     clientRequest *failed_req = NULL;
     uint64_t min_reply_id = c->min_reply_id;
+    size_t obuflen = sdslen(c->obuf);
     handleNextRequestToCluster(req->node, &failed_req);
     /* If requests has failed, it has been already freed, so jump directly to
      * invalid_request. */
@@ -3886,6 +3922,7 @@ int processRequest(clientRequest *req, int *parsing_status) {
                        getUnorderedReplyForRequestWithID(c, req_id) != NULL);
         if (!replied)
             errmsg = sdsnew(ERROR_CLUSTER_WRITE_FAIL);
+        else invalid_request_replied = 1;
         goto invalid_request;
     }
     if (req->child_requests && listLength(req->child_requests) > 0) {
@@ -3915,7 +3952,7 @@ invalid_request:
         return 1;
     }
     if (req) freeRequest(req);
-    return 0;
+    return (invalid_request_replied ? 1 : 0);
 }
 
 void readQuery(aeEventLoop *el, int fd, void *privdata, int mask){
@@ -3960,27 +3997,16 @@ void readQuery(aeEventLoop *el, int fd, void *privdata, int mask){
                   sdslen(req->buffer));
     /*TODO: support max query buffer length */
     int parsing_status = PARSE_STATUS_OK;
-    if (!processRequest(req, &parsing_status)) unlinkClient(c);
-    else {
+    clientRequest *next = req;
+    while (next != NULL) {
+        if (!processRequest(next, &parsing_status, &next)) {
+            unlinkClient(c);
+            break;
+        }
         /* If parsing status of the current request is incomplete or the
          * client is set to be closed after reply, just stop here. */
         if (parsing_status == PARSE_STATUS_INCOMPLETE ||
             c->flags & CLIENT_CLOSE_AFTER_REPLY) return;
-        clientRequest *processed_req = req;
-        while (listLength(c->requests_to_process) > 0) {
-            listNode *ln = listFirst(c->requests_to_process);
-            req = ln->value;
-            listDelNode(c->requests_to_process, ln);
-            if (req == processed_req) continue;
-            else if (req == NULL) continue;
-            else {
-                if (!processRequest(req, &parsing_status)) unlinkClient(c);
-                else {
-                    if (parsing_status == PARSE_STATUS_INCOMPLETE) break;
-                    processed_req = req;
-                }
-            }
-        }
     }
 }
 

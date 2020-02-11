@@ -84,6 +84,9 @@ typedef struct clientRequest {
     rax  *child_replies;
     uint64_t max_child_reply_id;
     struct clientRequest *parent_request;
+    listNode *requests_node;
+    listNode *requests_to_send_node;
+    listNode *requests_pending_node;
 } clientRequest;
 
 typedef struct {
@@ -137,9 +140,12 @@ typedef struct client {
                                      * itself with different credentials from
                                      * the ones used in the proxy config */
     sds auth_passw;
+    listNode *clients_node;
+    listNode *unlinked_clients_node;
 } client;
 
-int processRequest(clientRequest *req, int *parsing_status);
+int processRequest(clientRequest *req, int *parsing_status,
+    clientRequest **next);
 void freeRequest(clientRequest *req);
 void freeRequestList(list *request_list);
 void onClusterNodeDisconnection(clusterNode *node);

@@ -803,6 +803,7 @@ int updateCluster(redisCluster *cluster) {
                  * from the `requests_to_send` queue. */
                 clusterAddRequestToReprocess(cluster, req);
                 listDelNode(conn->requests_to_send, rln);
+                req->requests_to_send_node = NULL;
             }
         }
     }
@@ -869,7 +870,7 @@ int updateCluster(redisCluster *cluster) {
                 if (r) r->node = NULL;
             }
         }
-        processRequest(req, NULL);
+        processRequest(req, NULL, NULL);
     }
     raxStop(&iter);
     proxyLogDebug("Cluster reconfiguration ended (thread: %d)\n",
