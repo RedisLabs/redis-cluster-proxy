@@ -24,6 +24,7 @@
 #include "endianconv.h"
 #include "util.h"
 #include "help.h"
+#include "reply_order.h"
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
@@ -3878,7 +3879,9 @@ int processRequest(clientRequest *req, int *parsing_status) {
         req = NULL;
         /* If no reply has been added during failed sending, add an error
          * reply. */
-        if (c->min_reply_id == min_reply_id)
+        int replied = (c->min_reply_id != min_reply_id ||
+                       getUnorderedReplyForRequestWithID(c, req_id) != NULL);
+        if (!replied)
             errmsg = sdsnew(ERROR_CLUSTER_WRITE_FAIL);
         goto invalid_request;
     }

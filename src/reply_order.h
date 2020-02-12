@@ -24,5 +24,6 @@
 
 void addUnorderedReply(client *c, sds reply, uint64_t req_id);
 int appendUnorderedRepliesToBuffer(client *c);
+sds getUnorderedReplyForRequestWithID(client *c, uint64_t req_id);
 
 #endif /* __REDIS_CLUSTER_PROXY_REPLY_ORDER_H__ */
