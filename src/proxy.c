@@ -119,6 +119,7 @@ char *redisClusterProxyGitSHA1(void);
 char *redisClusterProxyGitDirty(void);
 char *redisClusterProxyGitBranch(void);
 static int processThreadPipeBufferForNewClients(proxyThread *thread);
+static redisClusterConnection *getRequestConnection(clientRequest *req);
 #ifdef HAVE_BACKTRACE
 void sigsegvHandler(int sig, siginfo_t *info, void *secret);
 #endif
@@ -172,6 +173,33 @@ static int __hiredisReadReplyFromBuffer(redisReader *r, void **reply) {
         r->reply = NULL;
     }
     return REDIS_OK;
+}
+
+/* Utils */
+
+static void logClusterReplyFailure(char *err, redisReply *reply,
+                                   clusterNode *node)
+{
+    if (reply == NULL) return;
+    if (node == NULL || node->cluster == NULL) return;
+    client *c = node->cluster->owner;
+    sds conndescr = sdsempty(), repdescr = sdsempty();
+    if (c) {
+        conndescr = sdscatprintf(conndescr, "private connection for client "
+            "%d:%" PRId64 " to node %s:%d",
+            c->thread_id, c->id, node->ip, node->port);
+    } else {
+        conndescr = sdscatprintf(conndescr, "shared connection to node %s:%d "
+            "on thread %d", node->ip, node->port, node->cluster->thread_id);
+    }
+    if (reply->type == REDIS_REPLY_ERROR || reply->type == REDIS_REPLY_STRING)
+        repdescr = sdscatfmt(repdescr, "Reply is: '%s'", reply->str);
+    else if (reply->type == REDIS_REPLY_INTEGER)
+        repdescr = sdscatfmt(repdescr, "Reply is: %d", reply->integer);
+    proxyLogErr("WARN: %s on %s. %s\n",
+        err, conndescr, repdescr);
+    sdsfree(conndescr);
+    sdsfree(repdescr);
 }
 
 /* Custom Commands */
@@ -2304,17 +2332,58 @@ static int disableMultiplexingForClient(client *c) {
     return 1;
 }
 
+static void closeClientPrivateConnection(client *c) {
+    if (c->cluster == NULL) return;
+    aeEventLoop *el = getClientLoop(c);
+    listIter li;
+    listNode *ln;
+    listRewind(c->cluster->nodes, &li);
+    while ((ln = listNext(&li))) {
+        clusterNode *node = listNodeValue(ln);
+        if (ln == NULL) continue;
+        redisClusterConnection *conn = node->connection;
+        if (conn == NULL) continue;
+        if (conn->requests_to_send != NULL) {
+            listIter nli;
+            listNode *nln;
+            listRewind(conn->requests_to_send, &nli);
+            while ((nln = listNext(&nli))) {
+                clientRequest *req = listNodeValue(nln);
+                if (req == NULL) continue;
+                if (req->has_write_handler) req->has_write_handler = 0;
+                dequeueRequestToSend(req);
+            }
+            listRewind(conn->requests_pending, &nli);
+            while ((nln = listNext(&nli))) {
+                clientRequest *req = listNodeValue(nln);
+                if (req == NULL) continue;
+                dequeuePendingRequest(req);
+            }
+        }
+        redisContext *ctx = conn->context;
+        if (ctx == NULL) continue;
+        if (ctx->fd >= 0 && el) {
+            aeDeleteFileEvent(el, ctx->fd, AE_READABLE);
+            aeDeleteFileEvent(el, ctx->fd, AE_WRITABLE);
+        }
+        conn->has_read_handler = 0;
+        redisFree(ctx);
+        conn->context = NULL;
+    }
+}
+
 static void unlinkClient(client *c) {
     if (c->status == CLIENT_STATUS_UNLINKED) return;
     proxyLogDebug("Unlink client %d:%" PRId64 "\n", c->thread_id, c->id);
+    aeEventLoop *el = getClientLoop(c);
     if (c->fd) {
-        aeEventLoop *el = getClientLoop(c);
         if (el != NULL) {
             aeDeleteFileEvent(el, c->fd, AE_READABLE);
             aeDeleteFileEvent(el, c->fd, AE_WRITABLE);
         }
         close(c->fd);
     }
+    if (c->cluster != NULL) closeClientPrivateConnection(c);
     proxyThread *thread = getThread(c);
     listAddNodeTail(thread->unlinked_clients, c);
     c->status = CLIENT_STATUS_UNLINKED;
@@ -2329,8 +2398,20 @@ static void freeAllClientRequests(client *c) {
     while ((ln = listNext(&li))) {
         clientRequest *req = ln->value;
         if (req->client != c) continue;
-        if (el && unlinked && req->has_write_handler && req->written > 0)
-            continue;
+        if (el && unlinked && req->has_write_handler && req->written > 0) {
+            /* If the request is still being written to a shared (multiplex)
+             * connection to the client,  and the client disconnected,
+             * defer freeing it since we want to wait for it to finish
+             * writing in order to avoid messing up the shared connection's
+             * query order. Otherwise, delete the write handler and free it
+             * as normal. */
+            if (req->owned_by_client) {
+                redisClusterConnection *conn = getRequestConnection(req);
+                if (conn && conn->context && conn->context->fd >= 0)
+                    aeDeleteFileEvent(el, conn->context->fd, AE_WRITABLE);
+                req->has_write_handler = 0;
+            } else continue;
+        }
         listDelNode(c->requests, ln);
         freeRequest(req);
     }
@@ -2419,6 +2500,17 @@ static void writeToClusterHandler(aeEventLoop *el, int fd, void *privdata,
     redisContext *ctx = getClusterNodeContext(node);
     if (ctx == NULL) return;
     clientRequest *req = getFirstRequestToSend(node, NULL);
+    if (req && req->owned_by_client &&
+        req->client->status == CLIENT_STATUS_UNLINKED) {
+        /* If client disconnected and the request's target is on a private
+         * connection owned bu the client itself, uninstall the write handler,
+         * free the request and stop proceeding. */
+        if (req->has_write_handler) req->has_write_handler = 0;
+        aeDeleteFileEvent(el, fd, AE_WRITABLE);
+        dequeueRequestToSend(req);
+        freeRequest(req);
+        return;
+    }
     if (node->connection->authenticating) {
         if (redisBufferWrite(ctx, NULL) == REDIS_ERR) {
             if (req != NULL) {
@@ -2507,6 +2599,16 @@ static void writeToClusterHandler(aeEventLoop *el, int fd, void *privdata,
 
 
 static int writeToCluster(aeEventLoop *el, int fd, clientRequest *req) {
+    /* If client disconnected and the request's target is on a private
+     * connection owned bu the client itself, uninstall the write handler,
+     * free the request and stop proceeding. */
+    if (req->client->status == CLIENT_STATUS_UNLINKED && req->owned_by_client) {
+        if (req->has_write_handler) req->has_write_handler = 0;
+        aeDeleteFileEvent(el, fd, AE_WRITABLE);
+        dequeueRequestToSend(req);
+        freeRequest(req);
+        return 0;
+    }
     size_t buflen = sdslen(req->buffer);
     int nwritten = 0;
     while (req->written < buflen) {
@@ -2529,9 +2631,9 @@ static int writeToCluster(aeEventLoop *el, int fd, clientRequest *req) {
         }
     }
     int success = 1;
-    /* The whole query has been written, so create the read handler and
-     * move the request from requests_to_send to requests_pending. */
     if (req->written == buflen) {
+        /* The whole query has been written, so install the read handler and
+         * move the request from requests_to_send to requests_pending. */
         client *c = req->client;
         clusterNode *node = req->node;
         int thread_id = c->thread_id;
@@ -2542,7 +2644,8 @@ static int writeToCluster(aeEventLoop *el, int fd, clientRequest *req) {
         aeDeleteFileEvent(el, fd, AE_WRITABLE);
         if (req->has_write_handler) {
             req->has_write_handler = 0;
-            c->requests_with_write_handler--;
+            /* Only count requests_with_write_handler on shared connection. */
+            if (!req->owned_by_client) c->requests_with_write_handler--;
         }
         dequeueRequestToSend(req);
         if (c->status == CLIENT_STATUS_UNLINKED) {
@@ -2553,11 +2656,13 @@ static int writeToCluster(aeEventLoop *el, int fd, clientRequest *req) {
              * be broken. After enqueuing the ghost request, we can finally
              * free and the request itself and try to free the client
              * completely. */
+            int owned_by_client = req->owned_by_client;
             list *pending_queue =
                 node->connection->requests_pending;
             listAddNodeTail(pending_queue, NULL);
             freeRequest(req);
-            freeClient(c);
+            if (owned_by_client) return 0;
+            else success = 0;
         } else if (!enqueuePendingRequest(req)) {
             proxyLogDebug("Could not enqueue pending request "
                           REQID_PRINTF_FMT "\n",
@@ -2580,6 +2685,23 @@ static int writeToCluster(aeEventLoop *el, int fd, clientRequest *req) {
         }
         /* Try to send the next available request to send, if one. */
         handleNextRequestToCluster(node, NULL);
+    } else  {
+        /* Request has not been completely written, so try to install the write
+         * handler. */
+        if (!installIOHandler(el, fd, AE_WRITABLE, writeToClusterHandler,
+            req->node, 0))
+        {
+            addReplyError(req->client, ERROR_CLUSTER_WRITE_FAIL, req->id);
+            proxyLogErr("Failed to create write handler for request\n");
+            freeRequest(req);
+            return 0;
+        }
+        req->has_write_handler = 1;
+        /* Only count requests_with_write_handler on shared connection. */
+        if (!req->owned_by_client) req->client->requests_with_write_handler++;
+        proxyLogDebug("Write handler installed into request " REQID_PRINTF_FMT
+                      " for node %s:%d\n", REQID_PRINTF_ARG(req),
+                      req->node->ip, req->node->port);
     }
     return success;
 }
@@ -2626,7 +2748,8 @@ void onClusterNodeDisconnection(clusterNode *node) {
              * the request itself should be dequeued and freed. */
             if (req->has_write_handler) {
                 req->has_write_handler = 0;
-                req->client->requests_with_write_handler--;
+                if (!req->owned_by_client)
+                    req->client->requests_with_write_handler--;
                 addReplyError(req->client, err, req->id);
                 dequeueRequestToSend(req);
                 freeRequest(req);
@@ -3325,7 +3448,12 @@ void freeRequest(clientRequest *req) {
     aeEventLoop *el = getClientLoop(req->client);
     if (req->need_reprocessing && el != NULL) return;
     proxyLogDebug("Free Request " REQID_PRINTF_FMT "\n",REQID_PRINTF_ARG(req));
-    if (req->has_write_handler && req->written > 0 && el != NULL) {
+    /* If request is still writing to a shared (multiplex) connection, defer
+     * freeing it later in order to avoid messing up the sharted connection
+     * query order. */
+    if (req->has_write_handler && req->written > 0 && el != NULL &&
+        !req->owned_by_client)
+    {
         proxyLogDebug("Request " REQID_PRINTF_FMT " is still writing, "
                       "cannot free it now...\n", REQID_PRINTF_ARG(req));
         return;
@@ -3529,6 +3657,14 @@ static int sendRequestToCluster(clientRequest *req, sds *errmsg)
 {
     if (errmsg != NULL) *errmsg = NULL;
     if (req->has_write_handler) return 1;
+    /* If client has disconnected and request's tagret is on a private
+     * connection owned by the client itself, just free the request and stop
+     * proceeding. */
+    if (req->client->status == CLIENT_STATUS_UNLINKED && req->owned_by_client) {
+        dequeueRequestToSend(req);
+        freeRequest(req);
+        return 0;
+    }
     assert(req->node != NULL);
     aeEventLoop *el = getClientLoop(req->client);
     redisContext *ctx = getClusterNodeContext(req->node);
@@ -3556,7 +3692,8 @@ static int sendRequestToCluster(clientRequest *req, sds *errmsg)
             return 0;
         }
         req->has_write_handler = 1;
-        req->client->requests_with_write_handler++;
+        /* Only count requests_with_write_handler on shared connection. */
+        if (!req->owned_by_client) req->client->requests_with_write_handler++;
         proxyLogDebug("Write handler installed into request " REQID_PRINTF_FMT
                       " for node %s:%d\n", REQID_PRINTF_ARG(req),
                       req->node->ip, req->node->port);
@@ -3583,22 +3720,6 @@ static int sendRequestToCluster(clientRequest *req, sds *errmsg)
         }
     }
     if (!writeToCluster(el, ctx->fd, req)) return 0;
-    int sent = (req->written == sdslen(req->buffer));
-    if (!sent) {
-        if (!installIOHandler(el, ctx->fd, AE_WRITABLE, writeToClusterHandler,
-            req->node, 0))
-        {
-            addReplyError(req->client, ERROR_CLUSTER_WRITE_FAIL, req->id);
-            proxyLogErr("Failed to create write handler for request\n");
-            freeRequest(req);
-            return 0;
-        }
-        req->has_write_handler = 1;
-        req->client->requests_with_write_handler++;
-        proxyLogDebug("Write handler installed into request " REQID_PRINTF_FMT
-                      " for node %s:%d\n", REQID_PRINTF_ARG(req),
-                      req->node->ip, req->node->port);
-    }
     return 1;
 }
 
@@ -3714,6 +3835,7 @@ int processRequest(clientRequest *req, int *parsing_status) {
         goto invalid_request;
     } else if (cluster->is_updating) {
         clusterAddRequestToReprocess(cluster, req);
+        if (command_name) sdsfree(command_name);
         return 1;
     }
     clusterNode *node = getRequestNode(req, &errmsg);
@@ -3997,7 +4119,10 @@ static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
             list *queue = node->connection->requests_pending;
             /* It should never happen that the request is NULL because of an
              * empty queue while we still have reply buffer to process */
-            assert(listLength(queue) > 0);
+            if (listLength(queue) == 0) {
+                logClusterReplyFailure("listLength(queue) > 0", reply, node);
+                assert(listLength(queue) > 0);
+            }
             listNode *ln = listFirst(queue);
             listDelNode(queue, ln);
             goto consume_buffer;
@@ -4188,7 +4313,7 @@ static void readClusterReply(aeEventLoop *el, int fd,
             node->connection->authenticated = 0;
         }
         if (node_disconnected) {
-            proxyLogDebug(errmsg);
+            proxyLogDebug("%s\n", errmsg);
             clusterNodeDisconnect(node);
         }
         sdsfree(errmsg);

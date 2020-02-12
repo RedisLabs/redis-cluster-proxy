@@ -110,7 +110,7 @@ numkeys = $numkeys / 10
 numkeys = 10 if numkeys < 10
 
 test "SET #{numkeys} keys (clients=#{$numclients})" do
-    spawn_clients($numclients, proxy: $aux_proxy){|client, idx|
+    spawn_clients($numclients, proxy: $main_proxy){|client, idx|
         (0...numkeys).each{|n|
             log_test_update "key #{n + 1}/#{numkeys}"
             val = n.to_s
@@ -118,14 +118,13 @@ test "SET #{numkeys} keys (clients=#{$numclients})" do
             reply = redis_command client, :set, key, val
             assert_not_redis_err(reply)
         }
-        log_same_line ''
     }
 end
 
 test "GET #{numkeys} keys (clients=#{$numclients}, multiplex=off, pipeline)" do
     log_test_update ''
     STDOUT.flush
-    spawn_clients($numclients, proxy: $aux_proxy){|client, idx|
+    spawn_clients($numclients, proxy: $main_proxy){|client, idx|
         expected = ['OK']
         keys = (0...numkeys).map{|n|
             key = "k:#{n}"
@@ -145,6 +144,5 @@ test "GET #{numkeys} keys (clients=#{$numclients}, multiplex=off, pipeline)" do
         end
         assert_not_redis_err(reply)
         assert_equal(expected, reply)
-        log_same_line ''
     }
 end
