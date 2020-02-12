@@ -3913,7 +3913,6 @@ int processRequest(clientRequest *req, int *parsing_status,
     if (!enqueueRequestToSend(req)) goto invalid_request;
     clientRequest *failed_req = NULL;
     uint64_t min_reply_id = c->min_reply_id;
-    size_t obuflen = sdslen(c->obuf);
     handleNextRequestToCluster(req->node, &failed_req);
     /* If requests has failed, it has been already freed, so jump directly to
      * invalid_request. */
