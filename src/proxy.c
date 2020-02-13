@@ -1901,6 +1901,7 @@ static void writeRepliesToClients(struct aeEventLoop *el) {
     listRewind(thread->clients, &li);
     while ((ln = listNext(&li)) != NULL) {
         client *c = ln->value;
+        if (c->status == CLIENT_STATUS_UNLINKED) continue;
         if (!writeToClient(c)) continue;
         if (c->written > 0 && c->written < sdslen(c->obuf)) {
             if (installIOHandler(el, c->fd, AE_WRITABLE, writeHandler, c, 0)) {
@@ -2383,6 +2384,7 @@ static void unlinkClient(client *c) {
             aeDeleteFileEvent(el, c->fd, AE_WRITABLE);
         }
         close(c->fd);
+        c->fd = -1;
     }
     if (c->cluster != NULL) closeClientPrivateConnection(c);
     proxyThread *thread = getThread(c);
@@ -2460,6 +2462,7 @@ static void freeClient(client *c) {
 }
 
 static int writeToClient(client *c) {
+    if (c->status == CLIENT_STATUS_UNLINKED) return 0;
     int success = 1, buflen = sdslen(c->obuf), nwritten = 0;
     if (buflen == 0) return 1;
     while (c->written < (size_t) buflen) {
