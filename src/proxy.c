@@ -69,16 +69,16 @@
 #define addObjectToList(obj, listowner, listname, success) do {\
     if (listAddNodeTail(listowner->listname, obj) == NULL) {\
         if (success != NULL) *success = 0;\
-        obj->listname ## _node = NULL;\
+        obj->listname ## _lnode = NULL;\
         break;\
     }\
     if (success != NULL) *success = 1;\
-    obj->listname ## _node = listLast(listowner->listname);\
+    obj->listname ## _lnode = listLast(listowner->listname);\
 } while (0)
 #define removeObjectFromList(obj, listowner, listname) do {\
-    if (obj->listname ## _node != NULL) {\
-        listDelNode(listowner->listname, obj->listname ## _node);\
-        obj->listname ## _node = NULL;\
+    if (obj->listname ## _lnode != NULL) {\
+        listDelNode(listowner->listname, obj->listname ## _lnode);\
+        obj->listname ## _lnode = NULL;\
     }\
 } while (0)
 #define enqueueRequestToSend(req) (enqueueRequest(req, QUEUE_TYPE_SENDING))
@@ -1950,7 +1950,7 @@ void beforeThreadSleep(struct aeEventLoop *eventLoop) {
         client *c = ln->value;
         listDelNode(thread->unlinked_clients, ln);
         if (c != NULL) {
-            c->unlinked_clients_node = NULL;
+            c->unlinked_clients_lnode = NULL;
             freeClient(c);
         }
     }
@@ -2279,8 +2279,8 @@ static client *createClient(int fd, char *ip) {
     c->multi_transaction_node = NULL;
     c->auth_user = NULL;
     c->auth_passw = NULL;
-    c->clients_node = NULL;
-    c->unlinked_clients_node = NULL;
+    c->clients_lnode = NULL;
+    c->unlinked_clients_lnode = NULL;
     if (config.disable_multiplexing == CFG_DISABLE_MULTIPLEXING_ALWAYS) {
         if (!disableMultiplexingForClient(c)) {
             unlinkClient(c);
@@ -2446,7 +2446,7 @@ static void freeAllClientRequests(client *c) {
             } else continue;
         }
         listDelNode(c->requests, ln);
-        req->requests_node = NULL;
+        req->requests_lnode = NULL;
         freeRequest(req);
     }
 }
@@ -2464,7 +2464,7 @@ static void freeClient(client *c) {
     int thread_id = c->thread_id;
     proxyThread *thread = proxy.threads[thread_id];
     assert(thread != NULL);
-    listNode *ln = c->clients_node;
+    listNode *ln = c->clients_lnode;
     if (ln != NULL) listDelNode(thread->clients, ln);
     if (c->ip != NULL) sdsfree(c->ip);
     if (c->addr != NULL) sdsfree(c->addr);
@@ -2477,7 +2477,7 @@ static void freeClient(client *c) {
     if (c->unordered_replies)
         raxFreeWithCallback(c->unordered_replies, (void (*)(void*))sdsfree);
     if (c->cluster != NULL) freeCluster(c->cluster);
-    ln = c->unlinked_clients_node;
+    ln = c->unlinked_clients_lnode;
     if (ln) ln->value = NULL;
     if (c->auth_user != NULL) sdsfree(c->auth_user);
     if (c->auth_passw != NULL) sdsfree(c->auth_passw);
@@ -2687,7 +2687,7 @@ static int writeToCluster(aeEventLoop *el, int fd, clientRequest *req) {
             list *pending_queue =
                 node->connection->requests_pending;
             listAddNodeTail(pending_queue, NULL);
-            req->requests_pending_node = NULL;
+            req->requests_pending_lnode = NULL;
             freeRequest(req);
             if (owned_by_client) return 0;
             else success = 0;
@@ -3513,17 +3513,17 @@ void freeRequest(clientRequest *req) {
     if (req->node != NULL) {
         redisClusterConnection *conn = req->node->connection;
         assert(conn != NULL);
-        listNode *ln = req->requests_to_send_node;
+        listNode *ln = req->requests_to_send_lnode;
         if (ln) listDelNode(conn->requests_to_send, ln);
-        req->requests_to_send_node = NULL;
+        req->requests_to_send_lnode = NULL;
         /* We cannot delete the request's list node from the requests_pending
          * queue, since this would break the reply processing order. So we just
          * set its value to NULL. The resulting NULL placeholder (we can call
          * it a 'ghost request') will be simply skipped during reply buffer
          * processing. */
-        ln = req->requests_pending_node;
+        ln = req->requests_pending_lnode;
         if (ln) ln->value = NULL;
-        req->requests_pending_node = NULL;
+        req->requests_pending_lnode = NULL;
     }
     listNode *ln = listSearchKey(req->client->requests_to_reprocess, req);
     if (ln) listDelNode(req->client->requests_to_reprocess, ln);
@@ -3531,7 +3531,7 @@ void freeRequest(clientRequest *req) {
     if (cluster) clusterRemoveRequestToReprocess(cluster, req);
     if (config.dump_queues)
         dumpQueue(req->node, req->client->thread_id, QUEUE_TYPE_PENDING);
-    ln = req->requests_node;
+    ln = req->requests_lnode;
     if (ln) listDelNode(req->client->requests, ln);
     zfree(req);
 }
@@ -3545,11 +3545,11 @@ void freeRequestList(list *request_list) {
         clientRequest *req = ln->value;
         listDelNode(request_list, ln);
         if (req == NULL) continue;
-        if (ln == req->requests_node) req->requests_node = NULL;
-        else if (ln == req->requests_to_send_node)
-            req->requests_to_send_node = NULL;
-        else if (ln == req->requests_pending_node)
-            req->requests_pending_node = NULL;
+        if (ln == req->requests_lnode) req->requests_lnode = NULL;
+        else if (ln == req->requests_to_send_lnode)
+            req->requests_to_send_lnode = NULL;
+        else if (ln == req->requests_pending_lnode)
+            req->requests_pending_lnode = NULL;
         freeRequest(req);
     }
     listRelease(request_list);
@@ -3640,8 +3640,8 @@ static clientRequest *createRequest(client *c) {
     req->parent_request = NULL;
     req->child_requests = NULL;
     req->child_replies = NULL;
-    req->requests_pending_node = NULL;
-    req->requests_to_send_node = NULL;
+    req->requests_pending_lnode = NULL;
+    req->requests_to_send_lnode = NULL;
     req->max_child_reply_id = 0;
     proxyLogDebug("Created Request " REQID_PRINTF_FMT  "\n",
                   REQID_PRINTF_ARG(req));
@@ -3831,8 +3831,8 @@ int processRequest(clientRequest *req, int *parsing_status,
         proxyLogDebug("Parsing complete for request " REQID_PRINTF_FMT "\n",
             REQID_PRINTF_ARG(req));
     }
-    if (next != NULL && req->requests_node != NULL) {
-        listNode *next_node = listNextNode(req->requests_node);
+    if (next != NULL && req->requests_lnode != NULL) {
+        listNode *next_node = listNextNode(req->requests_lnode);
         if (next_node == NULL) *next = NULL;
         else *next = next_node->value;
     }

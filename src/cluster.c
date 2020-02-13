@@ -290,6 +290,7 @@ void freeCluster(redisCluster *cluster) {
         client *c = cluster->owner;
         proxyLogDebug("Free private cluster for client %d:%" PRId64  "\n",
             c->thread_id, c->id);
+        /* TODO: Set to NULL? */
     } else {
         proxyLogDebug("Free shared cluster on thread %d\n", cluster->thread_id);
     }
@@ -803,7 +804,7 @@ int updateCluster(redisCluster *cluster) {
                  * from the `requests_to_send` queue. */
                 clusterAddRequestToReprocess(cluster, req);
                 listDelNode(conn->requests_to_send, rln);
-                req->requests_to_send_node = NULL;
+                req->requests_to_send_lnode = NULL;
             }
         }
     }

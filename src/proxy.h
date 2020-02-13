@@ -84,9 +84,16 @@ typedef struct clientRequest {
     rax  *child_replies;
     uint64_t max_child_reply_id;
     struct clientRequest *parent_request;
-    listNode *requests_node;
-    listNode *requests_to_send_node;
-    listNode *requests_pending_node;
+    /* Pointers to *listNode used in various list. They allow to quickly
+     * have a reference to the node instead of searching it via listSearchKey.
+     */
+    listNode *requests_lnode; /* Pointer to node in client->requests list */
+    listNode *requests_to_send_lnode; /* Pointer to node in
+                                       * redisClusterConnection->
+                                       *  requests_to_send list */
+    listNode *requests_pending_lnode; /* Pointer to node in
+                                       * redisClusterConnection->
+                                       * requests_pending list */
 } clientRequest;
 
 typedef struct {
@@ -142,8 +149,12 @@ typedef struct client {
                                      * itself with different credentials from
                                      * the ones used in the proxy config */
     sds auth_passw;
-    listNode *clients_node;
-    listNode *unlinked_clients_node;
+    /* Pointers to *listNode used in various list. They allow to quickly
+     * have a reference to the node instead of searching it via listSearchKey.
+     */
+    listNode *clients_lnode; /* Pointer to node in thread->clients list */
+    listNode *unlinked_clients_lnode; /* Pointer to node in
+                                       * thread->unlinked_clients list */
 } client;
 
 int processRequest(clientRequest *req, int *parsing_status,
