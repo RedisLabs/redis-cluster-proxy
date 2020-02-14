@@ -72,6 +72,7 @@ typedef struct clientRequest {
     int offsets_size;
     int slot;
     clusterNode *node;
+    clusterNode *ask_redirected_node;
     struct redisCommandDef *command;
     size_t written;
     int parsing_status;

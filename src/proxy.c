@@ -2663,6 +2663,9 @@ static int writeToCluster(aeEventLoop *el, int fd, clientRequest *req) {
             int owned_by_client = req->owned_by_client;
             list *pending_queue =
                 node->connection->requests_pending;
+            if (req->ask_redirected_node != NULL) {
+                listAddNodeTail(pending_queue, NULL);
+            }
             listAddNodeTail(pending_queue, NULL);
             freeRequest(req);
             if (owned_by_client) return 0;
@@ -3337,6 +3340,10 @@ cleanup:
 
 static clusterNode *getRequestNode(clientRequest *req, sds *err) {
     clusterNode *node = NULL;
+    if (req->ask_redirected_node != NULL) {
+        req->node = req->ask_redirected_node;
+        return req->ask_redirected_node;
+    }
     if (req->node && req->command == scanCommandDef) return req->node;
     int first_key = req->command->first_key,
         last_key = req->command->last_key,
@@ -3546,6 +3553,11 @@ static clientRequest *getFirstQueuedRequest(list *queue, int *is_empty) {
 }
 
 static redisClusterConnection *getRequestConnection(clientRequest *req) {
+    clusterNode *redirected_node = req->ask_redirected_node;
+    if (redirected_node != NULL) {
+        return redirected_node->connection;
+    }
+
     clusterNode *node = req->node;
     if (node == NULL) return NULL;
     return node->connection;
@@ -3557,8 +3569,12 @@ static int enqueueRequest(clientRequest *req, int queue_type) {
     list *queue = NULL;
     if (queue_type == QUEUE_TYPE_SENDING)
         queue = listAddNodeTail(conn->requests_to_send, req);
-    else if (queue_type == QUEUE_TYPE_PENDING)
+    else if (queue_type == QUEUE_TYPE_PENDING) {
+        if (req->ask_redirected_node != NULL) {
+            listAddNodeTail(conn->requests_pending, NULL);
+        }
         queue = listAddNodeTail(conn->requests_pending, req);
+    }
     return (queue != NULL);
 }
 
@@ -3598,6 +3614,7 @@ static clientRequest *createRequest(client *c) {
     req->argc = 0;
     req->offsets_size = QUERY_OFFSETS_MIN_SIZE;
     req->command = NULL;
+    req->ask_redirected_node = NULL;
     req->node = NULL;
     req->slot = UNDEFINED_SLOT;
     c->current_request = req;
@@ -3705,6 +3722,7 @@ static int sendRequestToCluster(clientRequest *req, sds *errmsg)
     } else if (!isClusterNodeConnected(req->node)) {
         return 1;
     }
+
     redisClusterConnection *conn = req->node->connection;
     assert(conn != NULL);
     if (!conn->has_read_handler) {
@@ -3872,10 +3890,13 @@ int processRequest(clientRequest *req, int *parsing_status) {
             req->client->multi_transaction_node = node;
         else node = req->node = req->client->multi_transaction_node;
     }
+    if (req->ask_redirected_node != NULL) {
+        req->buffer = sdscatsds(sdsnew("ASKING\r\n"), req->buffer);
+    }
     if (!enqueueRequestToSend(req)) goto invalid_request;
     clientRequest *failed_req = NULL;
     uint64_t min_reply_id = c->min_reply_id;
-    handleNextRequestToCluster(req->node, &failed_req);
+    handleNextRequestToCluster(node, &failed_req);
     /* If requests has failed, it has been already freed, so jump directly to
      * invalid_request. */
     if (failed_req == req) {
@@ -4149,14 +4170,61 @@ static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
         assert(cluster != NULL);
         if (reply->type == REDIS_REPLY_ERROR) {
             assert(reply->str != NULL);
-            /* In case of ASK|MOVED reply the cluster need to be
+
+            /* In case of a ASK reply, we must redirect the single
+             * request for which we received the reply to the new
+             * node, but we must not update our representation of
+             * hash slots, as the migration of the slot is not yet
+             * complete. */
+            if (strstr(reply->str, "ASK") == reply->str) {
+                char *ip = NULL;
+                int port = 0;
+
+                char *addr = strrchr(reply->str, ' ');
+                if (addr != NULL) {
+                    char *paddr = strchr(addr, ':');
+                    if (paddr != NULL) {
+                        *paddr = '\0';
+                        ip = addr+1;
+                        addr = paddr + 1;
+                        port = atoi(addr);
+                    }
+                }
+
+                proxyLogDebug("Read an ASK redirect to %s:%d "
+                              "(request " REQID_PRINTF_FMT ")\n",
+                              ip, port, REQID_PRINTF_ARG(req));
+                listIter li;
+                listNode *ln;
+                listRewind(node->cluster->nodes, &li);
+                while ((ln = listNext(&li))) {
+                    clusterNode *node = ln->value;
+
+                    if (sdscmp(sdsnew(ip), node->ip) == 0 && port == node->port) {
+                        free_req = 0;
+                        req->ask_redirected_node = node;
+                        req->node = NULL;
+                        req->slot = -1;
+                        req->written = 0;
+                        if (!processRequest(req, NULL)) {
+                            break;
+                        }
+                        req = NULL;
+                        goto consume_buffer;
+                    }
+                }
+
+                addReplyError(req->client, "internal error: could not follow redirect", req->id);
+                goto consume_buffer;
+            }
+
+            /* In case of MOVED reply the cluster need to be
              * reconfigured.
              * In this case we suddenly set `cluster->is_updating` and
              * we add the request to the clusters' `requests_to_reprocess`
              * pool (the request will be also added to a
              * `requests_to_reprocess` list on the client). */
-            if ((strstr(reply->str, "ASK") == reply->str ||
-                strstr(reply->str, "MOVED") == reply->str))
+            if (strstr(reply->str, "MOVED") == reply->str)
             {
                 proxyLogDebug("Cluster configuration changed! "
                               "(request " REQID_PRINTF_FMT ")\n",
