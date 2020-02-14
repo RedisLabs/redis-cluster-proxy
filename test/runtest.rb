@@ -44,7 +44,7 @@ if $tests.length == 0
     $tests = %w(basic_commands commands_with_key_callback pipeline query_parser
                 multislot client_disconnect node_down proxy_command 
                 disable_multiplexing auth multi cluster_errors 
-                cluster_errors_multislot unixsocket misc)
+                cluster_errors_multislot cluster_slot_migration unixsocket misc)
 end
 
 def final_cleanup
