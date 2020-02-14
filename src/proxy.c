@@ -1619,9 +1619,9 @@ int parseOptions(int argc, char **argv) {
         if ((!strcmp("-p", arg) || !strcmp("--port", arg)) && !lastarg)
             config.port = atoi(argv[++i]);
         else if ((!strcmp(argv[i],"-a") || !strcmp("--auth", arg)) && !lastarg)
-            config.auth = argv[++i];
+            config.auth = zstrdup(argv[++i]);
         else if (!strcmp("--auth-user", arg) && !lastarg)
-            config.auth_user = argv[++i];
+            config.auth_user = zstrdup(argv[++i]);
         else if (!strcmp("--disable-colors", arg))
             config.use_colors = 0;
         else if (!strcmp("--daemonize", arg))
@@ -4567,5 +4567,7 @@ cleanup:
     if (config.unixsocket) zfree(config.unixsocket);
     if (config.pidfile) zfree(config.pidfile);
     if (config.logfile) zfree(config.logfile);
+    if (config.auth) zfree(config.auth);
+    if (config.auth_user) zfree(config.auth_user);
     return exit_status;
 }
