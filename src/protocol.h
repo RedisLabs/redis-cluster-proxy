@@ -38,6 +38,7 @@
 #define ERROR_INVALID_QUERY "Invalid query format"
 #define ERROR_NO_NODE "Failed to get node for query"
 #define ERROR_INVALID_REPLY "Invalid reply format from cluster"
+#define ERROR_COMMAND_NO_ARGS "Cannot execute this command with no arguments"
 
 int initReplyArray(client *c);
 void addReplyArray(client *c, uint64_t req_id);

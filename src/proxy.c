@@ -3380,12 +3380,15 @@ static clusterNode *getRequestNode(clientRequest *req, sds *err) {
         last_key = req->command->last_key,
         key_step = req->command->key_step, i;
     redisCluster *cluster = getCluster(req->client);
-    int slot = UNDEFINED_SLOT, last_slot = UNDEFINED_SLOT;
+    int slot = UNDEFINED_SLOT, last_slot = UNDEFINED_SLOT, no_args = 0;
     if (req->argc == 1) {
-        if (req->client->multi_transaction &&
-            req->client->multi_transaction_node) {
-            node = req->node = req->client->multi_transaction_node;
-            return node;
+        if (req->client->multi_transaction) {
+            if (req->client->multi_transaction_node != NULL)
+                node = req->node = req->client->multi_transaction_node;
+            else if (req->closes_transaction)
+                node = req->node = getFirstMappedNode(cluster);
+            else no_args = 1;
+            if (node != NULL) return node;
         } else if (req->command->handleReply != NULL) {
             if (!duplicateRequestForAllMasters(req)) {
                 if (err) *err = sdsnew("Failed to create multiple requests");
@@ -3393,12 +3396,13 @@ static clusterNode *getRequestNode(clientRequest *req, sds *err) {
                 return NULL;
             }
             return req->node;
-        } else {
-            if (err != NULL)
-                *err = sdsnew("Cannot execute this command with no arguments");
-            req->node = NULL;
-            return NULL;
-        }
+        } else no_args = 1;
+    }
+    if (no_args) {
+        if (err != NULL)
+            *err = sdsnew(ERROR_COMMAND_NO_ARGS);
+        req->node = NULL;
+        return NULL;
     }
     int *skip = NULL;
     int skiplen = 0;
