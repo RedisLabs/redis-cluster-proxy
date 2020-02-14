@@ -2193,6 +2193,7 @@ static int sendStopMessageToThread(proxyThread *thread) {
 }
 
 static void freeProxyThread(proxyThread *thread) {
+    proxyLogDebug("Freeing thread %d\n", thread->thread_id);
     if (thread->loop != NULL) {
         aeDeleteEventLoop(thread->loop);
         thread->loop = NULL;
@@ -2291,6 +2292,8 @@ static client *createClient(int fd, char *ip) {
     c->auth_passw = NULL;
     c->clients_lnode = NULL;
     c->unlinked_clients_lnode = NULL;
+    proxyLogDebug("Created client %d:%" PRId64 " with address %p\n",
+        c->thread_id, c->id, c);
     if (config.disable_multiplexing == CFG_DISABLE_MULTIPLEXING_ALWAYS) {
         if (!disableMultiplexingForClient(c)) {
             unlinkClient(c);
@@ -2657,7 +2660,8 @@ static int writeToCluster(aeEventLoop *el, int fd, clientRequest *req) {
         if (errno == EAGAIN) {
             nwritten = 0;
         } else {
-            proxyLogWarn("Error writing to cluster: %s\n", strerror(errno));
+            proxyLogWarn("Error writing request " REQID_PRINTF_FMT
+                "to cluster: %s\n", REQID_PRINTF_ARG(req), strerror(errno));
             if (errno == EPIPE) {
                 clusterNodeDisconnect(req->node);
             } else {
@@ -2712,7 +2716,7 @@ static int writeToCluster(aeEventLoop *el, int fd, clientRequest *req) {
         if (config.dump_queues) dumpQueue(node, thread_id, QUEUE_TYPE_PENDING);
         if (!node->cluster->owner) {
             proxyLogDebug("Still have %d request(s) to send to node %s:%d "
-                          " on thread %d\n",
+                          "on thread %d\n",
                           listLength(node->connection->requests_to_send),
                           node->ip, node->port, node->cluster->thread_id);
         } else if (node->cluster->owner == c) {
@@ -2730,7 +2734,8 @@ static int writeToCluster(aeEventLoop *el, int fd, clientRequest *req) {
             req->node, 0))
         {
             addReplyError(req->client, ERROR_CLUSTER_WRITE_FAIL, req->id);
-            proxyLogErr("Failed to create write handler for request\n");
+            proxyLogErr("Failed to create write handler for request "
+                REQID_PRINTF_FMT "\n", REQID_PRINTF_ARG(req));
             freeRequest(req);
             return 0;
         }
@@ -3653,8 +3658,8 @@ static clientRequest *createRequest(client *c) {
     req->requests_pending_lnode = NULL;
     req->requests_to_send_lnode = NULL;
     req->max_child_reply_id = 0;
-    proxyLogDebug("Created Request " REQID_PRINTF_FMT  "\n",
-                  REQID_PRINTF_ARG(req));
+    proxyLogDebug("Created Request " REQID_PRINTF_FMT  " with address %p\n",
+                  REQID_PRINTF_ARG(req), req);
     return req;
 alloc_failure:
     proxyLogErr("ERROR: Failed to allocate request!\n");
@@ -3734,7 +3739,8 @@ static int sendRequestToCluster(clientRequest *req, sds *errmsg)
                               req->node, 0))
         {
             addReplyError(req->client, ERROR_CLUSTER_WRITE_FAIL, req->id);
-            proxyLogErr("Failed to create write handler for request\n");
+            proxyLogErr("Failed to create write handler for request "
+                REQID_PRINTF_FMT "\n", REQID_PRINTF_ARG(req));
             freeRequest(req);
             return 0;
         }
@@ -3867,6 +3873,9 @@ int processRequest(clientRequest *req, int *parsing_status,
         errmsg = sdsnew("Invalid request");
         goto invalid_request;
     }
+    proxyLogDebug("Command for request " REQID_PRINTF_FMT  ": '%s' "
+                  "(use --dump-queries for full query dump)\n",
+                  REQID_PRINTF_ARG(req), command_name);
     redisCommandDef *cmd = getRedisCommand(command_name);
     /* Unsupported commands:
      * - Commands not defined in redisCommandTable
