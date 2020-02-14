@@ -1968,7 +1968,7 @@ static int processThreadPipeBufferForNewClients(proxyThread *thread) {
         /* If thread is going to be freed, free all clients that were
          * still waiting to be added on the thread itself. */
         if (thread->loop == NULL) {
-            if (c != NULL) freeClient(c);
+            if (c != NULL && c != (void*) THREAD_MSG_STOP) freeClient(c);
             processed++;
             continue;
         }
@@ -1984,18 +1984,19 @@ static int processThreadPipeBufferForNewClients(proxyThread *thread) {
         int *p_added = &added;
         addObjectToList(c, thread, clients, p_added);
         if (!added) {
-            proxyLogErr("Failed to add client %" PRId64 " to thread %d\n",
-                thread->thread_id);
+            proxyLogErr("Failed to add client %d:%" PRId64 " to thread %d\n",
+                thread->thread_id, c->id, thread->thread_id);
             freeClient(c);
             processed++;
             continue;
         }
-        proxyLogDebug("Client %" PRId64 " added to thread %d\n",
-                      c->id, c->thread_id);
+        proxyLogDebug("Client %d:%" PRId64 " added to thread %d\n",
+                      c->thread_id, c->id, c->thread_id);
         errno = 0;
         if (!installIOHandler(el, c->fd, AE_READABLE, readQuery, c, 0)) {
             proxyLogErr("ERROR: Failed to create read query handler for "
-                        "client %s\n", getClientPeerIP(c));
+                        "client %d:%" PRId64 " from %s\n", c->thread_id,
+                        c->id, c->addr);
             errno = EL_INSTALL_HANDLER_FAIL;
             freeClient(c);
             processed++;
@@ -2202,10 +2203,9 @@ static void freeProxyThread(proxyThread *thread) {
         listRewind(thread->clients, &li);
         while ((ln = listNext(&li)) != NULL) {
             client *c = ln->value;
+            c->requests_with_write_handler = 0;
             freeClient(c);
         }
-        listRelease(thread->clients);
-        thread->clients = NULL;
     }
     if (thread->unlinked_clients != NULL) {
         listIter li;
@@ -2213,16 +2213,26 @@ static void freeProxyThread(proxyThread *thread) {
         listRewind(thread->unlinked_clients, &li);
         while ((ln = listNext(&li)) != NULL) {
             client *c = ln->value;
-            if (c != NULL) freeClient(c);
+            if (c != NULL) {
+                c->requests_with_write_handler = 0;
+                freeClient(c);
+            }
         }
-        listRelease(thread->unlinked_clients);
-        thread->unlinked_clients = NULL;
     }
     if (thread->pending_messages != NULL) {
         /* Check if there are still clients that have to be added and
          * free them. */
         processThreadPipeBufferForNewClients(thread);
         listRelease(thread->pending_messages);
+        thread->pending_messages = NULL;
+    }
+    if (thread->clients) {
+        listRelease(thread->clients);
+        thread->clients = NULL;
+    }
+    if (thread->unlinked_clients) {
+        listRelease(thread->unlinked_clients);
+        thread->unlinked_clients = NULL;
     }
     if (thread->io[0]) close(thread->io[0]);
     if (thread->io[1]) close(thread->io[1]);
@@ -2405,7 +2415,7 @@ static void unlinkClient(client *c) {
     if (c->status == CLIENT_STATUS_UNLINKED) return;
     proxyLogDebug("Unlink client %d:%" PRId64 "\n", c->thread_id, c->id);
     aeEventLoop *el = getClientLoop(c);
-    if (c->fd) {
+    if (c->fd >= 0) {
         if (el != NULL) {
             aeDeleteFileEvent(el, c->fd, AE_READABLE);
             aeDeleteFileEvent(el, c->fd, AE_WRITABLE);
@@ -2418,6 +2428,7 @@ static void unlinkClient(client *c) {
     proxyThread *thread = getThread(c);
     int *p_ok = NULL;
     addObjectToList(c, thread, unlinked_clients, p_ok);
+    removeObjectFromList(c, thread, clients);
     c->status = CLIENT_STATUS_UNLINKED;
 }
 
@@ -2459,13 +2470,12 @@ static void freeClient(client *c) {
      * context. */
     aeEventLoop *el = getClientLoop(c);
     if (c->requests_with_write_handler > 0 && el != NULL) return;
-    proxyLogDebug("Freeing client %" PRId64 " (thread: %d)\n",
-                  c->id, c->thread_id);
+    proxyLogDebug("Freeing client %d:%" PRId64 " (thread: %d)\n",
+                  c->thread_id, c->id, c->thread_id);
     int thread_id = c->thread_id;
     proxyThread *thread = proxy.threads[thread_id];
     assert(thread != NULL);
-    listNode *ln = c->clients_lnode;
-    if (ln != NULL) listDelNode(thread->clients, ln);
+    removeObjectFromList(c, thread, clients);
     if (c->ip != NULL) sdsfree(c->ip);
     if (c->addr != NULL) sdsfree(c->addr);
     if (c->obuf != NULL) sdsfree(c->obuf);
@@ -2477,7 +2487,7 @@ static void freeClient(client *c) {
     if (c->unordered_replies)
         raxFreeWithCallback(c->unordered_replies, (void (*)(void*))sdsfree);
     if (c->cluster != NULL) freeCluster(c->cluster);
-    ln = c->unlinked_clients_lnode;
+    listNode *ln = c->unlinked_clients_lnode;
     if (ln) ln->value = NULL;
     if (c->auth_user != NULL) sdsfree(c->auth_user);
     if (c->auth_passw != NULL) sdsfree(c->auth_passw);
@@ -3699,6 +3709,10 @@ static int sendRequestToCluster(clientRequest *req, sds *errmsg)
         return 0;
     }
     assert(req->node != NULL);
+    redisCluster *cluster = getCluster(req->client);
+    assert(cluster != NULL);
+    if (cluster->owner && cluster->owner == req->client)
+        req->owned_by_client = 1;
     aeEventLoop *el = getClientLoop(req->client);
     redisContext *ctx = getClusterNodeContext(req->node);
     if (ctx == NULL) {
@@ -3987,9 +4001,9 @@ void readQuery(aeEventLoop *el, int fd, void *privdata, int mask){
             return;
         }
     } else if (nread == 0) {
-        proxyLogDebug("Client %" PRId64 " from %s closed connection "
+        proxyLogDebug("Client %d:%" PRId64 " from %s closed connection "
                       "(thread: %d)\n",
-                      c->id, getClientPeerIP(c), c->thread_id);
+                      c->thread_id, c->id, c->addr, c->thread_id);
         freeClient(c);
         return;
     }
