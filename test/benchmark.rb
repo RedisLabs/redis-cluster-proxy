@@ -25,8 +25,10 @@ include RedisProxyTestLogger
 
 opts =RedisProxyTestUtils::OptionParser.new help_banner_arguments: '[TESTS]' do
 
+    option   '',   '--custom-query', 'Use custom query insetad of test names'
     option   '',   '--proxy-threads NUM', 'Number of proxy threads'
     option   '',   '--proxy-log-level LEVEL', 'Proxy log level'
+    option   '',   '--enable-cross-slot', 'Enable crosslot queries on proxy'
     option  '',   '--valgrind', 'Enable Valgrind'
     option   '',   '--benchmark-threads NUM', 'Number of benchmark threads'
     option   '',   '--benchmark-pipeline NUM', 'Pipeline queries'
@@ -58,9 +60,17 @@ end
 if $options[:wait]
     $options[:wait] = $options[:wait].to_f
 end
-$tests = ARGV
-if $tests.length == 0
-    $tests = %w(get)
+if !$options[:custom_query]
+    $tests = ARGV
+    if $tests.length == 0
+        $tests = %w(get)
+    end
+else
+    $tests = ARGV.join(' ')
+    if $tests.strip.empty?
+        STDERR.puts "Missing custom query".red
+        exit 1
+    end
 end
 $bm_err_log = "/tmp/proxy-redis-benchmark.#{urand2hex(4)}.err"
 
@@ -80,6 +90,7 @@ def setup(proxy_threads: nil)
         $main_proxy = @proxy
     end
     if $options[:benchmark_clients] == 'max'
+        puts "Getting max clients..."
         reply = @proxy.redis_command :proxy, :config, :get, :maxclients
         if reply.is_a? Redis::CommandError
             puts reply.to_s
@@ -89,6 +100,64 @@ def setup(proxy_threads: nil)
         c = reply[1].to_i
         if c > 0
             $options[:benchmark_clients] = c
+            puts "Max clients: #{c}".blue
+            if c > 100
+                tw_reuse = nil
+                is_linux = !(`uname -s`.strip.downcase['linux'].nil?)
+                linux_proc_f = '/proc/sys/net/ipv4/tcp_tw_reuse'
+                if is_linux && File.exists?(linux_proc_f)
+                    begin
+                        tw_reuse = (File.read(linux_proc_f).strip.to_i == 1)
+                    rescue Exception => e
+                    end
+                end
+                if tw_reuse == false
+                    puts("WARN: SO_REUSEADDR is not enabled on your system".
+                        yellow)
+                    if is_linux
+                        puts "      try to set 1 into #{linux_proc_f}".yellow
+                    end
+                elsif tw_reuse == nil
+                    puts("WARN: SO_REUSEADDR may be disabled on your system".
+                        yellow)
+                end
+                if !tw_reuse
+                    puts("    Try to enable it in order to avoid TIME_WAIT ".
+                         yellow +
+                         "sockets".yellow)
+                end
+            end
+        end
+        client = @proxy.redis.instance_eval{@client}
+        client.disconnect
+    end
+    if $options[:enable_cross_slot]
+        reply = @proxy.redis_command :proxy, :config,
+            :set, 'enable-cross-slot', '1'
+        if reply.is_a? Redis::CommandError
+            puts "Could not set 'enable-cross-slot'".red
+            puts reply.to_s.red
+            final_cleanup
+            exit
+        end
+        reply = @proxy.redis_command 'proxy', 'config', 'get',
+                                     'enable-cross-slot'
+        if reply.is_a? Redis::CommandError
+            puts "Could not verify 'enable-cross-slot'".red
+            puts reply.to_s.red
+            final_cleanup
+            exit
+        end
+        if !reply.is_a? Array
+            puts "Could not verify 'enable-cross-slot'".red
+            puts "Unexpected reply class: #{reply.class}".red
+            final_cleanup
+            exit
+        end
+        if reply[1] != 1
+            puts "Failed to enable cross-slot".red
+            final_cleanup
+            exit
         end
         client = @proxy.redis.instance_eval{@client}
         client.disconnect
