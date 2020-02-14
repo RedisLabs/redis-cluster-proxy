@@ -29,7 +29,7 @@ opts =RedisProxyTestUtils::OptionParser.new help_banner_arguments: '[TESTS]' do
     option   '',   '--proxy-threads NUM', 'Number of proxy threads'
     option   '',   '--proxy-log-level LEVEL', 'Proxy log level'
     option   '',   '--enable-cross-slot', 'Enable crosslot queries on proxy'
-    option  '',   '--valgrind', 'Enable Valgrind'
+    option   '',   '--valgrind', 'Enable Valgrind'
     option   '',   '--benchmark-threads NUM', 'Number of benchmark threads'
     option   '',   '--benchmark-pipeline NUM', 'Pipeline queries'
     option   '',   '--benchmark-clients NUM',
@@ -64,6 +64,8 @@ if !$options[:custom_query]
     $tests = ARGV
     if $tests.length == 0
         $tests = %w(get)
+    elsif $tests.index 'all'
+        $tests = []
     end
 else
     $tests = ARGV.join(' ')
@@ -100,7 +102,7 @@ def setup(proxy_threads: nil)
         c = reply[1].to_i
         if c > 0
             $options[:benchmark_clients] = c
-            puts "Max clients: #{c}".blue
+            puts "Max clients: #{c}"
             if c > 100
                 tw_reuse = nil
                 is_linux = !(`uname -s`.strip.downcase['linux'].nil?)
