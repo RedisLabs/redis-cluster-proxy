@@ -307,4 +307,4 @@ features, see [COMMANDS.md](COMMANDS.md)
 
 # Current status
 
-This project is currently alpha code that is indented to be evaluated by the community in order to get suggestions and contributions. We discourage its usage in any production environment.
+This project is currently beta code that is indented to be evaluated by the community in order to get suggestions and contributions. We discourage its usage in any production environment.
