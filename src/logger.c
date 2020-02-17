@@ -23,6 +23,7 @@
 #include "logger.h"
 #include "config.h"
 #include "sds.h"
+#include "proxy.h"
 
 const char *redisProxyLogLevels[5] = {
     "debug",
@@ -68,10 +69,17 @@ void proxyLog(int level, const char* format, ...) {
         maxlen -= 4; /* Keep enough space for final "\33[0m"  */
     }
     if (!is_raw) {
+        int thread_id = getCurrentThreadID();
         offset += strftime(buf + offset, maxlen - offset,
                            "[%Y-%m-%d %H:%M:%S.", tm_info);
-        offset += snprintf(buf + offset, maxlen - offset, "%03d] ",
+        offset += snprintf(buf + offset, maxlen - offset, "%03d",
                            (int) tv.tv_usec/1000);
+        if (thread_id != PROXY_MAIN_THREAD_ID) {
+            offset += snprintf(buf + offset, maxlen - offset, "/%d] ",
+                thread_id);
+        } else {
+            offset += snprintf(buf + offset, maxlen - offset, "/M] ");
+        }
     }
     before_format_offset = offset;
     va_list ap;

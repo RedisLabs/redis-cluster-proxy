@@ -108,6 +108,12 @@ redisCommandDef *authCommandDef = NULL;
 redisCommandDef *scanCommandDef = NULL;
 int ae_api_kqueue = 0;
 
+#ifdef __GNUC__
+__thread int thread_id;
+#else
+_Thread_local int thread_id;
+#endif
+
 /* Forward declarations. */
 
 static proxyThread *createProxyThread(int index);
@@ -196,15 +202,7 @@ static int __hiredisReadReplyFromBuffer(redisReader *r, void **reply) {
 /* Utils */
 
 int getCurrentThreadID(void) {
-    pthread_t self = pthread_self();
-    if (self == proxy.main_thread) return PROXY_MAIN_THREAD_ID;
-    int i;
-    for (i = 0; i < config.num_threads; i++) {
-        proxyThread *t = proxy.threads[i];
-        if (t == NULL) continue;
-        if (t->thread == self) return i;
-    }
-    return PROXY_UNKN_THREAD_ID;
+    return thread_id;
 }
 
 static void logClusterReplyFailure(char *err, redisReply *reply,
@@ -4474,6 +4472,7 @@ static void *execProxyThread(void *ptr) {
     proxyThread *thread = (proxyThread *) ptr;
     pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
     pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
+    thread_id = thread->thread_id;
     aeMain(thread->loop);
     proxyLogInfo("Thread %d ended\n", thread->thread_id);
     return NULL;
@@ -4567,6 +4566,7 @@ int main(int argc, char **argv) {
     setupSignalHandlers();
     uname(&proxy_os);
     ae_api_kqueue = (strcmp("kqueue", aeGetApiName()) == 0);
+    thread_id = PROXY_MAIN_THREAD_ID;
     initConfig();
     proxy.configfile = NULL;
     proxy.threads = NULL;
