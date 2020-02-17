@@ -105,6 +105,7 @@ redisClusterProxyConfig config;
 static struct utsname proxy_os;
 redisCommandDef *authCommandDef = NULL;
 redisCommandDef *scanCommandDef = NULL;
+int ae_api_kqueue = 0;
 
 /* Forward declarations. */
 
@@ -2100,7 +2101,6 @@ static proxyThread *createProxyThread(int index) {
     }
     thread->loop->privdata = thread;
     aeSetBeforeSleepProc(thread->loop, beforeThreadSleep);
-    /*aeCreateTimeEvent(thread->loop, 1, proxyThreadCron, NULL,NULL);*/
     if (!installIOHandler(thread->loop, thread->io[THREAD_IO_READ],
                           AE_READABLE, readThreadPipe, thread, 0))
     {
@@ -2181,7 +2181,7 @@ static int awakeThreadForNewClient(proxyThread *thread, client *c) {
     return sendMessageToThread(thread, buf);
 }
 
-static int sendStopMessageToThread(proxyThread *thread) {
+int sendStopMessageToThread(proxyThread *thread) {
     proxyLogDebug("Sending stop message to thread %d\n", thread->thread_id);
     sds buf = sdsempty();
     buf = sdsMakeRoomFor(buf, sizeof(void*));
@@ -4416,6 +4416,8 @@ static void readClusterReply(aeEventLoop *el, int fd,
 
 static void *execProxyThread(void *ptr) {
     proxyThread *thread = (proxyThread *) ptr;
+    pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
+    pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
     aeMain(thread->loop);
     proxyLogInfo("Thread %d ended\n", thread->thread_id);
     return NULL;
@@ -4501,6 +4503,7 @@ int main(int argc, char **argv) {
     signal(SIGPIPE, SIG_IGN);
     setupSignalHandlers();
     uname(&proxy_os);
+    ae_api_kqueue = (strcmp("kqueue", aeGetApiName()) == 0);
     initConfig();
     proxy.configfile = NULL;
     proxy.threads = NULL;

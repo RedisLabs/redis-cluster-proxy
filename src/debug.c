@@ -49,6 +49,7 @@ char *redisClusterProxyGitDirty(void);
 void proxyLogHexDump(char *descr, void *value, size_t len);
 sds genInfoString(sds section);
 
+extern int ae_api_kqueue;
 int bug_report_start = 0;
 const char *assert_failed = NULL;
 const char *assert_file = NULL;
@@ -77,6 +78,8 @@ typedef ucontext_t sigcontext_t;
 #endif
 #endif
 
+int sendStopMessageToThread(proxyThread *thread);
+
 static void killThreads(int exclude) {
     int err, j;
 
@@ -84,6 +87,9 @@ static void killThreads(int exclude) {
         if (j == exclude) continue;
         proxyThread *thread = proxy.threads[j];
         if (pthread_cancel(thread->thread) == 0) {
+            /* Unfortunately, kqueue's kevent blocks even if pthread_cancel
+             * gets called, so we need to also send a stop message. */
+            if (ae_api_kqueue) sendStopMessageToThread(thread);
             if ((err = pthread_join(thread->thread, NULL)) != 0) {
                 proxyLogErr("Thread %d can be joined: %s\n",
                         j, strerror(err));
