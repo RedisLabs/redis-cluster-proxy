@@ -29,6 +29,7 @@
 #include <string.h>
 #include <strings.h>
 #include <stdlib.h>
+#include <ctype.h>
 #include <errno.h>
 #include <signal.h>
 #include <unistd.h>
@@ -193,6 +194,18 @@ static int __hiredisReadReplyFromBuffer(redisReader *r, void **reply) {
 }
 
 /* Utils */
+
+int getCurrentThreadID(void) {
+    pthread_t self = pthread_self();
+    if (self == proxy.main_thread) return PROXY_MAIN_THREAD_ID;
+    int i;
+    for (i = 0; i < config.num_threads; i++) {
+        proxyThread *t = proxy.threads[i];
+        if (t == NULL) continue;
+        if (t->thread == self) return i;
+    }
+    return PROXY_UNKN_THREAD_ID;
+}
 
 static void logClusterReplyFailure(char *err, redisReply *reply,
                                    clusterNode *node)
@@ -1051,7 +1064,50 @@ int proxyCommand(void *r) {
         else if (strcasecmp("assert", type) == 0) assert(1 == 2);
         else if (strcasecmp("help", type) == 0)
             addReplyHelp(req->client,proxyCommandSubcommandDebugtHelp,req->id);
-        else {
+        else if (strcasecmp("kill", type) == 0) {
+            if (req->argc < 4) {
+                addReplyErrorUnknownSubcommand(req->client, "PROXY DEBUG",
+                    "PROXY DEBUG HELP", req->id);
+                goto final;
+            }
+            assert(req->offsets_size >= 4);
+            offset = req->offsets[3];
+            len = req->lengths[3];
+            int thread_id, signal = SIGTERM;
+            sds thread_arg = sdsnewlen(req->buffer + offset, len);
+            if (strcasecmp("main", thread_arg) == 0) thread_id = -1;
+            else if (strcasecmp("self", thread_arg) == 0)
+                thread_id = getCurrentThreadID();
+            else thread_id = atoi(thread_arg);
+            sdsfree(thread_arg);
+            if (thread_id >= config.num_threads) {
+                addReplyError(req->client, "Invalid thread id", req->id);
+                goto final;
+            }
+            pthread_t thread;
+            if (thread_id < 0) thread = proxy.main_thread;
+            else thread = proxy.threads[thread_id]->thread;
+            if (req->argc > 4) {
+                assert(req->offsets_size > 4);
+                offset = req->offsets[4];
+                len = req->lengths[4];
+                sds sig = sdsnewlen(req->buffer + offset, len);
+                if (isdigit(sig[0])) signal = atoi(sig);
+                else {
+                    if (strcasecmp("TERM", sig) == 0) signal = SIGTERM;
+                    else if (strcasecmp("INT", sig) == 0) signal = SIGINT;
+                    else if (strcasecmp("KILL", sig) == 0) signal = SIGKILL;
+                    else {
+                        sdsfree(sig);
+                        addReplyError(req->client, "Invalid signal", req->id);
+                        goto final;
+                    }
+                }
+                sdsfree(sig);
+            }
+            addReplyString(req->client, "OK", req->id);
+            pthread_kill(thread, signal);
+        } else {
             addReplyErrorUnknownSubcommand(req->client, "PROXY DEBUG",
                 "PROXY DEBUG HELP", req->id);
             goto final;
@@ -1067,8 +1123,8 @@ int proxyCommand(void *r) {
             asap = (strcasecmp("asap", mode) == 0);
             sdsfree(mode);
         }
-        if (asap) exit(0);
-        else kill(getpid(), SIGINT);
+        if (asap) proxy.exit_asap = 1;
+        kill(getpid(), SIGINT);
     } else if (strcasecmp("help", subcmd) == 0) {
         addReplyHelp(req->client, proxyCommandHelp, req->id);
     } else {
@@ -4436,10 +4492,17 @@ static void sigShutdownHandler(int sig) {
     default:
         msg = "Received shutdown signal";
     };
-    proxyLogHdr("%s\n", msg);
-    if (pthread_self() == proxy.main_thread && !proxy.exit_asap) {
-        proxy.exit_asap = 1;
-        aeStop(proxy.main_loop);
+    int is_main_thread = (pthread_self() == proxy.main_thread);
+    if (is_main_thread) proxyLogHdr("%s on main thread\n", msg);
+    else proxyLogHdr("%s on thread %d\n", msg, getCurrentThreadID());
+    if (!proxy.exit_asap) {
+        if (is_main_thread) {
+            proxy.exit_asap = 1;
+            aeStop(proxy.main_loop);
+        } else {
+            proxyLogHdr("Forwarding signal to main thread...\n");
+            pthread_kill(proxy.main_thread, sig);
+        }
     } else {
         proxyLogHdr("Dirty exit!\n");
         exit(0);

@@ -40,6 +40,9 @@
 #define CLIENT_STATUS_LINKED        1
 #define CLIENT_STATUS_UNLINKED      2
 
+#define PROXY_MAIN_THREAD_ID -1
+#define PROXY_UNKN_THREAD_ID -999
+
 #define getClientLoop(c) (proxy.threads[c->thread_id]->loop)
 
 struct client;
@@ -111,7 +114,7 @@ typedef struct {
     sds configfile;
     size_t system_memory_size;
     pthread_t main_thread;
-    int exit_asap;
+    _Atomic int exit_asap;
 } redisClusterProxy;
 
 typedef struct client {
@@ -157,6 +160,7 @@ typedef struct client {
                                        * thread->unlinked_clients list */
 } client;
 
+int getCurrentThreadID(void);
 int processRequest(clientRequest *req, int *parsing_status,
     clientRequest **next);
 void freeRequest(clientRequest *req);
