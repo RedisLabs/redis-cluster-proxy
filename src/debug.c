@@ -637,7 +637,7 @@ void sigsegvHandler(int sig, siginfo_t *info, void *secret) {
     killThreads(cur_thread_id);
 
     bugReportStart();
-    proxyLogErr("Redis Cluster Prxoy %s crashed by signal: %d\n",
+    proxyLogErr("Redis Cluster Proxy %s crashed by signal: %d\n",
         REDIS_CLUSTER_PROXY_VERSION, sig);
     if (eip != NULL) {
         proxyLogErr("Crashed running the instruction at: %p\n", eip);
