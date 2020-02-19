@@ -98,6 +98,25 @@ static void killThreads(int exclude) {
     }
 }
 
+sds genStructSizeString(void) {
+    sds str = sdsempty();
+    str = sdscatprintf(str, "clientRequest: %d\n", (int) sizeof(clientRequest));
+    str = sdscatprintf(str, "client: %d\n", (int) sizeof(client));
+    str = sdscatprintf(str, "redisClusterConnection: %d\n",
+        (int) sizeof(redisClusterConnection));
+    str = sdscatprintf(str, "clusterNode: %d\n", (int) sizeof(clusterNode));
+    str = sdscatprintf(str, "redisCluster: %d\n", (int) sizeof(redisCluster));
+    str = sdscatprintf(str, "list: %d\n", (int) sizeof(list));
+    str = sdscatprintf(str, "listNode: %d\n", (int) sizeof(listNode));
+    str = sdscatprintf(str, "rax: %d\n", (int) sizeof(rax));
+    str = sdscatprintf(str, "raxNode: %d\n", (int) sizeof(raxNode));
+    str = sdscatprintf(str, "raxIterator: %d\n", (int) sizeof(raxIterator));
+    str = sdscatprintf(str, "aeEventLoop: %d\n", (int) sizeof(aeEventLoop));
+    str = sdscatprintf(str, "aeFileEvent: %d\n", (int) sizeof(aeFileEvent));
+    str = sdscatprintf(str, "aeTimeEvent: %d\n", (int) sizeof(aeTimeEvent));
+    return str;
+}
+
 /* =========================== Crash handling  ============================== */
 
 void bugReportStart(void) {
@@ -656,6 +675,13 @@ void sigsegvHandler(int sig, siginfo_t *info, void *secret) {
     sds infostr = genInfoString(NULL);
     proxyLogRaw(infostr);
     sdsfree(infostr);
+
+    /* Log structure sizes */
+
+    proxyLogRaw("\n\n---- SIZEOF STRUCTS ----\n");
+    sds structsizestr = genStructSizeString();
+    proxyLogRaw("%s\n", structsizestr);
+    sdsfree(structsizestr);
 
     /* Log dump of processor registers */
     logRegisters(uc);
