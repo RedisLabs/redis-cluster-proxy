@@ -28,7 +28,7 @@ void addUnorderedReply(client *c, sds reply, uint64_t req_id) {
               sizeof(be_id), reply, (void **)&oldreply);
     if (oldreply != NULL) {
         proxyLogDebug("WARN: Unordered reply for request %d:%" PRId64 ":%"
-            PRId64 " was already set to: '%s', and new reply " " is '%s'\n",
+            PRId64 " was already set to: '%s', and new reply " " is '%s'",
             c->thread_id, c->id, req_id, oldreply, reply);
         sdsfree(oldreply);
     }
@@ -40,7 +40,7 @@ int appendUnorderedRepliesToBuffer(client *c) {
     uint64_t min_id = htonu64(c->min_reply_id);
     if (!raxSeek(&iter, ">=", (unsigned char*) &min_id, sizeof(min_id))) {
         proxyLogDebug("Failed to seek client %ld unordered requests >= "
-                      "%ld.\n", c->id, c->min_reply_id);
+                      "%ld.", c->id, c->min_reply_id);
         raxStop(&iter);
         return -1;
     }

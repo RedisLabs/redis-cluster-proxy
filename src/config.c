@@ -77,7 +77,7 @@ int parseOptionsFromFile(const char *filename) {
         if (sdslen(line) == 0) goto next_line;
         tokens = sdssplitargs(line, &numtokens);
         if (tokens == NULL || numtokens == 0) {
-            proxyLogWarn("Failed to parse line %d in config file '%s'\n",
+            proxyLogWarn("Failed to parse line %d in config file '%s'",
                          linenum, filename);
             goto next_line;
         }

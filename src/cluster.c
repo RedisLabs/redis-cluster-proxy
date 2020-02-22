@@ -33,7 +33,7 @@
 
 #define CLUSTER_NODE_KEEPALIVE_INTERVAL 15
 #define CLUSTER_PRINT_REPLY_ERROR(n, err) \
-    proxyLogErr("Node %s:%d replied with error:\n%s\n", \
+    proxyLogErr("Node %s:%d replied with error:\n%s", \
                 n->ip, n->port, err);
 
 /* Forward declarations. */
@@ -288,11 +288,11 @@ int resetCluster(redisCluster *cluster) {
 void freeCluster(redisCluster *cluster) {
     if (cluster->owner) {
         client *c = cluster->owner;
-        proxyLogDebug("Free private cluster for client %d:%" PRId64  "\n",
+        proxyLogDebug("Free private cluster for client %d:%" PRId64,
             c->thread_id, c->id);
         /* TODO: Set to NULL? */
     } else {
-        proxyLogDebug("Free shared cluster on thread %d\n", cluster->thread_id);
+        proxyLogDebug("Free shared cluster on thread %d", cluster->thread_id);
     }
     if (cluster->slots_map) raxFree(cluster->slots_map);
     if (cluster->nodes_by_name) raxFree(cluster->nodes_by_name);
@@ -398,10 +398,10 @@ redisContext *clusterNodeConnect(clusterNode *node) {
         redisFree(ctx);
         ctx = NULL;
     }
-    proxyLogDebug("Connecting to node %s:%d\n", node->ip, node->port);
+    proxyLogDebug("Connecting to node %s:%d", node->ip, node->port);
     ctx = redisConnectNonBlock(node->ip, node->port);
     if (ctx->err) {
-        proxyLogErr("Could not connect to Redis at %s:%d: %s\n",
+        proxyLogErr("Could not connect to Redis at %s:%d: %s",
                     node->ip, node->port, ctx->errstr);
         redisFree(ctx);
         node->connection->context = NULL;
@@ -419,7 +419,7 @@ redisContext *clusterNodeConnect(clusterNode *node) {
 void clusterNodeDisconnect(clusterNode *node) {
     redisContext *ctx = getClusterNodeContext(node);
     if (ctx == NULL) return;
-    proxyLogDebug("Disconnecting from node %s:%d\n", node->ip, node->port);
+    proxyLogDebug("Disconnecting from node %s:%d", node->ip, node->port);
     onClusterNodeDisconnection(node);
     redisFree(ctx);
     node->connection->context = NULL;
@@ -675,7 +675,7 @@ clusterNode *searchNodeBySlot(redisCluster *cluster, int slot) {
     raxStart(&iter, cluster->slots_map);
     int slot_be = htonl(slot);
     if (!raxSeek(&iter, ">=", (unsigned char*) &slot_be, sizeof(slot_be))) {
-        proxyLogErr("Failed to seek cluster node into slots map.\n");
+        proxyLogErr("Failed to seek cluster node into slots map.");
         raxStop(&iter);
         return NULL;
     }
@@ -700,7 +700,7 @@ clusterNode *getNodeByName(redisCluster *cluster, const char *name) {
     raxIterator iter;
     raxStart(&iter, cluster->nodes_by_name);
     if (!raxSeek(&iter, "=", (unsigned char*) name, strlen(name))) {
-        proxyLogErr("Failed to seek cluster node into nodes_by_name.\n");
+        proxyLogErr("Failed to seek cluster node into nodes_by_name.");
         raxStop(&iter);
         return NULL;
     }
@@ -739,7 +739,7 @@ list *clusterGetMasterNames(redisCluster *cluster) {
         names = cluster->master_names = listCreate();
         listSetFreeMethod(names, (void (*)(void *)) sdsfree);
         if (names == NULL) {
-            proxyLogErr("Failed to allocate cluster->master_names\n");
+            proxyLogErr("Failed to allocate cluster->master_names");
             return NULL;
         }
         raxIterator iter;
@@ -808,7 +808,7 @@ int updateCluster(redisCluster *cluster) {
             }
         }
     }
-    proxyLogDebug("Cluster reconfiguration: still waiting for %d requests\n",
+    proxyLogDebug("Cluster reconfiguration: still waiting for %d requests",
                   requests_to_wait);
     cluster->is_updating = 1;
     /* If there are requests pending or writing to cluster, just return
@@ -816,16 +816,16 @@ int updateCluster(redisCluster *cluster) {
     if (requests_to_wait) goto final;
     status = CLUSTER_RECONFIG_STARTED;
     /* Start the reconfiguration. */
-    proxyLogDebug("Reconfiguring cluster (thread: %d)\n", cluster->thread_id);
+    proxyLogDebug("Reconfiguring cluster (thread: %d)", cluster->thread_id);
     if (!resetCluster(cluster)) {
-        proxyLogErr("Failed to reset cluster!\n");
+        proxyLogErr("Failed to reset cluster!");
         status = CLUSTER_RECONFIG_ERR;
         goto final;
     }
-    proxyLogDebug("Reconfiguring cluster from node %s:%d (thread: %d)\n",
+    proxyLogDebug("Reconfiguring cluster from node %s:%d (thread: %d)",
                   ip, port, cluster->thread_id);
     if (!fetchClusterConfiguration(cluster, ip, port, NULL)) {
-        proxyLogErr("Failed to fetch cluster configuration! (thread: %d)\n",
+        proxyLogErr("Failed to fetch cluster configuration! (thread: %d)",
                     cluster->thread_id);
         status = CLUSTER_RECONFIG_ERR;
         goto final;
@@ -838,12 +838,12 @@ int updateCluster(redisCluster *cluster) {
         raxStop(&iter);
         status = CLUSTER_RECONFIG_ERR;
         proxyLogErr("Failed to reset 'cluster->requests_to_reprocess' "
-                    "(thread: %d)\n", cluster->thread_id);
+                    "(thread: %d)", cluster->thread_id);
         goto final;
     }
     cluster->is_updating = 0;
     cluster->update_required = 0;
-    proxyLogDebug("Reprocessing cluster requests (thread: %d)\n",
+    proxyLogDebug("Reprocessing cluster requests (thread: %d)",
                   cluster->thread_id);
     while (raxNext(&iter)) {
         clientRequest *req = (clientRequest *) iter.data;
@@ -874,7 +874,7 @@ int updateCluster(redisCluster *cluster) {
         processRequest(req, NULL, NULL);
     }
     raxStop(&iter);
-    proxyLogDebug("Cluster reconfiguration ended (thread: %d)\n",
+    proxyLogDebug("Cluster reconfiguration ended (thread: %d)",
                   cluster->thread_id);
     status = CLUSTER_RECONFIG_ENDED;
 final:
@@ -917,7 +917,7 @@ void clusterRemoveRequestToReprocess(redisCluster *cluster, void *r) {
 /* Try to send an AUTH command to the specified node. The string dereferenced
  * from the `**err` argument should be freed outside. */
 int clusterNodeAuth(clusterNode *node, char *auth, char *user, char **err) {
-    proxyLogDebug("Authenticating to node %s:%d\n", node->ip, node->port);
+    proxyLogDebug("Authenticating to node %s:%d", node->ip, node->port);
     redisContext *ctx = getClusterNodeContext(node);
     char *errmsg = NULL;
     if (err != NULL) *err = NULL;

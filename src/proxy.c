@@ -224,8 +224,7 @@ static void logClusterReplyFailure(char *err, redisReply *reply,
         repdescr = sdscatfmt(repdescr, "Reply is: '%s'", reply->str);
     else if (reply->type == REDIS_REPLY_INTEGER)
         repdescr = sdscatfmt(repdescr, "Reply is: %d", reply->integer);
-    proxyLogErr("WARN: %s on %s. %s\n",
-        err, conndescr, repdescr);
+    proxyLogErr("WARN: %s on %s. %s", err, conndescr, repdescr);
     sdsfree(conndescr);
     sdsfree(repdescr);
 }
@@ -683,7 +682,7 @@ int securityWarningCommand(void *r) {
     proxyLogWarn("Possible SECURITY ATTACK detected. It looks like somebody "
         "is sending POST or Host: commands to Redis. This is likely due to an "
         "attacker attempting to use Cross Protocol Scripting to compromise "
-        "your Redis instance. Connection aborted.\n");
+        "your Redis instance. Connection aborted.");
     unlinkClient(req->client);
     return PROXY_COMMAND_HANDLED;
 }
@@ -804,7 +803,7 @@ int scanCommand(void *r) {
     int idx = 0;
     if (cursor_n == 0) {
         if (errptr && *errptr != '\0') {
-            proxyLogDebug("Invalid SCAN cursor: '%s'. (errptr: '%s')\n",
+            proxyLogDebug("Invalid SCAN cursor: '%s'. (errptr: '%s')",
                           cursor, errptr);
             addReplyError(c, ERROR_INVALID_QUERY, req->id);
             status = PROXY_COMMAND_HANDLED;
@@ -1044,7 +1043,6 @@ int proxyCommand(void *r) {
             err = sdsnew("Log message too long!");
             goto final;
         }
-        if (msg[msglen - 1] != '\n') msg = sdscat(msg, "\n");
         proxyLog(loglvl, msg);
         sdsfree(msg);
         addReplyString(req->client, "OK", req->id);
@@ -1177,7 +1175,7 @@ int mergeReplies(void *_reply, void *_req, char *buf, int len) {
         ok = (endl != NULL);
         if (!ok) {
             if (config.dump_buffer) {
-                proxyLogDebug("Child reply:\n%s\np:\n%s\nendl:\n%s\n",
+                proxyLogDebug("Child reply:\n%s\np:\n%s\nendl:\n%s",
                               replyrepr, p, endl);
             }
             err = ERROR_MERGE_REPLY_INVALID_FMT;
@@ -1190,7 +1188,7 @@ int mergeReplies(void *_reply, void *_req, char *buf, int len) {
         if (!ok) {
             if (config.dump_buffer) {
                 proxyLogDebug("Invalid count!\nChild reply:\n%s\np:\n%s\n"
-                              "endl:\n%s\n", replyrepr, p, endl);
+                              "endl:\n%s", replyrepr, p, endl);
             }
             err = ERROR_MERGE_REPLY_INVALID_FMT;
             goto final;
@@ -1204,7 +1202,7 @@ final:
     if (replyrepr != NULL) sdsfree(replyrepr);
     if (err != NULL) {
         addReplyError(req->client, err, req->id);
-        proxyLogDebug("%s\n", err);
+        proxyLogDebug("%s", err);
     } else {
         reply = sdscatfmt(sdsempty(), "*%u\r\n%S", count, merged_replies);
         addReplyRaw(req->client, reply, sdslen(reply), req->id);
@@ -1624,7 +1622,7 @@ static void dumpQueue(clusterNode *node, int thread_id, int type) {
         if (req == NULL) msg = sdscat(msg, "NULL");
         else msg = sdscatprintf(msg, REQID_PRINTF_FMT, REQID_PRINTF_ARG(req));
     }
-    msg = sdscat(msg, "]\n");
+    msg = sdscat(msg, "]");
     proxyLogDebug(msg);
     sdsfree(msg);
 }
@@ -1787,7 +1785,7 @@ void adjustOpenFilesLimit(void) {
     if (getrlimit(RLIMIT_NOFILE,&limit) == -1) {
         proxyLogWarn("Unable to obtain the current NOFILE limit (%s), "
                      "assuming 1024 and setting the max clients configuration "
-                     "accordingly.\n", strerror(errno));
+                     "accordingly.", strerror(errno));
         config.maxclients = 1024 - proxy.min_reserved_fds;
     } else {
         rlim_t oldlimit = limit.rlim_cur;
@@ -1829,26 +1827,26 @@ void adjustOpenFilesLimit(void) {
                     proxyLogWarn("Your current 'ulimit -n' "
                         "of %llu is not enough for the server to start. "
                         "Please increase your open file limit to at least "
-                        "%llu. Exiting.\n",
+                        "%llu. Exiting.",
                         (unsigned long long) oldlimit,
                         (unsigned long long) maxfiles);
                     exit(1);
                 }
                 proxyLogWarn("You requested maxclients of %d "
-                    "requiring at least %llu max file descriptors.\n",
+                    "requiring at least %llu max file descriptors.",
                     old_maxclients,
                     (unsigned long long) maxfiles);
                 proxyLogWarn("Server can't set maximum open files "
-                    "to %llu because of OS error: %s.\n",
+                    "to %llu because of OS error: %s.",
                     (unsigned long long) maxfiles, strerror(setrlimit_error));
                 proxyLogWarn("Current maximum open files is %llu. "
                     "maxclients has been reduced to %d to compensate for "
                     "low ulimit. "
-                    "If you need higher maxclients increase 'ulimit -n'.\n",
+                    "If you need higher maxclients increase 'ulimit -n'.",
                     (unsigned long long) bestlimit, config.maxclients);
             } else {
                 proxyLogInfo("Increased maximum number of open files "
-                    "to %llu (it was originally set to %llu).\n",
+                    "to %llu (it was originally set to %llu).",
                     (unsigned long long) maxfiles,
                     (unsigned long long) oldlimit);
             }
@@ -1868,7 +1866,7 @@ static void checkTcpBacklogSettings(void) {
         if (somaxconn > 0 && somaxconn < proxy.tcp_backlog) {
             proxyLogWarn("The TCP backlog setting of %d cannot be enforced "
 			 "because /proc/sys/net/core/somaxconn is set to the "
-			 "lower value of %d.\n", proxy.tcp_backlog, somaxconn);
+			 "lower value of %d.", proxy.tcp_backlog, somaxconn);
         }
     }
     fclose(fp);
@@ -1900,31 +1898,31 @@ static void initProxy(void) {
         fprintf(stderr, "FATAL: failed to allocate memory for threads.\n");
         exit(1);
     }
-    proxyLogHdr("Starting %d threads...\n", config.num_threads);
+    proxyLogHdr("Starting %d threads...", config.num_threads);
     for (i = 0; i < config.num_threads; i++) {
-        proxyLogDebug("Creating thread %d...\n", i);
+        proxyLogDebug("Creating thread %d...", i);
         proxy.threads[i] = NULL;
         proxy.threads[i] = createProxyThread(i);
         if (proxy.threads[i] == NULL) {
-            proxyLogErr("FATAL: failed to create thread %d.\n", i);
+            proxyLogErr("FATAL: failed to create thread %d.", i);
             exit(1);
         }
         pthread_t *t = &(proxy.threads[i]->thread);
         if (pthread_create(t, NULL, execProxyThread, proxy.threads[i])){
             fprintf(stderr, "FATAL: Failed to start thread %d.\n", i);
-            proxyLogErr("FATAL: Failed to start thread %d.\n", i);
+            proxyLogErr("FATAL: Failed to start thread %d.", i);
             exit(1);
         }
     }
-    proxyLogHdr("All thread(s) started!\n");
+    proxyLogHdr("All thread(s) started!");
 }
 
 void closeListeningSockets() {
     int j;
-    proxyLogInfo("Closing listening sockets.\n");
+    proxyLogInfo("Closing listening sockets.");
     for (j = 0; j < proxy.fd_count; j++) close(proxy.fds[j]);
     if (config.unixsocket) {
-        proxyLogInfo("Removing the unix socket file.\n");
+        proxyLogInfo("Removing the unix socket file.");
         unlink(config.unixsocket); /* don't care if this fails */
     }
 }
@@ -1978,7 +1976,7 @@ static void writeRepliesToClients(struct aeEventLoop *el) {
                 c->has_write_handler = 1;
             } else {
                 c->has_write_handler = 0;
-                proxyLogDebug("Failed to create write handler for client.\n");
+                proxyLogDebug("Failed to create write handler for client.");
             }
         }
     }
@@ -2028,7 +2026,7 @@ static int processThreadPipeBufferForNewClients(proxyThread *thread) {
             continue;
         }
         if (c == (void*) THREAD_MSG_STOP) {
-            proxyLogInfo("Stopping thread %d\n", thread->thread_id);
+            proxyLogInfo("Stopping thread %d", thread->thread_id);
             aeStop(thread->loop);
             processed++;
             sdsrange(thread->msgbuffer, processed * msgsize, -1);
@@ -2039,18 +2037,18 @@ static int processThreadPipeBufferForNewClients(proxyThread *thread) {
         int *p_added = &added;
         addObjectToList(c, thread, clients, p_added);
         if (!added) {
-            proxyLogErr("Failed to add client %d:%" PRId64 " to thread %d\n",
+            proxyLogErr("Failed to add client %d:%" PRId64 " to thread %d",
                 thread->thread_id, c->id, thread->thread_id);
             freeClient(c);
             processed++;
             continue;
         }
-        proxyLogDebug("Client %d:%" PRId64 " added to thread %d\n",
+        proxyLogDebug("Client %d:%" PRId64 " added to thread %d",
                       c->thread_id, c->id, c->thread_id);
         errno = 0;
         if (!installIOHandler(el, c->fd, AE_READABLE, readQuery, c, 0)) {
             proxyLogErr("ERROR: Failed to create read query handler for "
-                        "client %d:%" PRId64 " from %s\n", c->thread_id,
+                        "client %d:%" PRId64 " from %s", c->thread_id,
                         c->id, c->addr);
             errno = EL_INSTALL_HANDLER_FAIL;
             freeClient(c);
@@ -2076,7 +2074,7 @@ static void readThreadPipe(aeEventLoop *el, int fd, void *privdata, int mask) {
         if (errno == EAGAIN) {
             return;
         } else {
-            proxyLogDebug("Error reading from thread pipe: %s\n",
+            proxyLogDebug("Error reading from thread pipe: %s",
                           strerror(errno));
             return;
         }
@@ -2093,16 +2091,16 @@ static void printClusterConfiguration(redisCluster *cluster) {
         for (j = 0; j < CLUSTER_SLOTS; j++) {
             clusterNode *n = searchNodeBySlot(cluster, j);
             if (n == NULL) {
-                proxyLogErr("NULL node for slot %d\n", j);
+                proxyLogErr("NULL node for slot %d", j);
                 break;
             }
             if (n != last_n) {
                 last_n = n;
-                proxyLogDebug("Slot %d -> node %d\n", j, n->port);
+                proxyLogDebug("Slot %d -> node %d", j, n->port);
             }
         }
     }
-    proxyLogHdr("Cluster has %d masters and %d replica(s)\n",
+    proxyLogHdr("Cluster has %d masters and %d replica(s)",
         cluster->masters_count, cluster->replicas_count);
 }
 
@@ -2112,7 +2110,7 @@ static proxyThread *createProxyThread(int index) {
     if (thread == NULL) return NULL;
     thread->loop = NULL;
     if (pipe(thread->io) == -1) {
-        proxyLogErr("ERROR: failed to open pipe for thread!\n");
+        proxyLogErr("ERROR: failed to open pipe for thread!");
         zfree(thread);
         return NULL;
     }
@@ -2120,16 +2118,16 @@ static proxyThread *createProxyThread(int index) {
     thread->next_client_id = 0;
     thread->cluster = createCluster(index);
     if (thread->cluster == NULL) {
-        proxyLogErr("ERROR: failed to allocate cluster for thread: %d\n",
+        proxyLogErr("ERROR: failed to allocate cluster for thread: %d",
                     index);
         freeProxyThread(thread);
         return NULL;
     }
-    if (is_first) proxyLogHdr("Fetching cluster configuration...\n");
+    if (is_first) proxyLogHdr("Fetching cluster configuration...");
     if (!fetchClusterConfiguration(thread->cluster, config.entry_node_host,
                                    config.entry_node_port,
                                    config.entry_node_socket)) {
-        proxyLogErr("ERROR: Failed to fetch cluster configuration!\n");
+        proxyLogErr("ERROR: Failed to fetch cluster configuration!");
         freeProxyThread(thread);
         return NULL;
     }
@@ -2150,7 +2148,7 @@ static proxyThread *createProxyThread(int index) {
     int loopsize = proxy.min_reserved_fds + config.maxclients;
     thread->loop = aeCreateEventLoop(loopsize);
     if (thread->loop == NULL) {
-        proxyLogErr("Failed to allocate event loop for thread %d\n", index);
+        proxyLogErr("Failed to allocate event loop for thread %d", index);
         goto fail;
     }
     thread->loop->privdata = thread;
@@ -2159,8 +2157,8 @@ static proxyThread *createProxyThread(int index) {
                           AE_READABLE, readThreadPipe, thread, 0))
     {
         proxyLogErr("Failed to install thread pipe read handler for "
-                    "thread %d\n", index);
-        if (errno > 0) proxyLogErr("Error: %s\n", strerror(errno));
+                    "thread %d", index);
+        if (errno > 0) proxyLogErr("Thread pipe error: %s", strerror(errno));
         goto fail;
     }
     thread->msgbuffer = sdsempty();
@@ -2187,7 +2185,7 @@ static void handlePendingAwakeMessages(aeEventLoop *el, int fd, void *privdata,
         else {
             listDelNode(thread->pending_messages, ln);
             if (!sent) {
-                proxyLogErr("Failed to send message to thread %d\n",
+                proxyLogErr("Failed to send message to thread %d",
                             thread->thread_id);
             }
         }
@@ -2221,7 +2219,7 @@ install_write_handler:
         handlePendingAwakeMessages, thread, 0))
     {
         proxyLogDebug("Failed to create thread awake write handler on "
-                      "thread %d\n", thread->thread_id);
+                      "thread %d", thread->thread_id);
         listNode *ln = listSearchKey(thread->pending_messages, buf);
         if (ln != NULL) listDelNode(thread->pending_messages, ln);
         sdsfree(buf);
@@ -2236,7 +2234,7 @@ static int awakeThreadForNewClient(proxyThread *thread, client *c) {
 }
 
 int sendStopMessageToThread(proxyThread *thread) {
-    proxyLogDebug("Sending stop message to thread %d\n", thread->thread_id);
+    proxyLogDebug("Sending stop message to thread %d", thread->thread_id);
     sds buf = sdsempty();
     buf = sdsMakeRoomFor(buf, sizeof(void*));
     int msg = THREAD_MSG_STOP;
@@ -2247,7 +2245,7 @@ int sendStopMessageToThread(proxyThread *thread) {
 }
 
 static void freeProxyThread(proxyThread *thread) {
-    proxyLogDebug("Freeing thread %d\n", thread->thread_id);
+    proxyLogDebug("Freeing thread %d", thread->thread_id);
     if (thread->loop != NULL) {
         aeDeleteEventLoop(thread->loop);
         thread->loop = NULL;
@@ -2300,7 +2298,7 @@ static void freeProxyThread(proxyThread *thread) {
 static client *createClient(int fd, char *ip) {
     client *c = zcalloc(sizeof(*c));
     if (c == NULL) {
-        proxyLogErr("Failed to allocate memory for client: %s\n", ip);
+        proxyLogErr("Failed to allocate memory for client: %s", ip);
         close(fd);
         return NULL;
     }
@@ -2346,7 +2344,7 @@ static client *createClient(int fd, char *ip) {
     c->auth_passw = NULL;
     c->clients_lnode = NULL;
     c->unlinked_clients_lnode = NULL;
-    proxyLogDebug("Created client %d:%" PRId64 " with address %p\n",
+    proxyLogDebug("Created client %d:%" PRId64 " with address %p",
         c->thread_id, c->id, c);
     if (config.disable_multiplexing == CFG_DISABLE_MULTIPLEXING_ALWAYS) {
         if (!disableMultiplexingForClient(c)) {
@@ -2367,7 +2365,7 @@ static client *createClient(int fd, char *ip) {
  * request queues. */
 static int disableMultiplexingForClient(client *c) {
     if (c->cluster != NULL) return 1;
-    proxyLogDebug("Disabling multiplexing for client %d:%" PRId64 "\n",
+    proxyLogDebug("Disabling multiplexing for client %d:%" PRId64,
                   c->thread_id, c->id);
     proxyThread *thread = proxy.threads[c->thread_id];
     c->cluster = duplicateCluster(thread->cluster);
@@ -2411,7 +2409,7 @@ static int disableMultiplexingForClient(client *c) {
         int count = listLength(node->connection->requests_to_send);
         if (count > 0) {
             proxyLogDebug("Moved %d request(s) to private connection to %s:%d "
-                          "owned by client %d:%" PRId64 "\n",
+                          "owned by client %d:%" PRId64,
                           count,
                           node->ip, node->port,
                           c->thread_id, c->id);
@@ -2420,7 +2418,7 @@ static int disableMultiplexingForClient(client *c) {
             handleNextRequestToCluster(node, NULL);
         else {
             proxyLogDebug("Client %d:%" PRId64 " has %d pending requests to "
-                          " node %s:%d on the multiplexing context\n",
+                          " node %s:%d on the multiplexing context",
                           c->thread_id, c->id, c->pending_multiplex_requests,
                           node->ip, node->port);
         }
@@ -2470,7 +2468,7 @@ static void closeClientPrivateConnection(client *c) {
 
 static void unlinkClient(client *c) {
     if (c->status == CLIENT_STATUS_UNLINKED) return;
-    proxyLogDebug("Unlink client %d:%" PRId64 "\n", c->thread_id, c->id);
+    proxyLogDebug("Unlink client %d:%" PRId64, c->thread_id, c->id);
     aeEventLoop *el = getClientLoop(c);
     if (c->fd >= 0) {
         if (el != NULL) {
@@ -2527,7 +2525,7 @@ static void freeClient(client *c) {
      * context. */
     aeEventLoop *el = getClientLoop(c);
     if (c->requests_with_write_handler > 0 && el != NULL) return;
-    proxyLogDebug("Freeing client %d:%" PRId64 " (thread: %d)\n",
+    proxyLogDebug("Freeing client %d:%" PRId64 " (thread: %d)",
                   c->thread_id, c->id, c->thread_id);
     int thread_id = c->thread_id;
     proxyThread *thread = proxy.threads[thread_id];
@@ -2615,7 +2613,7 @@ static void writeToClusterHandler(aeEventLoop *el, int fd, void *privdata,
         return;
     }
     if (ctx->err) {
-        proxyLogErr("Failed to connect to node %s:%d\n", node->ip, node->port);
+        proxyLogErr("Failed to connect to node %s:%d", node->ip, node->port);
         if (req != NULL) {
             sds err = sdsnew(ERROR_NODE_DISCONNECTED);
             err = sdscatprintf(err, "%s:%d", node->ip, node->port);
@@ -2629,7 +2627,7 @@ static void writeToClusterHandler(aeEventLoop *el, int fd, void *privdata,
         if (!installIOHandler(el, ctx->fd, AE_READABLE, readClusterReply,
                               node, 0))
         {
-            proxyLogErr("Failed to create read reply handler for node %s:%d\n",
+            proxyLogErr("Failed to create read reply handler for node %s:%d",
                           node->ip, node->port);
             if (req != NULL) {
                 addReplyError(req->client, ERROR_CLUSTER_READ_FAIL,
@@ -2640,17 +2638,17 @@ static void writeToClusterHandler(aeEventLoop *el, int fd, void *privdata,
         } else  {
             node->connection->has_read_handler = 1;
             proxyLogDebug("Read reply handler installed "
-                          "for node %s:%d\n", node->ip, node->port);
+                          "for node %s:%d", node->ip, node->port);
         }
     }
     if (!isClusterNodeConnected(node)) {
         if (node->cluster->owner) {
             client *c = node->cluster->owner;
             proxyLogDebug("Connected to node %s:%d (private connection "
-                          "for client %d:%" PRId64 "\n",
+                          "for client %d:%" PRId64,
                           node->ip, node->port, c->thread_id, c->id);
         } else {
-            proxyLogDebug("Connected to node %s:%d (thread %d)\n",
+            proxyLogDebug("Connected to node %s:%d (thread %d)",
                           node->ip, node->port, node->cluster->thread_id);
         }
     }
@@ -2676,7 +2674,7 @@ static void writeToClusterHandler(aeEventLoop *el, int fd, void *privdata,
         char *autherr = NULL;
         if (!clusterNodeAuth(node, config.auth, config.auth_user, &autherr)) {
             if (autherr) {
-                proxyLogDebug("AUTH: %s\n", autherr);
+                proxyLogDebug("AUTH: %s", autherr);
                 if (req) {
                     addReplyError(req->client, autherr, req->id);
                     freeRequest(req);
@@ -2715,7 +2713,7 @@ static int writeToCluster(aeEventLoop *el, int fd, clientRequest *req) {
             nwritten = 0;
         } else {
             proxyLogWarn("Error writing request " REQID_PRINTF_FMT
-                "to cluster: %s\n", REQID_PRINTF_ARG(req), strerror(errno));
+                "to cluster: %s", REQID_PRINTF_ARG(req), strerror(errno));
             if (errno == EPIPE) {
                 clusterNodeDisconnect(req->node);
             } else {
@@ -2733,7 +2731,7 @@ static int writeToCluster(aeEventLoop *el, int fd, clientRequest *req) {
         clusterNode *node = req->node;
         int thread_id = c->thread_id;
         proxyLogDebug("Request " REQID_PRINTF_FMT " written to node %s:%d, "
-                      "adding it to pending requests\n",
+                      "adding it to pending requests",
                       REQID_PRINTF_ARG(req),
                       node->ip, node->port);
         aeDeleteFileEvent(el, fd, AE_WRITABLE);
@@ -2761,7 +2759,7 @@ static int writeToCluster(aeEventLoop *el, int fd, clientRequest *req) {
             else success = 0;
         } else if (!enqueuePendingRequest(req)) {
             proxyLogDebug("Could not enqueue pending request "
-                          REQID_PRINTF_FMT "\n",
+                          REQID_PRINTF_FMT,
                           REQID_PRINTF_ARG(req));
             addReplyError(req->client, "Could not enqueue request", req->id);
             freeRequest(req);
@@ -2770,12 +2768,12 @@ static int writeToCluster(aeEventLoop *el, int fd, clientRequest *req) {
         if (config.dump_queues) dumpQueue(node, thread_id, QUEUE_TYPE_PENDING);
         if (!node->cluster->owner) {
             proxyLogDebug("Still have %d request(s) to send to node %s:%d "
-                          "on thread %d\n",
+                          "on thread %d",
                           listLength(node->connection->requests_to_send),
                           node->ip, node->port, node->cluster->thread_id);
         } else if (node->cluster->owner == c) {
             proxyLogDebug("Still have %d request(s) to send to node %s:%d "
-                          "on private connection owned by %d:%" PRId64 "\n",
+                          "on private connection owned by %d:%" PRId64,
                           listLength(node->connection->requests_to_send),
                           node->ip, node->port, c->thread_id, c->id);
         }
@@ -2789,7 +2787,7 @@ static int writeToCluster(aeEventLoop *el, int fd, clientRequest *req) {
         {
             addReplyError(req->client, ERROR_CLUSTER_WRITE_FAIL, req->id);
             proxyLogErr("Failed to create write handler for request "
-                REQID_PRINTF_FMT "\n", REQID_PRINTF_ARG(req));
+                REQID_PRINTF_FMT, REQID_PRINTF_ARG(req));
             freeRequest(req);
             return 0;
         }
@@ -2797,7 +2795,7 @@ static int writeToCluster(aeEventLoop *el, int fd, clientRequest *req) {
         /* Only count requests_with_write_handler on shared connection. */
         if (!req->owned_by_client) req->client->requests_with_write_handler++;
         proxyLogDebug("Write handler installed into request " REQID_PRINTF_FMT
-                      " for node %s:%d\n", REQID_PRINTF_ARG(req),
+                      " for node %s:%d", REQID_PRINTF_ARG(req),
                       req->node->ip, req->node->port);
     }
     return success;
@@ -2878,20 +2876,20 @@ static int listen(void) {
             if (proxy.fds[fd_idx] != ANET_ERR)
                 anetNonBlock(NULL, proxy.fds[fd_idx++]);
             else if (errno == EAFNOSUPPORT)
-                proxyLogWarn("Not listening to IPv6: unsupported\n");
+                proxyLogWarn("Not listening to IPv6: unsupported");
 
             proxy.fds[fd_idx] = anetTcpServer(proxy.neterr, config.port, NULL,
                                               proxy.tcp_backlog);
             if (proxy.fds[fd_idx] != ANET_ERR)
                 anetNonBlock(NULL, proxy.fds[fd_idx++]);
             else if (errno == EAFNOSUPPORT)
-                proxyLogWarn("Not listening to IPv4: unsupported\n");
+                proxyLogWarn("Not listening to IPv4: unsupported");
             if (fd_idx > 0)
-                proxyLogInfo("Listening on *:%d\n", config.port);
+                proxyLogInfo("Listening on *:%d", config.port);
             else {
-                proxyLogErr("Failed to listen on *:%d\n", config.port);
+                proxyLogErr("Failed to listen on *:%d", config.port);
                 if (strlen(proxy.neterr))
-                    proxyLogErr("%s\n", proxy.neterr);
+                    proxyLogErr("%s", proxy.neterr);
             }
         } else {
             int i;
@@ -2908,14 +2906,14 @@ static int listen(void) {
                 }
                 if (proxy.fds[fd_idx] != ANET_ERR) {
                     anetNonBlock(NULL, proxy.fds[fd_idx++]);
-                    proxyLogInfo("Listening on %s:%d\n", bindaddr, config.port);
+                    proxyLogInfo("Listening on %s:%d", bindaddr, config.port);
                 } else if (errno == EAFNOSUPPORT)
-                    proxyLogWarn("Not listening to IPv6: unsupported\n");
+                    proxyLogWarn("Not listening to IPv6: unsupported");
                 if (proxy.fds[fd_idx] == ANET_ERR) {
-                    proxyLogErr("Failed to listen on %s:%d\n", bindaddr,
+                    proxyLogErr("Failed to listen on %s:%d", bindaddr,
                         config.port);
                     if (strlen(proxy.neterr))
-                        proxyLogErr("%s\n", proxy.neterr);
+                        proxyLogErr("%s", proxy.neterr);
                 }
             }
         }
@@ -2928,9 +2926,9 @@ static int listen(void) {
         if (proxy.unixsocket_fd != ANET_ERR) {
             anetNonBlock(NULL, proxy.unixsocket_fd);
             proxy.fds[fd_idx++] = proxy.unixsocket_fd;
-            proxyLogInfo("Listening on socket '%s'\n", config.unixsocket);
+            proxyLogInfo("Listening on socket '%s'", config.unixsocket);
         } else {
-            proxyLogErr("Error opening Unix socket: %s\n", proxy.neterr);
+            proxyLogErr("Error opening Unix socket: '%s'", proxy.neterr);
         }
     }
     proxy.fd_count = fd_idx;
@@ -2945,7 +2943,7 @@ static int requestMakeRoomForArgs(clientRequest *req, int argc) {
         req->lengths = zrealloc(req->lengths, sz);
         if (req->offsets == NULL || req->lengths == NULL) {
             proxyLogErr("Failed to reallocate request "
-                        "offsets\n");
+                        "offsets");
             return 0;
         }
         req->offsets_size = new_size;
@@ -2957,7 +2955,7 @@ static int splitPipelinedQueries(clientRequest *req, char *p, int is_inline) {
     /* Multiple commands (queries) from a pipelined request.
      * Split current requestinto multiple requests. */
     proxyLogDebug("Multiple %squeries (pipelined) %d, "
-                  "splitting request " REQID_PRINTF_FMT "...\n",
+                  "splitting request " REQID_PRINTF_FMT "...",
                   (is_inline ? "inline " : ""),
                   req->num_commands,
                   REQID_PRINTF_ARG(req));
@@ -2984,13 +2982,13 @@ static int splitPipelinedQueries(clientRequest *req, char *p, int is_inline) {
 
 static int parseRequest(clientRequest *req, sds *err) {
     int status = req->parsing_status, lf_len = 2, len, i;
-    proxyLogDebug("Parsing request " REQID_PRINTF_FMT ", status: %d\n",
+    proxyLogDebug("Parsing request " REQID_PRINTF_FMT ", status: %d",
                   REQID_PRINTF_ARG(req), status);
     if (status != PARSE_STATUS_INCOMPLETE) return status;
     int buflen = sdslen(req->buffer);
     if (config.dump_buffer) {
         sds repr = sdscatrepr(sdsempty(), req->buffer, buflen);
-        proxyLogDebug("Request " REQID_PRINTF_FMT " buffer:\n%s\n",
+        proxyLogDebug("Request " REQID_PRINTF_FMT " buffer:\n%s",
                       REQID_PRINTF_ARG(req), repr);
         sdsfree(repr);
     }
@@ -3089,7 +3087,7 @@ static int parseRequest(clientRequest *req, sds *err) {
                     if (*p != '$') {
                         proxyLogErr("Failed to parse multibulk query for "
                                     "request " REQID_PRINTF_FMT  ": '$' not "
-                                    "found!\n", REQID_PRINTF_ARG(req));
+                                    "found!", REQID_PRINTF_ARG(req));
                         if (err) {
                             *err = sdscatprintf(sdsempty(),
                                 "Protocol error: expected '$', got '%c'", *p);
@@ -3133,7 +3131,7 @@ static int parseRequest(clientRequest *req, sds *err) {
                     int newargc = req->argc + 1;
                     if (!requestMakeRoomForArgs(req, newargc)) {
                         proxyLogDebug("Failed to allocate args for "
-                            "request " REQID_PRINTF_FMT "\n",
+                            "request " REQID_PRINTF_FMT,
                             REQID_PRINTF_ARG(req));
                         status = PARSE_STATUS_ERROR;
                         goto cleanup;
@@ -3148,7 +3146,7 @@ static int parseRequest(clientRequest *req, sds *err) {
                          * is invalid. */
                         proxyLogDebug("Failed to parse " REQID_PRINTF_FMT
                             ", expected '\\r' at the end of the argument of "
-                            "declared length %d at offset %d\n",
+                            "declared length %d at offset %d",
                             REQID_PRINTF_ARG(req),
                             arglen, req->query_offset);
                         if (err) {
@@ -3166,7 +3164,7 @@ static int parseRequest(clientRequest *req, sds *err) {
                     if (config.dump_queries) {
                         sds tk = sdsnewlen(p, arglen);
                         proxyLogDebug("Req. " REQID_PRINTF_FMT
-                                      " ARGV[%d]: '%s'\n",
+                                      " ARGV[%d]: '%s'",
                                       REQID_PRINTF_ARG(req), idx, tk);
                         sdsfree(tk);
                     }
@@ -3241,7 +3239,7 @@ cleanup:
     req->parsing_status = status;
     if (line != NULL) sdsfree(line);
     if (status == PARSE_STATUS_ERROR) {
-        proxyLogDebug("Failed to parse request " REQID_PRINTF_FMT "\n",
+        proxyLogDebug("Failed to parse request " REQID_PRINTF_FMT,
                       REQID_PRINTF_ARG(req));
     }
     return status;
@@ -3274,7 +3272,7 @@ static int duplicateRequestForAllMasters(clientRequest *req) {
     redisCluster *cluster = getCluster(req->client);
     listRewind(cluster->nodes, &li);
     clientRequest *cur = req->client->current_request;
-    proxyLogDebug("Duplicating request " REQID_PRINTF_FMT " for all masters\n",
+    proxyLogDebug("Duplicating request " REQID_PRINTF_FMT " for all masters",
                   REQID_PRINTF_ARG(req));
     while ((ln = listNext(&li)) != NULL) {
         clusterNode *node = ln->value;
@@ -3324,7 +3322,7 @@ static int splitMultiSlotRequest(clientRequest *req, int idx) {
     int offset = req->offsets[idx], original_argc = req->argc, success = 1,
                  len, llen, diff, i;
     proxyLogDebug("Splitting multi-slot request " REQID_PRINTF_FMT
-                  " at index %d (offset: %d)\n",
+                  " at index %d (offset: %d)",
                   REQID_PRINTF_ARG(req), idx, offset);
     req->argc = idx;
     /* Keep a pointer to the original buffer. */
@@ -3403,18 +3401,18 @@ static int splitMultiSlotRequest(clientRequest *req, int idx) {
     if (new->id > parent->max_child_reply_id)
         parent->max_child_reply_id = new->id;
     proxyLogDebug("Added child request " REQID_PRINTF_FMT
-                  " to parent " REQID_PRINTF_FMT "\n",
+                  " to parent " REQID_PRINTF_FMT,
                   REQID_PRINTF_ARG(new), REQID_PRINTF_ARG(parent));
     if (config.dump_buffer) {
         sds bufrepr = sdsRepr(req->buffer);
-        proxyLogDebug("Req. " REQID_PRINTF_FMT " buffer:\n%s\n",
+        proxyLogDebug("Req. " REQID_PRINTF_FMT " buffer:\n%s",
                       REQID_PRINTF_ARG(req),
                       bufrepr);
         sdsfree(bufrepr);
     }
 cleanup:
     if (!success) {
-        proxyLogDebug("Failed to split multiple request " REQID_PRINTF_FMT "\n",
+        proxyLogDebug("Failed to split multiple request " REQID_PRINTF_FMT,
                       REQID_PRINTF_ARG(req));
         if (oldbuf && oldbuf != req->buffer) sdsfree(oldbuf);
         if (newbuf) sdsfree(newbuf);
@@ -3547,7 +3545,7 @@ void freeRequest(clientRequest *req) {
     if (req == NULL) return;
     aeEventLoop *el = getClientLoop(req->client);
     if (req->need_reprocessing && el != NULL) return;
-    proxyLogDebug("Free Request " REQID_PRINTF_FMT "\n",REQID_PRINTF_ARG(req));
+    proxyLogDebug("Free Request " REQID_PRINTF_FMT, REQID_PRINTF_ARG(req));
     /* If request is still writing to a shared (multiplex) connection, defer
      * freeing it later in order to avoid messing up the sharted connection
      * query order. */
@@ -3555,7 +3553,7 @@ void freeRequest(clientRequest *req) {
         !req->owned_by_client)
     {
         proxyLogDebug("Request " REQID_PRINTF_FMT " is still writing, "
-                      "cannot free it now...\n", REQID_PRINTF_ARG(req));
+                      "cannot free it now...", REQID_PRINTF_ARG(req));
         return;
     }
     if (req->buffer != NULL) sdsfree(req->buffer);
@@ -3716,11 +3714,11 @@ static clientRequest *createRequest(client *c) {
     req->requests_pending_lnode = NULL;
     req->requests_to_send_lnode = NULL;
     req->max_child_reply_id = 0;
-    proxyLogDebug("Created Request " REQID_PRINTF_FMT  " with address %p\n",
+    proxyLogDebug("Created Request " REQID_PRINTF_FMT  " with address %p",
                   REQID_PRINTF_ARG(req), req);
     return req;
 alloc_failure:
-    proxyLogErr("ERROR: Failed to allocate request!\n");
+    proxyLogErr("ERROR: Failed to allocate request!");
     if (!req) return NULL;
     freeRequest(req);
     return NULL;
@@ -3740,13 +3738,13 @@ static int installIOHandler(aeEventLoop *el, int fd, int mask, aeFileProc *proc,
             proxyThread *thread = el->privdata;
             assert(thread != NULL);
             int newsize = fd + proxy.min_reserved_fds;
-            proxyLogDebug("Resizing event loop on thread %d to %d\n",
+            proxyLogDebug("Resizing event loop on thread %d to %d",
                 thread->thread_id, newsize);
             if (aeResizeSetSize(el, newsize) == AE_ERR)
                 return 0;
             return installIOHandler(el, fd, mask, proc, data, 1);
         } else if (errno != ERANGE) {
-            proxyLogErr("Could not create read handler: %s\n", strerror(errno));
+            proxyLogErr("Could not create read handler: %s", strerror(errno));
         }
         return 0;
     }
@@ -3783,7 +3781,7 @@ static int sendRequestToCluster(clientRequest *req, sds *errmsg)
             sds err = sdsnew("Could not connect to node ");
             err = sdscatfmt(err, "%s:%u", req->node->ip, req->node->port);
             addReplyError(req->client, err, req->id);
-            proxyLogDebug("%s\n", err);
+            proxyLogDebug("%s", err);
             if (errmsg != NULL) {
                 /* Remember to free the string outside this function*/
                 *errmsg = err;
@@ -3798,7 +3796,7 @@ static int sendRequestToCluster(clientRequest *req, sds *errmsg)
         {
             addReplyError(req->client, ERROR_CLUSTER_WRITE_FAIL, req->id);
             proxyLogErr("Failed to create write handler for request "
-                REQID_PRINTF_FMT "\n", REQID_PRINTF_ARG(req));
+                REQID_PRINTF_FMT, REQID_PRINTF_ARG(req));
             freeRequest(req);
             return 0;
         }
@@ -3806,7 +3804,7 @@ static int sendRequestToCluster(clientRequest *req, sds *errmsg)
         /* Only count requests_with_write_handler on shared connection. */
         if (!req->owned_by_client) req->client->requests_with_write_handler++;
         proxyLogDebug("Write handler installed into request " REQID_PRINTF_FMT
-                      " for node %s:%d\n", REQID_PRINTF_ARG(req),
+                      " for node %s:%d", REQID_PRINTF_ARG(req),
                       req->node->ip, req->node->port);
         return 1;
     } else if (!isClusterNodeConnected(req->node)) {
@@ -3818,7 +3816,7 @@ static int sendRequestToCluster(clientRequest *req, sds *errmsg)
         if (!installIOHandler(el, ctx->fd, AE_READABLE, readClusterReply,
                               req->node, 0))
         {
-            proxyLogErr("Failed to create read reply handler for node %s:%d\n",
+            proxyLogErr("Failed to create read reply handler for node %s:%d",
                           req->node->ip, req->node->port);
             addReplyError(req->client, ERROR_CLUSTER_READ_FAIL,
                           req->id);
@@ -3827,7 +3825,7 @@ static int sendRequestToCluster(clientRequest *req, sds *errmsg)
         } else  {
             conn->has_read_handler = 1;
             proxyLogDebug("Read reply handler installed "
-                          "for node %s:%d\n", req->node->ip, req->node->port);
+                          "for node %s:%d", req->node->ip, req->node->port);
         }
     }
     if (!writeToCluster(el, ctx->fd, req)) return 0;
@@ -3863,7 +3861,7 @@ static void checkForMultiplexingRequestsToBeConsumed(clientRequest *req) {
         if (--req->client->pending_multiplex_requests <= 0) {
             proxyLogDebug("Client %d:" PRId64 " has no more pending requests "
                           "on the multiplexing context. Sending requests "
-                          "to the private cluster\n",
+                          "to the private cluster",
                           req->client->thread_id, req->client->id);
             listIter li;
             listNode *ln;
@@ -3874,7 +3872,7 @@ static void checkForMultiplexingRequestsToBeConsumed(clientRequest *req) {
             }
         } else {
             proxyLogDebug("Client %d:" PRId64 " still has %d pending requests "
-                          "on the multiplexing context.\n",
+                          "on the multiplexing context.",
                           req->client->thread_id, req->client->id,
                           req->client->pending_multiplex_requests);
         }
@@ -3906,7 +3904,7 @@ int processRequest(clientRequest *req, int *parsing_status,
             return 0;
         }
         req->parsed = 1;
-        proxyLogDebug("Parsing complete for request " REQID_PRINTF_FMT "\n",
+        proxyLogDebug("Parsing complete for request " REQID_PRINTF_FMT,
             REQID_PRINTF_ARG(req));
     }
     if (next != NULL && req->requests_lnode != NULL) {
@@ -3918,22 +3916,24 @@ int processRequest(clientRequest *req, int *parsing_status,
     if (req->id < c->min_reply_id) c->min_reply_id = req->id;
     sds command_name = NULL;
     sds errmsg = NULL;
-    proxyLogDebug("Processing request " REQID_PRINTF_FMT  "\n",
+    proxyLogDebug("Processing request " REQID_PRINTF_FMT,
                   REQID_PRINTF_ARG(req));
     if (req->argc == 0) {
-        proxyLogDebug("Request with zero arguments\n");
+        proxyLogDebug("Request with zero arguments");
         errmsg = sdsnew("Invalid request");
         goto invalid_request;
     }
     command_name = getRequestCommand(req);
     if (command_name == NULL) {
-        proxyLogDebug("Missing command name\n");
+        proxyLogDebug("Missing command name");
         errmsg = sdsnew("Invalid request");
         goto invalid_request;
     }
-    proxyLogDebug("Command for request " REQID_PRINTF_FMT  ": '%s' "
-                  "(use --dump-queries for full query dump)\n",
-                  REQID_PRINTF_ARG(req), command_name);
+    if (!config.dump_queries) {
+        proxyLogDebug("Command for request " REQID_PRINTF_FMT  ": '%s' "
+                      "(use --dump-queries for full query dump)",
+                      REQID_PRINTF_ARG(req), command_name);
+    }
     redisCommandDef *cmd = getRedisCommand(command_name);
     /* Unsupported commands:
      * - Commands not defined in redisCommandTable
@@ -3943,7 +3943,7 @@ int processRequest(clientRequest *req, int *parsing_status,
                             "%s command `%.*s`",
                              (cmd == NULL ? "unknown" : "unsupported"),
                              128, command_name);
-        proxyLogDebug("%s\n", errmsg);
+        proxyLogDebug("%s", errmsg);
         goto invalid_request;
     }
     req->command = cmd;
@@ -3965,7 +3965,7 @@ int processRequest(clientRequest *req, int *parsing_status,
     if (node == NULL) {
         if (errmsg == NULL)
             errmsg = sdsnew(ERROR_NO_NODE);
-        proxyLogDebug("%s " REQID_PRINTF_FMT "\n", errmsg,
+        proxyLogDebug("%s " REQID_PRINTF_FMT, errmsg,
                       REQID_PRINTF_ARG(req));
         goto invalid_request;
     }
@@ -4050,7 +4050,7 @@ void readQuery(aeEventLoop *el, int fd, void *privdata, int mask){
     if (req == NULL) {
         req = createRequest(c);
         if (req == NULL) {
-            proxyLogErr("Failed to create request\n");
+            proxyLogErr("Failed to create request");
             freeClient(c);
             return;
         }
@@ -4062,21 +4062,21 @@ void readQuery(aeEventLoop *el, int fd, void *privdata, int mask){
         if (errno == EAGAIN) {
             return;
         } else {
-            proxyLogDebug("Error reading from client %s: %s\n",
-                          getClientPeerIP(c), strerror(errno));
+            proxyLogDebug("Error reading from client %d:%" PRId64 " %s : %s",
+                          c->thread_id, c->id, c->addr, strerror(errno));
             unlinkClient(c); /* TODO: Free? */
             return;
         }
     } else if (nread == 0) {
         proxyLogDebug("Client %d:%" PRId64 " from %s closed connection "
-                      "(thread: %d)\n",
+                      "(thread: %d)",
                       c->thread_id, c->id, c->addr, c->thread_id);
         freeClient(c);
         return;
     }
     sdsIncrLen(req->buffer, nread);
     proxyLogDebug("Read %d bytes into req. " REQID_PRINTF_FMT ", buffer is "
-                  "%d bytes\n", nread, REQID_PRINTF_ARG(req),
+                  "%d bytes", nread, REQID_PRINTF_ARG(req),
                   sdslen(req->buffer));
     /*TODO: support max query buffer length */
     int parsing_status = PARSE_STATUS_OK;
@@ -4104,7 +4104,7 @@ static void acceptHandler(int fd, char *ip, int port) {
     }
     client *c = createClient(fd, ip);
     if (c == NULL) {
-        proxyLogDebug("Failed to allocate memory for client from %s\n",
+        proxyLogDebug("Failed to allocate memory for client from %s",
             ip ? ip : config.unixsocket);
         sds err = sdscatprintf(sdsempty(), "-ERR %s\r\n", ERROR_OOM);
         write(fd, err, sdslen(err));
@@ -4115,13 +4115,13 @@ static void acceptHandler(int fd, char *ip, int port) {
     c->port = port;
     if (ip) c->addr = sdscatprintf(sdsempty(), "%s:%d", ip, port);
     else c->addr = sdscatprintf(sdsempty(), "unix://%s", config.unixsocket);
-    proxyLogDebug("Client %d:%" PRId64 " connected from %s (thread: %d)\n",
+    proxyLogDebug("Client %d:%" PRId64 " connected from %s (thread: %d)",
                   c->thread_id, c->id, c->addr, c->thread_id);
     proxyThread *thread = proxy.threads[c->thread_id];
     assert(thread != NULL);
     if (!awakeThreadForNewClient(thread, c)) {
-        proxyLogDebug("Failed to awake thread %d for client %d:%" PRId64
-                      "\n", thread->thread_id, c->id);
+        proxyLogDebug("Failed to awake thread %d for client %d:%" PRId64,
+                      thread->thread_id, c->id);
         char *err = "-ERR failed to awake thread\r\n";
         write(fd, err, strlen(err));
         freeClient(c);
@@ -4140,11 +4140,11 @@ void acceptTcpHandler(aeEventLoop *el, int fd, void *privdata, int mask)
                                   sizeof(client_ip), &client_port);
         if (client_fd == ANET_ERR) {
             if (errno != EWOULDBLOCK)
-                proxyLogWarn("Error accepting client connection: %s\n",
+                proxyLogWarn("Error accepting client connection: %s",
                              proxy.neterr);
             return;
         }
-        proxyLogDebug("Accepted connection from %s:%d\n", client_ip,
+        proxyLogDebug("Accepted connection from %s:%d", client_ip,
                       client_port);
         acceptHandler(client_fd, client_ip, client_port);
     }
@@ -4159,11 +4159,11 @@ void acceptUnixHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
         client_fd = anetUnixAccept(proxy.neterr, fd);
         if (client_fd == ANET_ERR) {
             if (errno != EWOULDBLOCK)
-                proxyLogWarn("Accepting client connection: %s\n",
+                proxyLogWarn("Accepting client connection: %s",
                              proxy.neterr);
             return;
         }
-        proxyLogDebug("Accepted connection to %s\n", config.unixsocket);
+        proxyLogDebug("Accepted connection to %s", config.unixsocket);
         acceptHandler(client_fd, NULL, 0);
     }
 }
@@ -4178,7 +4178,7 @@ static int addChildRequestReply(clientRequest *req, char *replybuf, int len) {
     /* If the request has no parent, then the request itself is the parent. */
     if (parent == NULL) parent = req;
     assert(parent->child_replies != NULL);
-    proxyLogDebug("Adding child reply for " REQID_PRINTF_FMT "\n",
+    proxyLogDebug("Adding child reply for " REQID_PRINTF_FMT,
                   REQID_PRINTF_ARG(req));
     uint64_t be_id = htonu64(req->id); /* Big-endian request ID */
     sds reply = sdsnewlen(replybuf, len);
@@ -4190,7 +4190,7 @@ static int addChildRequestReply(clientRequest *req, char *replybuf, int len) {
     int completed = (raxSize(parent->child_replies) == numrequests);
     if (completed) {
         proxyLogDebug("All %d child requests of " REQID_PRINTF_FMT
-                      " received replies\n",
+                      " received replies",
                       numrequests, REQID_PRINTF_ARG(req));
         redisCommandDef *cmd = parent->command;
         assert(cmd != NULL);
@@ -4218,7 +4218,7 @@ static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
         int do_break = 0, is_cluster_err = 0;
         redisCluster *cluster = NULL;
         if (!ok) {
-            proxyLogErr("Error reading from node %s:%d on thread %d: %s\n",
+            proxyLogErr("Error reading from node %s:%d on thread %d: %s",
                         node->ip, node->port, thread_id, ctx->errstr);
             errmsg = ERROR_CLUSTER_READ_FAIL;
         }
@@ -4253,7 +4253,7 @@ static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
             goto consume_buffer;
         }
         proxyLogDebug("Reply read complete for request " REQID_PRINTF_FMT
-                      ", %s%s\n", REQID_PRINTF_ARG(req),
+                      ", %s%s", REQID_PRINTF_ARG(req),
                       errmsg ? " ERR: " : "OK!",
                       errmsg ? errmsg : "");
         dequeuePendingRequest(req);
@@ -4271,7 +4271,7 @@ static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
                 strstr(reply->str, "MOVED") == reply->str))
             {
                 proxyLogDebug("Cluster configuration changed! "
-                              "(request " REQID_PRINTF_FMT ")\n",
+                              "(request " REQID_PRINTF_FMT ")",
                               REQID_PRINTF_ARG(req));
                 cluster->update_required = 1;
                 /* Automatic cluster update is posticipated when the client
@@ -4295,8 +4295,8 @@ static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
             if (len > ctx->reader->len) len = ctx->reader->len;
             if (config.dump_buffer) {
                 sds rstr = sdscatrepr(sdsempty(), obuf, len);
-                proxyLogDebug("\nReply for request " REQID_PRINTF_FMT
-                             ":\n%s\n", REQID_PRINTF_ARG(req), rstr);
+                proxyLogDebug("Reply for request " REQID_PRINTF_FMT
+                             ":\n%s", REQID_PRINTF_ARG(req), rstr);
                 sdsfree(rstr);
             }
             if (req->child_requests != NULL || req->parent_request != NULL) {
@@ -4311,7 +4311,7 @@ static int processClusterReplyBuffer(redisContext *ctx, clusterNode *node,
                 }
             } else {
                 proxyLogDebug("Writing reply for request " REQID_PRINTF_FMT
-                              " to client buffer...\n",
+                              " to client buffer...",
                               REQID_PRINTF_ARG(req));
                 redisCommandDef *cmd = req->command;
                 int cmdflags = cmd->proxy_flags;
@@ -4348,7 +4348,7 @@ consume_buffer:
                  * to finish before reconfigration actually starts.
                  * In the latter case, we don't do anything. */
                 if (reconfig_status == CLUSTER_RECONFIG_ERR) {
-                    proxyLogErr("Cluster reconfiguration failed! (thread %d)\n",
+                    proxyLogErr("Cluster reconfiguration failed! (thread %d)",
                                 thread_id);
                     if (req) {
                         addReplyError(req->client,
@@ -4393,18 +4393,18 @@ static void readClusterReply(aeEventLoop *el, int fd,
     redisContext *ctx = getClusterNodeContext(node);
     list *queue = node->connection->requests_pending;
     sds errmsg = NULL;
-    proxyLogDebug("Reading reply from %s:%d on thread %d...\n",
+    proxyLogDebug("Reading reply from %s:%d on thread %d...",
                   node->ip, node->port, thread_id);
     int success = (redisBufferRead(ctx) == REDIS_OK), replies = 0,
                   node_disconnected = 0;
     if (!success) {
-        proxyLogDebug("Failed redisBufferRead from %s:%d on thread %d\n",
+        proxyLogDebug("Failed redisBufferRead from %s:%d on thread %d",
                       node->ip, node->port, thread_id);
         int err = ctx->err;
         node_disconnected = (err & (REDIS_ERR_IO | REDIS_ERR_EOF));
         if (node_disconnected) errmsg = sdsnew(ERROR_NODE_DISCONNECTED);
         else {
-            proxyLogErr("Error from node %s:%d: %s\n", node->ip, node->port,
+            proxyLogErr("Error from node %s:%d: %s", node->ip, node->port,
                         ctx->errstr);
             errmsg = sdsnew("Failed to read reply from ");
         }
@@ -4431,7 +4431,7 @@ static void readClusterReply(aeEventLoop *el, int fd,
             node->connection->authenticated = 0;
         }
         if (node_disconnected) {
-            proxyLogDebug("%s\n", errmsg);
+            proxyLogDebug("%s", errmsg);
             clusterNodeDisconnect(node);
         }
         sdsfree(errmsg);
@@ -4444,7 +4444,7 @@ static void readClusterReply(aeEventLoop *el, int fd,
         redisReply *authreply = r;
         if (!ok) {
             proxyLogErr("Failed to get reply for the AUTH command to node "
-                        "%s:%d. Error: '%s'\n",
+                        "%s:%d. Error: '%s'",
                         node->ip, node->port,
                         ctx->err ? ctx->errstr : "");
             node->connection->authenticating = 0;
@@ -4474,7 +4474,7 @@ static void *execProxyThread(void *ptr) {
     pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
     thread_id = thread->thread_id;
     aeMain(thread->loop);
-    proxyLogInfo("Thread %d ended\n", thread->thread_id);
+    proxyLogInfo("Thread %d ended", thread->thread_id);
     return NULL;
 }
 
@@ -4492,18 +4492,18 @@ static void sigShutdownHandler(int sig) {
         msg = "Received shutdown signal";
     };
     int is_main_thread = (pthread_self() == proxy.main_thread);
-    if (is_main_thread) proxyLogHdr("%s on main thread\n", msg);
-    else proxyLogHdr("%s on thread %d\n", msg, getCurrentThreadID());
+    if (is_main_thread) proxyLogHdr("%s on main thread", msg);
+    else proxyLogHdr("%s on thread %d", msg, getCurrentThreadID());
     if (!proxy.exit_asap) {
         if (is_main_thread) {
             proxy.exit_asap = 1;
             aeStop(proxy.main_loop);
         } else {
-            proxyLogHdr("Forwarding signal to main thread...\n");
+            proxyLogHdr("Forwarding signal to main thread...");
             pthread_kill(proxy.main_thread, sig);
         }
     } else {
-        proxyLogHdr("Dirty exit!\n");
+        proxyLogHdr("Dirty exit!");
         exit(0);
     }
 }
@@ -4552,12 +4552,12 @@ void createPidFile(void) {
     if (config.pidfile == NULL) config.pidfile = zstrdup(DEFAULT_PID_FILE);
     FILE *f = fopen(config.pidfile, "w");
     if (!f) {
-        proxyLogErr("Failed to create pidfile: '%s'\n", config.pidfile);
+        proxyLogErr("Failed to create pidfile: '%s'", config.pidfile);
         return;
     }
     fprintf(f, "%d\n", (int) getpid());
     fclose(f);
-    proxyLogInfo("Pidfile: '%s'\n", config.pidfile);
+    proxyLogInfo("Pidfile: '%s'", config.pidfile);
 }
 
 int main(int argc, char **argv) {
@@ -4595,24 +4595,24 @@ int main(int argc, char **argv) {
     char *versiontype = "";
     if (strcmp("999.999.999", REDIS_CLUSTER_PROXY_VERSION) == 0)
         versiontype = " (unstable)";
-    proxyLogHdr("Redis Cluster Proxy v%s%s\n",
+    proxyLogHdr("Redis Cluster Proxy v%s%s",
         REDIS_CLUSTER_PROXY_VERSION, versiontype);
-    proxyLogHdr("Commit: (%s/%d)\n", redisClusterProxyGitSHA1(),
+    proxyLogHdr("Commit: (%s/%d)", redisClusterProxyGitSHA1(),
         strtol(redisClusterProxyGitDirty(), NULL, 10) > 0);
     char *gitbranch = redisClusterProxyGitBranch();
     if (strlen(gitbranch) > 0)
-        proxyLogHdr("Git Branch: %s\n", gitbranch);
-    proxyLogHdr("Cluster Address: %s\n", config.cluster_address);
-    proxyLogHdr("PID: %d\n", (int) getpid());
-    proxyLogHdr("OS: %s %s %s\n",
+        proxyLogHdr("Git Branch: %s", gitbranch);
+    proxyLogHdr("Cluster Address: %s", config.cluster_address);
+    proxyLogHdr("PID: %d", (int) getpid());
+    proxyLogHdr("OS: %s %s %s",
         proxy_os.sysname, proxy_os.release, proxy_os.machine);
-    proxyLogHdr("Bits: %d\n", (sizeof(long) == 4 ? 32 : 64));
-    proxyLogHdr("Log level: %s\n", redisProxyLogLevels[config.loglevel]);
+    proxyLogHdr("Bits: %d", (sizeof(long) == 4 ? 32 : 64));
+    proxyLogHdr("Log level: %s", redisProxyLogLevels[config.loglevel]);
     if (config.disable_multiplexing == CFG_DISABLE_MULTIPLEXING_ALWAYS)
-        proxyLogHdr("Multiplexing disabled by default for every client.\n");
+        proxyLogHdr("Multiplexing disabled by default for every client.");
     if (!parseAddress(config.cluster_address, &config.entry_node_host,
                       &config.entry_node_port, &config.entry_node_socket)) {
-        proxyLogErr("Invalid address '%s'\n", config.cluster_address);
+        proxyLogErr("Invalid address '%s'", config.cluster_address);
         return 1;
     }
     if (config.auth_user != NULL) {
@@ -4637,7 +4637,7 @@ int main(int argc, char **argv) {
                               acceptTcpHandler, NULL, 0))
         {
             proxyLogErr("FATAL: Failed to create TCP accept handlers, "
-                        "aborting...\n");
+                        "aborting...");
             exit_status = 1;
             goto cleanup;
         }
@@ -4646,17 +4646,17 @@ int main(int argc, char **argv) {
     proxy.start_time = time(NULL);
     aeMain(proxy.main_loop);
 cleanup:
-    proxyLogHdr("Redis Cluster Proxy is going to exit...\n");
+    proxyLogHdr("Redis Cluster Proxy is going to exit...");
     if (proxy.threads != NULL) {
         for (i = 0; i < config.num_threads; i++)
             sendStopMessageToThread(proxy.threads[i]);
         for (i = 0; i < config.num_threads; i++)
             pthread_join(proxy.threads[i]->thread, NULL);
-        proxyLogHdr("All thread(s) stopped.\n");
+        proxyLogHdr("All thread(s) stopped.");
     }
     if (config_cluster_addr) sdsfree((sds) config_cluster_addr);
     releaseProxy();
-    proxyLogHdr("Bye bye!\n");
+    proxyLogHdr("Bye bye!");
     if (config.unixsocket) zfree(config.unixsocket);
     if (config.pidfile) zfree(config.pidfile);
     if (config.logfile) zfree(config.logfile);

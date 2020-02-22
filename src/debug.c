@@ -88,11 +88,10 @@ static void killThreads(int exclude) {
              * gets called, so we need to also send a stop message. */
             if (ae_api_kqueue) sendStopMessageToThread(thread);
             if ((err = pthread_join(thread->thread, NULL)) != 0) {
-                proxyLogErr("Thread %d can be joined: %s\n",
+                proxyLogErr("Thread %d can be joined: %s",
                         j, strerror(err));
             } else {
-                proxyLogErr(
-                    "Thread %d terminated\n",j);
+                proxyLogErr("Thread %d terminated", j);
             }
         }
     }
@@ -647,22 +646,22 @@ void sigsegvHandler(int sig, siginfo_t *info, void *secret) {
     killThreads(cur_thread_id);
 
     bugReportStart();
-    proxyLogErr("Redis Cluster Proxy %s crashed by signal: %d\n",
+    proxyLogErr("Redis Cluster Proxy %s crashed by signal: %d",
         REDIS_CLUSTER_PROXY_VERSION, sig);
     if (eip != NULL) {
-        proxyLogErr("Crashed running the instruction at: %p\n", eip);
+        proxyLogErr("Crashed running the instruction at: %p", eip);
     }
     if (sig == SIGSEGV || sig == SIGBUS) {
-        proxyLogErr("Accessing address: %p\n", (void*)info->si_addr);
+        proxyLogErr("Accessing address: %p", (void*)info->si_addr);
     }
     if (cur_thread_id == PROXY_MAIN_THREAD_ID)
-        proxyLogErr("Handling crash on main thread\n");
+        proxyLogErr("Handling crash on main thread");
     else if (cur_thread_id == PROXY_UNKN_THREAD_ID)
-        proxyLogErr("Handling crash on thread: unknown\n");
+        proxyLogErr("Handling crash on thread: unknown");
     else
-        proxyLogErr("Handling crash on thread: %d\n", cur_thread_id);
+        proxyLogErr("Handling crash on thread: %d", cur_thread_id);
     if (assert_failed != NULL) {
-        proxyLogErr("Failed assertion: %s (%s:%d)\n",
+        proxyLogErr("Failed assertion: %s (%s:%d)",
             assert_failed, assert_file, assert_line);
     }
 
@@ -771,13 +770,13 @@ void proxyLogHexDump(char *descr, void *value, size_t len) {
 
 void _proxyAssert(const char *estr, const char *file, int line) {
     bugReportStart();
-    proxyLogErr("=== ASSERTION FAILED ===\n");
-    proxyLogErr("==> %s:%d '%s' is not true\n",file,line,estr);
+    proxyLogErr("=== ASSERTION FAILED ===");
+    proxyLogErr("==> %s:%d '%s' is not true",file,line,estr);
 #ifdef HAVE_BACKTRACE
     assert_failed = estr;
     assert_file = file;
     assert_line = line;
-    proxyLogErr("(forcing SIGSEGV to print the bug report.)\n");
+    proxyLogErr("(forcing SIGSEGV to print the bug report.)");
 #endif
     *((char*)-1) = 'x';
 }
