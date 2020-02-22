@@ -547,7 +547,6 @@ void logStackTrace(ucontext_t *uc) {
 #if defined(HAVE_PROC_MAPS)
 
 #define MEMTEST_MAX_REGIONS 128
-
 /* A non destructive memory test executed during segfauls. */
 int memtest_test_linux_anonymous_maps(void) {
     FILE *fp;
@@ -686,6 +685,10 @@ void sigsegvHandler(int sig, siginfo_t *info, void *secret) {
     logRegisters(uc);
 
 #if defined(HAVE_PROC_MAPS)
+    /* Skip memory test if not running inside the main thread, since it would
+     * crash on a memory segment delcared to be writable, but actually not
+     * writable by the thread. */
+    if (pthread_self() != proxy.main_thread) goto dump_code;
     /* Test memory */
     proxyLogRaw("\n------ FAST MEMORY TEST ------\n");
     if (memtest_test_linux_anonymous_maps()) {
@@ -696,8 +699,8 @@ void sigsegvHandler(int sig, siginfo_t *info, void *secret) {
             "Please run a memory test for several hours if possible.\n"
         );
     }
+dump_code:
 #endif
-
     if (eip != NULL) {
         Dl_info info;
         if (dladdr(eip, &info) != 0) {
