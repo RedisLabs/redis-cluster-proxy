@@ -3243,6 +3243,10 @@ cleanup:
     if (status == PARSE_STATUS_ERROR) {
         proxyLogDebug("Failed to parse request " REQID_PRINTF_FMT,
                       REQID_PRINTF_ARG(req));
+        if (err && *err) {
+            proxyLogDebug("Request " REQID_PRINTF_FMT " parsing error: '%s'",
+                REQID_PRINTF_ARG(req), *err);
+        }
     }
     return status;
 }
