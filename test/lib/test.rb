@@ -64,7 +64,8 @@ class RedisProxyTestCase
     }
 
     attr_reader :name, :testfile, :tests, :failed_tests, :succeeded_tests,
-                :skipped_tests, :current_test, :started, :duration
+                :skipped_tests, :current_test, :started, :duration,
+                :repeat
 
     def initialize(name, testfile: nil)
         @name = name
@@ -82,6 +83,10 @@ class RedisProxyTestCase
             STDERR.puts "Could not find test file: '#{@testfile}'".red
             exit 1
         end
+        if $options
+            @repeat = $options[:repeat]
+        end
+        @repeat ||= 1
         self.instance_eval(File.read(@testfile), @testfile)
     end
 
@@ -106,12 +111,14 @@ class RedisProxyTestCase
             end
         end
         if !failed_setup
-            @tests.each{|test|
-                run_test(test)
-                if test[:exception].is_a?(Interrupt)
-                    interrupted = true
-                    break
-                end
+            @repeat.times.each{|r|
+                @tests.each{|test|
+                    run_test(test)
+                    if test[:exception].is_a?(Interrupt)
+                        interrupted = true
+                        break
+                    end
+                }
             }
         end
         if @cleanup
