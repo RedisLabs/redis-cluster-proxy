@@ -119,6 +119,26 @@ You can then connect to Redis Cluster Proxy using the client you prefer, ie:
 
 `redis-cli -p 7777`
 
+# Private connections pool
+
+Every thread has its own connections pool that contains *ready-to-use* private connections to the cluster, whose sockets are pre-connected in the same moment they are created.
+This allows clients requiring private connections (ie. after commands such as `MULTI` or blocking commands) to immediately use a connection that is probably already connected to the cluster, instead of reconnecting to the cluster from scratch (a situation that could slow-down the sequence execution of the queries from the point-of-view of the client itself).
+Every connection pool has a predefined size, and it's not allowed to create more connections than those allowed by its size.
+The size of the connection pool can be configured via the `--connections-pool-size` option (by default it's 10).
+When the pool runs out of connections, every new client requiring a private connection will create a new private connection from scratch and it will have to connect to the cluster and wait for the connection to be established. In this case, the connection model will "lazy", meaning that the sockets of the new connection will connect to a particular node of the cluster only when the query will require a connection to that node.
+Every thread will re-populate its own pool after the number of connections will drop below the specified minimum, that by default is the same of the size of the pool itself, and that can be configured via the `--connections-pool-min-size` option. The population rate and interval can be defined by the `--connections-pool-spawn-every` (interval in milliseconds) and `--connections-pool-spawn-rate` (number of new connection at every interval).
+
+So:
+
+```
+redis-cluster-proxy --connections-pool-size 20 connections-pool-min-size 15 --connections-pool-spawn-rate 2 --connections-pool-spawn-every 500 127.0.0.1:7000
+```
+
+Means: *"create a connection pool containing 20 connections (maximum), and re-populate it when the number of connections drops below 15, by creating 2 new connections every 500 milliseconds"*.
+
+Remember that every pool will be completely populated when the proxy starts.
+It's also important to remark that when clients owning a private connection will disconnect, their thread will try to recycle their private connection in order to add it again to the pool if the pool itself is not already full.
+
 # Password-protected clusters and Redis ACL
 
 If your cluster nodes are protected with a password, you can use the `-a`, `--auth` command-line options or the `auth` option in a configuration file in order to specify an authentication password.
