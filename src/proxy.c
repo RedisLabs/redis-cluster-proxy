@@ -2143,7 +2143,7 @@ static int populateConnectionsPool(proxyThread *thread, int rate) {
     list *pool = thread->connections_pool;
     if (pool == NULL) pool = thread->connections_pool = listCreate();
     if (pool == NULL) {
-        proxyLogWarn("Failed to allocate connections_pool for thread %d\n",
+        proxyLogWarn("Failed to allocate connections_pool for thread %d",
             thread->thread_id);
         return -1;
     }
@@ -2155,7 +2155,7 @@ static int populateConnectionsPool(proxyThread *thread, int rate) {
     if (max > config.connections_pool.size) max = config.connections_pool.size;
     int maxtries = max * 2, tries = 0;
     aeEventLoop *el = thread->loop;
-    proxyLogDebug("Populating connections pool for thread %d\n",
+    proxyLogDebug("Populating connections pool for thread %d",
         thread->thread_id);
     while (listLength(pool) < (unsigned long) max) {
         if (++tries >= maxtries) break;
@@ -2174,7 +2174,7 @@ static int populateConnectionsPool(proxyThread *thread, int rate) {
             if (!installIOHandler(el, conn->context->fd, AE_WRITABLE,
                 writeToClusterHandler, conn, 0)) {
                 proxyLogWarn("Populate connection pool: failed to install "
-                    "write handler for node %s:%d\n", node->ip, node->port);
+                    "write handler for node %s:%d", node->ip, node->port);
                 freeClusterConnection(conn);
                 continue;
             }
@@ -2187,9 +2187,78 @@ static int populateConnectionsPool(proxyThread *thread, int rate) {
         }
         listAddNodeTail(pool, connections);
     }
-    proxyLogDebug("Connections pool for thread %d has %d connections\n",
+    proxyLogDebug("Connections pool for thread %d has %d connections",
         thread->thread_id, listLength(pool));
     return (int) listLength(pool);
+}
+
+/* Try to recycle private connections to cluster owned by a client that
+ * doesn't need them anymore (ie. it's going to be closed or freed) by
+ * adding them to the thread's connections pool.
+ * Connections are discarder if:
+ *  - the pool is already full (its size is equal to `--connections-pool-size`)
+ *  - connectionas are not valid (ie. disconnected, broken cluster, and so on)
+ */
+static int recyclePrivateClusterConnection(client *c) {
+    redisCluster *cluster = c->cluster;
+    assert(cluster != NULL);
+    if (cluster->broken || cluster->is_updating || cluster->update_required)
+        return 0;
+    proxyThread *thread = getThread(c);
+    if (thread == NULL) return 0;
+    list *pool = thread->connections_pool;
+    if (pool == NULL) return 0;
+    /* Exit if the pool is already full. */
+    if (listLength(pool) >= (unsigned long) config.connections_pool.size)
+        return 0;
+    rax *connections = raxNew();
+    if (connections == NULL) return 0;
+    listIter li, nli;
+    listNode *ln, *nln;
+    listRewind(cluster->nodes, &li);
+    /* Cycle all nodes in the private cluster in order to get and check their
+     * connection.
+     * Ensure that:
+     *  - The node must be a master
+     *  - The connection must be connected
+     *  - There are no requests not completely written to the cluster
+     *  - There are no requests that still have to be read from the cluster
+     */
+    while ((ln = listNext(&li))) {
+        clusterNode *node = listNodeValue(ln);
+        if (node == NULL) goto fail;
+        if (node->is_replica) continue;
+        redisClusterConnection *conn = node->connection;
+        if (conn == NULL) goto fail;
+        if (!conn->connected) goto fail;
+        listRewind(conn->requests_to_send, &nli);
+        while ((nln = listNext(&nli))) {
+            clientRequest *req = listNodeValue(nln);
+            if (req != NULL && req->has_write_handler) goto fail;
+        }
+        listRewind(conn->requests_pending, &nli);
+        while ((nln = listNext(&nli))) {
+            clientRequest *req = listNodeValue(nln);
+            if (req != NULL) goto fail;
+        }
+        /* Reset connection lists and node.*/
+        listEmpty(conn->requests_to_send);
+        listEmpty(conn->requests_pending);
+        conn->node = NULL;
+        /* Insert the connection by mapping it to the node's name. */
+        raxInsert(connections, (unsigned char*) node->name,
+                  strlen(node->name), conn, NULL);
+        node->connection = NULL;
+    }
+    /* Add the connection to the pool. */
+    listAddNodeHead(pool, connections);
+    return 1;
+fail:
+    if (connections != NULL) {
+        raxFreeWithCallback(connections,
+            (void (*)(void *))freeClusterConnection);
+    }
+    return 0;
 }
 
 static int threadConnectionPoolCron(aeEventLoop *el, long long id, void *data) {
@@ -2496,6 +2565,8 @@ static int disableMultiplexingForClient(client *c) {
         if (cln != NULL) {
             pool_connections = cln->value;
             listDelNode(thread->connections_pool, cln);
+            proxyLogDebug("Got connections from thread's connections pool, "
+                          "%d remaining", listLength(thread->connections_pool));
             /* When the size of the thread's connections pool is below the
              * configured minimum, create a time event to re-populate it. */
             int min_size = config.connections_pool.min_size;
@@ -2532,7 +2603,7 @@ static int disableMultiplexingForClient(client *c) {
                 /* Associate the connection taken from pool to the new node. */
                 proxyLogDebug("Assigning connection from pool for "
                               "node %s:%d to private connection owned by "
-                              "client %d:%" PRId64"\n", node->ip, node->port,
+                              "client %d:%" PRId64, node->ip, node->port,
                               c->thread_id, c->id);
                 freeClusterConnection(node->connection);
                 node->connection = poolconn;
@@ -2643,7 +2714,14 @@ static void unlinkClient(client *c) {
         c->fd = -1;
         proxy.numclients--;
     }
-    if (c->cluster != NULL) closeClientPrivateConnection(c);
+    if (c->cluster != NULL) {
+        if (recyclePrivateClusterConnection(c)) {
+            proxyLogDebug("Recycled private connection from client %d:%" PRId64
+                ", pool's size: %d",
+                c->thread_id, c->id,
+                listLength(getThread(c)->connections_pool));
+        } else closeClientPrivateConnection(c);
+    }
     proxyThread *thread = getThread(c);
     int *p_ok = NULL;
     addObjectToList(c, thread, unlinked_clients, p_ok);
@@ -2705,7 +2783,9 @@ static void freeClient(client *c) {
     listRelease(c->requests);
     if (c->unordered_replies)
         raxFreeWithCallback(c->unordered_replies, (void (*)(void*))sdsfree);
-    if (c->cluster != NULL) freeCluster(c->cluster);
+    if (c->cluster != NULL) {
+        freeCluster(c->cluster);
+    }
     listNode *ln = c->unlinked_clients_lnode;
     if (ln) ln->value = NULL;
     if (c->auth_user != NULL) sdsfree(c->auth_user);
