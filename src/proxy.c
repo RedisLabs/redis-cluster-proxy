@@ -2138,6 +2138,15 @@ static void printClusterConfiguration(redisCluster *cluster) {
         cluster->masters_count, cluster->replicas_count);
 }
 
+/* Populate the thread's connections pool with already connected connections.
+ * Every connection actually is a radix tree (rax) which maps different
+ * redisClusterConnection objects to the names of the nodes of the cluster.
+ * The connections pool is a list containing all the rax objects.
+ * The functions populates the pool until maximum si reached, as defined by
+ * the configuration option (configuraqble via '--connections-pool-size').
+ * If rate is not zero, the pool will be populated until current + rate or
+ * max is reached.
+ * The function returns the final size of the pool or -1 in case of error.*/
 static int populateConnectionsPool(proxyThread *thread, int rate) {
     int max = config.connections_pool.size;
     list *pool = thread->connections_pool;
@@ -2261,6 +2270,12 @@ fail:
     return 0;
 }
 
+/* Function used by a time event (aeTimeEvent) that is registered whenever the
+ * size of the thread's connections pool dropb below the configured minimum
+ * (configurable via '--connections-pool-min-size').
+ * The time event is executed with an interval specified in the global
+ * configuration, configurable via the '--connections-pool-spawn-every' option.
+ * The interval is expressed in milliseconds. */
 static int threadConnectionPoolCron(aeEventLoop *el, long long id, void *data) {
     proxyThread *thread = el->privdata;
     UNUSED(id);
