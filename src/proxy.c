@@ -2892,10 +2892,10 @@ static int startListen(void) {
                 for (int i =0;i<fd_idx;i++){
                     switch (proxy.fds_info[i].af) {
                         case AF_INET6:
-                            proxyLogInfo("Listening on IPV6 *:%d", config.port);
+                            proxyLogInfo("Listening on IPv6 *:%d", config.port);
                             break;
                         case AF_INET:
-                            proxyLogInfo("Listening on IPV4 *:%d", config.port);
+                            proxyLogInfo("Listening on IPv6 *:%d", config.port);
                             break;
                     }
                 }
