@@ -100,8 +100,13 @@ typedef struct clientRequest {
 } clientRequest;
 
 typedef struct {
+    int af;
+} fdsInfo;
+
+typedef struct {
     aeEventLoop *main_loop;
     int fds[BINDADDR_MAX];
+    fdsInfo fds_info[BINDADDR_MAX];
     int fd_count;
     int unixsocket_fd;
     int tcp_backlog;

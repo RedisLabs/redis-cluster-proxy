@@ -2868,27 +2868,38 @@ void onClusterNodeDisconnection(clusterNode *node) {
     }
 }
 
-static int listen(void) {
+static int startListen(void) {
     int fd_idx = 0;
     /* Try to use both IPv6 and IPv4 */
     if (config.port != 0) {
         if (config.bindaddr_count == 0) {
             proxy.fds[fd_idx] = anetTcp6Server(proxy.neterr, config.port, NULL,
                                                proxy.tcp_backlog);
-            if (proxy.fds[fd_idx] != ANET_ERR)
+            if (proxy.fds[fd_idx] != ANET_ERR){
+                proxy.fds_info[fd_idx].af = AF_INET6;
                 anetNonBlock(NULL, proxy.fds[fd_idx++]);
-            else if (errno == EAFNOSUPPORT)
+            }else if (errno == EAFNOSUPPORT)
                 proxyLogWarn("Not listening to IPv6: unsupported");
 
             proxy.fds[fd_idx] = anetTcpServer(proxy.neterr, config.port, NULL,
                                               proxy.tcp_backlog);
-            if (proxy.fds[fd_idx] != ANET_ERR)
+            if (proxy.fds[fd_idx] != ANET_ERR){
+                proxy.fds_info[fd_idx].af = AF_INET;
                 anetNonBlock(NULL, proxy.fds[fd_idx++]);
-            else if (errno == EAFNOSUPPORT)
+            }else if (errno == EAFNOSUPPORT)
                 proxyLogWarn("Not listening to IPv4: unsupported");
-            if (fd_idx > 0)
-                proxyLogInfo("Listening on *:%d", config.port);
-            else {
+            if (fd_idx > 0){
+                for (int i =0;i<fd_idx;i++){
+                    switch (proxy.fds_info[i].af) {
+                        case AF_INET6:
+                            proxyLogInfo("Listening on IPV6 ::1:%d", config.port);
+                            break;
+                        case AF_INET:
+                            proxyLogInfo("Listening on IPV4 127.0.0.1:%d", config.port);
+                            break;
+                    }
+                }
+            }else {
                 proxyLogErr("Failed to listen on *:%d", config.port);
                 if (strlen(proxy.neterr))
                     proxyLogErr("%s", proxy.neterr);
@@ -4633,7 +4644,7 @@ int main(int argc, char **argv) {
     proxy.unixsocket_fd = -1;
     proxy.tcp_backlog = config.tcp_backlog;
     checkTcpBacklogSettings();
-    if (!listen()) {
+    if (!startListen()) {
         exit_status = 1;
         goto cleanup;
     }
