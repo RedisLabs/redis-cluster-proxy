@@ -18,7 +18,9 @@ FROM alpine:3.11 as runtime
 
 # It is quite helpful to have the redis-cli available 
 # on the proxy to do basic sanity testing
-RUN apk add --no-cache redis
+# curl can be used to fetch redis-cluster endpoints
+# configuration with the kubernete HTTP apis
+RUN apk add --no-cache redis curl ca-certificates
 
 RUN addgroup -S app && adduser -S -G app app 
 COPY --chown=app:app --from=build /usr/local/bin/redis-cluster-proxy /usr/local/bin/redis-cluster-proxy
