@@ -21,6 +21,7 @@
 #include "sds.h"
 #include "adlist.h"
 #include "rax.h"
+#include "config.h"
 #include <hiredis.h>
 #include <time.h>
 
@@ -78,6 +79,7 @@ typedef struct redisCluster {
     list *master_names;
     int masters_count;
     int replicas_count;
+    redisClusterEntryPoint *entry_point;
     rax  *requests_to_reprocess;
     int is_updating;
     int update_required;
@@ -91,8 +93,9 @@ redisCluster *createCluster(int thread_id);
 int resetCluster(redisCluster *cluster);
 redisCluster *duplicateCluster(redisCluster *source);
 void freeCluster(redisCluster *cluster);
-int fetchClusterConfiguration(redisCluster *cluster, char *ip, int port,
-                              char *hostsocket);
+int fetchClusterConfiguration(redisCluster *cluster,
+                              redisClusterEntryPoint* entry_points,
+                              int entry_points_count);
 redisContext *clusterNodeConnect(clusterNode *node);
 void clusterNodeDisconnect(clusterNode *node);
 clusterNode *searchNodeBySlot(redisCluster *cluster, int slot);
@@ -107,4 +110,6 @@ void clusterRemoveRequestToReprocess(redisCluster *cluster, void *r);
 int clusterNodeAuth(clusterNode *node, char *auth, char *user, char **err);
 redisClusterConnection *createClusterConnection(void);
 void freeClusterConnection(redisClusterConnection *conn);
+redisClusterEntryPoint *copyEntryPoint(redisClusterEntryPoint *source);
+void freeEntryPoints(redisClusterEntryPoint *entry_points, int count);
 #endif /* __REDIS_CLUSTER_PROXY_CLUSTER_H__ */

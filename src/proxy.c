@@ -548,7 +548,7 @@ static void proxySubCommandCluster(clientRequest *req, sds subcmd) {
     }
 }
 
-sds genInfoString(sds section) {
+sds genInfoString(sds section, redisCluster *cluster) {
     int default_section = (section == NULL ||
                            strcasecmp("default", section) == 0);
     int all_sections = (!default_section && section &&
@@ -645,13 +645,14 @@ sds genInfoString(sds section) {
         !strcasecmp("cluster", section))
     {
         if (sections++) info = sdscat(info,"\r\n");
+        redisClusterEntryPoint *ep = (cluster ? cluster->entry_point : NULL);
         info = sdscatprintf(info,
                      "# Cluster\r\n"
                      "address:%s\r\n"
                      "entry_node:%s:%d\r\n",
-                     (config.cluster_address ? config.cluster_address : ""),
-                     (config.entry_node_host ? config.entry_node_host : ""),
-                     config.entry_node_port
+                     (ep && ep->address ? ep->address : ""),
+                     (ep && ep->host ? ep->host : ""),
+                     (ep ? ep->port : 0)
 
         );
     }
@@ -988,7 +989,7 @@ int proxyCommand(void *r) {
             int len = req->lengths[2];
             section = sdsnewlen(req->buffer + offset, len);
         }
-        sds infostr = genInfoString(section);
+        sds infostr = genInfoString(section, getCluster(req->client));
         addReplyBulkString(req->client, infostr, req->id);
         sdsfree(infostr);
         if (section != NULL) sdsfree(section);
@@ -1661,26 +1662,6 @@ redisCommandDef *getRedisCommand(sds name) {
     return cmd;
 }
 
-static int parseAddress(char *address, char **ip, int *port, char **hostsocket)
-{
-    *ip = NULL;
-    *hostsocket = NULL;
-    *port = 0;
-    int size = strlen(address);
-    char *p = strchr(address, ':');
-    if (!p) *hostsocket = address;
-    else {
-        if (p == address) *ip = "localhost";
-        else {
-            *p = '\0';
-            *ip = address;
-        }
-        if (p - address != size) *port = atoi(++p);
-        if (!*port) return 0;
-    }
-    return 1;
-}
-
 void printHelp(void) {
     fprintf(stderr, mainHelpString,
         DEFAULT_PORT, DEFAULT_MAX_CLIENTS, DEFAULT_THREADS, MAX_THREADS,
@@ -2119,6 +2100,9 @@ static void readThreadPipe(aeEventLoop *el, int fd, void *privdata, int mask) {
 }
 
 static void printClusterConfiguration(redisCluster *cluster) {
+    redisClusterEntryPoint *ep = cluster->entry_point;
+    if (ep != NULL && ep->address != NULL)
+        proxyLogHdr("Cluster Address: %s", ep->address);
     if (config.loglevel == LOGLEVEL_DEBUG) {
         int j;
         clusterNode *last_n = NULL;
@@ -2315,9 +2299,9 @@ static proxyThread *createProxyThread(int index) {
         return NULL;
     }
     if (is_first) proxyLogHdr("Fetching cluster configuration...");
-    if (!fetchClusterConfiguration(thread->cluster, config.entry_node_host,
-                                   config.entry_node_port,
-                                   config.entry_node_socket)) {
+    if (!fetchClusterConfiguration(thread->cluster, config.entry_points,
+                                   config.entry_points_count))
+    {
         proxyLogErr("ERROR: Failed to fetch cluster configuration!");
         freeProxyThread(thread);
         return NULL;
@@ -3267,7 +3251,7 @@ static int splitPipelinedQueries(clientRequest *req, char *p, int is_inline) {
 }
 
 static int parseRequest(clientRequest *req, sds *err) {
-    int status = req->parsing_status, lf_len = 2, len, i;
+    int status = req->parsing_status, lf_len = 2, len, i, real_offset = 0;
     proxyLogDebug("Parsing request " REQID_PRINTF_FMT ", status: %d",
                   REQID_PRINTF_ARG(req), status);
     if (status != PARSE_STATUS_INCOMPLETE) return status;
@@ -3511,6 +3495,7 @@ static int parseRequest(clientRequest *req, sds *err) {
         }
     }
 cleanup:
+    real_offset = req->query_offset;
     if (req->query_offset > buflen) req->query_offset = buflen;
     int remaining = buflen - req->query_offset;
     if (status == PARSE_STATUS_INCOMPLETE) {
@@ -3530,6 +3515,15 @@ cleanup:
         if (err && *err) {
             proxyLogDebug("Request " REQID_PRINTF_FMT " parsing error: '%s'",
                 REQID_PRINTF_ARG(req), *err);
+        }
+        if (!config.dump_buffer && config.loglevel == LOGLEVEL_DEBUG) {
+            sds repr = sdscatrepr(sdsempty(), req->buffer, buflen);
+            proxyLogDebug("Request " REQID_PRINTF_FMT " buffer:\n%s",
+                          REQID_PRINTF_ARG(req), repr);
+            sdsfree(repr);
+            proxyLogDebug("Request " REQID_PRINTF_FMT
+                " offset=%d, real_offset=%d",
+                REQID_PRINTF_ARG(req), req->query_offset, real_offset);
         }
     }
     return status;
@@ -4873,19 +4867,20 @@ int main(int argc, char **argv) {
     proxy.threads = NULL;
     int parsed_opts = parseOptions(argc, argv);
     checkConfig();
-    char *config_cluster_addr = config.cluster_address;
-    if (parsed_opts >= argc) {
-        if (config_cluster_addr == NULL) {
-            fprintf(stderr, "Missing cluster address.\n\n");
-            printHelp();
-            return 1;
+    while (parsed_opts < argc) {
+        if (config.entry_points_count >= MAX_ENTRY_POINTS) break;
+        char *addr = argv[parsed_opts++];
+        redisClusterEntryPoint *entry_point =
+            &(config.entry_points[config.entry_points_count++]);
+        if (!parseAddress(addr, entry_point)) {
+            proxyLogWarn("Invalid address '%s'", addr);
+            config.entry_points_count--;
         }
-    } else {
-        if (config_cluster_addr) {
-            sdsfree((sds) config_cluster_addr);
-            config_cluster_addr = NULL;
-        }
-        config.cluster_address = argv[parsed_opts];
+    }
+    if (config.entry_points_count == 0) {
+        fprintf(stderr, "FATAL: Missing cluster address.\n\n");
+        printHelp();
+        return 1;
     }
     char *versiontype = "";
     if (strcmp("999.999.999", REDIS_CLUSTER_PROXY_VERSION) == 0)
@@ -4897,7 +4892,6 @@ int main(int argc, char **argv) {
     char *gitbranch = redisClusterProxyGitBranch();
     if (strlen(gitbranch) > 0)
         proxyLogHdr("Git Branch: %s", gitbranch);
-    proxyLogHdr("Cluster Address: %s", config.cluster_address);
     proxyLogHdr("PID: %d", (int) getpid());
     proxyLogHdr("OS: %s %s %s",
         proxy_os.sysname, proxy_os.release, proxy_os.machine);
@@ -4914,11 +4908,6 @@ int main(int argc, char **argv) {
                     config.connections_pool.spawn_rate,
                     config.connections_pool.spawn_every,
                     config.connections_pool.min_size);
-    }
-    if (!parseAddress(config.cluster_address, &config.entry_node_host,
-                      &config.entry_node_port, &config.entry_node_socket)) {
-        proxyLogErr("Invalid address '%s'", config.cluster_address);
-        return 1;
     }
     if (config.auth_user != NULL) {
         if (strcmp("default", config.auth_user) == 0) config.auth_user = NULL;
@@ -4960,7 +4949,6 @@ cleanup:
             pthread_join(proxy.threads[i]->thread, NULL);
         proxyLogHdr("All thread(s) stopped.");
     }
-    if (config_cluster_addr) sdsfree((sds) config_cluster_addr);
     releaseProxy();
     proxyLogHdr("Bye bye!");
     if (config.unixsocket) zfree(config.unixsocket);
@@ -4968,5 +4956,6 @@ cleanup:
     if (config.logfile) zfree(config.logfile);
     if (config.auth) zfree(config.auth);
     if (config.auth_user) zfree(config.auth_user);
+    freeEntryPoints(config.entry_points, config.entry_points_count);
     return exit_status;
 }

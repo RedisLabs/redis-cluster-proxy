@@ -137,6 +137,7 @@ redisCluster *createCluster(int thread_id) {
     cluster->owner = NULL;
     cluster->masters_count = 0;
     cluster->replicas_count = 0;
+    cluster->entry_point = NULL;
     cluster->nodes = listCreate();
     if (cluster->nodes == NULL) {
         zfree(cluster);
@@ -327,6 +328,10 @@ void freeCluster(redisCluster *cluster) {
             listNode *ln = listSearchKey(parent_duplicates, cluster);
             if (ln != NULL) listDelNode(parent_duplicates, ln);
         }
+    }
+    if (cluster->entry_point != NULL) {
+        freeEntryPoints(cluster->entry_point, 1);
+        zfree(cluster->entry_point);
     }
     zfree(cluster);
 }
@@ -627,25 +632,59 @@ cleanup:
     return success;
 }
 
-int fetchClusterConfiguration(redisCluster *cluster, char *ip, int port,
-                              char *hostsocket)
+int fetchClusterConfiguration(redisCluster *cluster,
+                              redisClusterEntryPoint* entry_points,
+                              int entry_points_count)
 {
-    int success = 1;
+    int success = 1, i;
     redisContext *ctx = NULL;
     list *friends = NULL;
-    if (hostsocket == NULL)
-        ctx = redisConnect(ip, port);
-    else
-        ctx = redisConnectUnix(hostsocket);
-    if (ctx->err) {
-        fprintf(stderr, "Could not connect to Redis at ");
-        if (hostsocket == NULL)
-            fprintf(stderr,"%s:%d: %s\n", ip, port, ctx->errstr);
-        else fprintf(stderr,"%s: %s\n", hostsocket, ctx->errstr);
-        redisFree(ctx);
+    redisClusterEntryPoint *entry_point = NULL;
+    for (i = 0; i < entry_points_count; i++) {
+        redisClusterEntryPoint *ep = &entry_points[i];
+        if (ep->host != NULL && ep->port) {
+            proxyLogDebug("Trying cluster entry point %s:%d",
+                ep->host, ep->port);
+            ctx = redisConnect(ep->host, ep->port);
+        } else if (ep->socket != NULL) {
+            proxyLogDebug("Trying cluster entry point %s", ep->socket);
+            ctx = redisConnectUnix(ep->socket);
+        }
+        else continue;
+        if (ctx->err) {
+            sds err = sdsnew("Could not connect to Redis at ");
+            if (ep->host != NULL) {
+                err = sdscatprintf(err, "%s:%d: %s", ep->host, ep->port,
+                    ctx->errstr);
+            } else {
+                err = sdscatprintf(err, "%s: %s", ep->socket, ctx->errstr);
+            }
+            proxyLogErr(err);
+            redisFree(ctx);
+            ctx = NULL;
+            sdsfree(err);
+        } else {
+            entry_point = ep;
+            break;
+        }
+    }
+    if (entry_point == NULL || ctx == NULL) {
+        fprintf(stderr, "FATAL: failed to connect to Redis Cluster\n");
         return 0;
     }
-    clusterNode *firstNode = createClusterNode(ip, port, cluster);
+    if (cluster->entry_point != NULL) {
+        freeEntryPoints(cluster->entry_point, 1);
+        zfree(cluster->entry_point);
+    }
+    cluster->entry_point = copyEntryPoint(entry_point);
+    if (cluster->entry_point == NULL) {
+        fprintf(stderr, "FATAL: failed to allocate cluster's entry point\n");
+        return 0;
+    }
+    proxyLogDebug("Fetching cluster configuration from entry point '%s'",
+        cluster->entry_point->address);
+    clusterNode *firstNode =
+        createClusterNode(entry_point->host, entry_point->port, cluster);
     if (!firstNode) {success = 0; goto cleanup;}
     friends = listCreate();
     success = (friends != NULL);
@@ -778,18 +817,22 @@ int updateCluster(redisCluster *cluster) {
     int status = CLUSTER_RECONFIG_WAIT;
     listIter li;
     listNode *ln;
-    int requests_to_wait = 0;
+    int requests_to_wait = 0, entry_points_count = 0;
+    redisClusterEntryPoint *entry_points =
+        zmalloc(sizeof(*entry_points) * listLength(cluster->nodes));
+    if (entry_points == NULL) return CLUSTER_RECONFIG_ERR;
     listRewind(cluster->nodes, &li);
-    sds ip = NULL;
-    int port = 0;
     /* Count all requests_pending or request_to_send that are still
      * writing to cluster. */
     while ((ln = listNext(&li))) {
         clusterNode *node = ln->value;
-        if (!ip) {
-            ip = sdsnew(node->ip);
-            port = node->port;
-        }
+        sds addr = sdscatprintf(sdsempty(), "%s:%d", node->ip, node->port);
+        redisClusterEntryPoint *ep = &entry_points[entry_points_count++];
+        ep->host = zstrdup(node->ip);
+        ep->port = node->port;
+        ep->socket = NULL;
+        ep->address = zstrdup(addr);
+        sdsfree(addr);
         if (node->is_replica) continue;
         redisClusterConnection *conn = node->connection;
         if (conn == NULL) continue;
@@ -824,9 +867,9 @@ int updateCluster(redisCluster *cluster) {
         status = CLUSTER_RECONFIG_ERR;
         goto final;
     }
-    proxyLogDebug("Reconfiguring cluster from node %s:%d (thread: %d)",
-                  ip, port, cluster->thread_id);
-    if (!fetchClusterConfiguration(cluster, ip, port, NULL)) {
+    proxyLogDebug("Reconfiguring cluster (thread: %d)",
+                  cluster->thread_id);
+    if (!fetchClusterConfiguration(cluster, entry_points, entry_points_count)) {
         proxyLogErr("Failed to fetch cluster configuration! (thread: %d)",
                     cluster->thread_id);
         status = CLUSTER_RECONFIG_ERR;
@@ -880,7 +923,10 @@ int updateCluster(redisCluster *cluster) {
                   cluster->thread_id);
     status = CLUSTER_RECONFIG_ENDED;
 final:
-    if (ip) sdsfree(ip);
+    if (entry_points) {
+        freeEntryPoints(entry_points, entry_points_count);
+        zfree(entry_points);
+    }
     if (status == CLUSTER_RECONFIG_ERR) cluster->broken = 1;
     return status;
 }
@@ -948,4 +994,31 @@ fail:
         if (*err) strncpy(*err, errmsg, errlen);
     }
     return 0;
+}
+
+redisClusterEntryPoint *copyEntryPoint(redisClusterEntryPoint *source) {
+    redisClusterEntryPoint *ep = zmalloc(sizeof(*ep));
+    if (ep == NULL) return NULL;
+    ep->host = (source->host ? zstrdup(source->host) : NULL);
+    ep->socket = (source->socket ? zstrdup(source->socket) : NULL);
+    ep->address = (source->address ? zstrdup(source->address) : NULL);
+    ep->port = source->port;
+    if (ep->address == NULL) {
+        if (ep->host && ep->port) {
+            sds addr = sdscatprintf(sdsempty(), "%s:%d", ep->host, ep->port);
+            ep->address = zstrdup(addr);
+            sdsfree(addr);
+        } else if (ep->socket) ep->address = zstrdup(ep->socket);
+    }
+    return ep;
+}
+
+void freeEntryPoints(redisClusterEntryPoint *entry_points, int count) {
+    int i;
+    for (i = 0; i < count; i++) {
+        redisClusterEntryPoint *entry_point = &(entry_points[i]);
+        if (entry_point->address) zfree(entry_point->address);
+        if (entry_point->host) zfree(entry_point->host);
+        if (entry_point->socket) zfree(entry_point->socket);
+    }
 }

@@ -6,6 +6,7 @@ setup {
     loglevel = $options[:log_level] || 'debug'
     dump_queues = $options[:dump_queues]
     dump_queries = $options[:dump_queries]
+    dump_buffer = $options[:dump_buffer]
     if !$main_cluster
         @cluster = RedisCluster.new
         @cluster.restart
@@ -17,6 +18,7 @@ setup {
                                        log_level: 'debug',
                                        dump_queries: dump_queries,
                                        dump_queues: dump_queues,
+                                       dump_buffer: dump_buffer,
                                        valgrind: use_valgrind
         @proxy.start
         $main_proxy = @proxy

@@ -44,7 +44,7 @@ extern redisClusterProxyConfig config;
 char *redisClusterProxyGitSHA1(void);
 char *redisClusterProxyGitDirty(void);
 void proxyLogHexDump(char *descr, void *value, size_t len);
-sds genInfoString(sds section);
+sds genInfoString(sds section, redisCluster *cluster);
 
 extern int ae_api_kqueue;
 int bug_report_start = 0;
@@ -670,7 +670,7 @@ void sigsegvHandler(int sig, siginfo_t *info, void *secret) {
 
     /* Log INFO and CLIENT LIST */
     proxyLogRaw("\n\n------ INFO OUTPUT ------\n");
-    sds infostr = genInfoString(NULL);
+    sds infostr = genInfoString(NULL, NULL);
     proxyLogRaw(infostr);
     sdsfree(infostr);
 

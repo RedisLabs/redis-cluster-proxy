@@ -32,6 +32,7 @@ opts =RedisProxyTestUtils::OptionParser.new help_banner_arguments: '[TESTS]' do
     option   '',   '--log-level LEVEL', "Proxy's --log-level (default: debug)"
     option   '',   '--dump-queues',"Proxy's --dump-queues"
     option   '',   '--dump-queries',"Proxy's --dump-queries"
+    option   '',   '--dump-buffer',"Proxy's --dump-buffer"
     option   '',   '--keep-logs', "Keep Proxies' logs (if any)"
     option   '',   '--valgrind', 'Valgrind mode'
 
