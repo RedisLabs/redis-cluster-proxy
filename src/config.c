@@ -15,6 +15,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
@@ -26,6 +27,7 @@
 #define CONFIG_MAX_LINE 1024
 
 void initConfig(void) {
+    config.entry_points_count = 0;
     config.port = DEFAULT_PORT;
     config.unixsocket = NULL;
     config.unixsocketperm = DEFAULT_UNIXSOCKETPERM;
@@ -49,6 +51,26 @@ void initConfig(void) {
     config.connections_pool.min_size = DEFAULT_CONNECTIONS_POOL_MINSIZE;
     config.connections_pool.spawn_every = DEFAULT_CONNECTIONS_POOL_INTERVAL;
     config.connections_pool.spawn_rate = DEFAULT_CONNECTIONS_POOL_SPAWNRATE;
+}
+
+int parseAddress(char *address, redisClusterEntryPoint *entry_point) {
+    entry_point->host = NULL;
+    entry_point->socket = NULL;
+    entry_point->port = 0;
+    entry_point->address = zstrdup(address);
+    int size = strlen(address);
+    char *p = strchr(address, ':');
+    if (!p) entry_point->socket = zstrdup(address);
+    else {
+        if (p == address) entry_point->host = zstrdup("localhost");
+        else {
+            *p = '\0';
+            entry_point->host = zstrdup(address);
+        }
+        if (p - address != size) entry_point->port = atoi(++p);
+        if (!entry_point->port) return 0;
+    }
+    return 1;
 }
 
 int parseOptionsFromFile(const char *filename) {
@@ -101,17 +123,30 @@ int parseOptionsFromFile(const char *filename) {
             success = parseOptionsFromFile(configfile);
             if (!success) goto cleanup;
             handled = 1;
-        } else if (strcmp("cluster", tokens[0]) == 0) {
+        } else if (strcmp("cluster", tokens[0]) == 0 ||
+                   strcmp("entry-point", tokens[0]) == 0)
+        {
             success = numtokens > 1;
             if (!success) {
                 fprintf(stderr, "Error in config file '%s', at line %d:\n"
                         "Mandatory ADDRESS argument for "
-                        "'cluster' option\n", filename, linenum);
+                        "'%s' option\n", filename, linenum, tokens[0]);
                 goto cleanup;
             }
-            if (config.cluster_address != NULL)
-                sdsfree((sds) config.cluster_address);
-            config.cluster_address = sdsdup(tokens[1]);
+            if (config.entry_points_count >= MAX_ENTRY_POINTS) {
+                proxyLogWarn(MAX_ENTRY_POINTS_WARN_MSG,
+                    MAX_ENTRY_POINTS, tokens[1]);
+                goto next_line;
+            }
+            redisClusterEntryPoint *entry_point =
+                &(config.entry_points[config.entry_points_count++]);
+            if (!parseAddress(tokens[1], entry_point)) {
+                fprintf(stderr, "Error in config file '%s', at line %d:\n"
+                        "Invalid address for '%s' option\n",
+                        filename, linenum, tokens[0]);
+                config.entry_points_count--;
+                goto next_line;
+            }
             handled = 1;
         } else if (strcmp("help", tokens[0]) == 0) goto next_line;
         if (handled) goto next_line;

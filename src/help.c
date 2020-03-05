@@ -74,7 +74,7 @@ const char *proxyCommandSubcommandDebugtHelp[] = {
 
 const char *mainHelpString =
 "Usage: redis-cluster-proxy [OPTIONS] "
-"[cluster_host:cluster_port]\n"
+"[node1_host:node1_port,node2_host:node2_port,...]\n"
 "  -c <file>            Configuration file\n"
 "  -p, --port <port>    Port (default: %d). Use 0 in order to disable \n"
 "                       TCP connections at all\n"

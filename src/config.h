@@ -23,6 +23,7 @@
 #define CFG_DISABLE_MULTIPLEXING_AUTO       1
 #define CFG_DISABLE_MULTIPLEXING_ALWAYS     2
 #define BINDADDR_MAX                        16
+#define MAX_ENTRY_POINTS                    255
 #define MAX_POOL_SIZE                       50
 #define DEFAULT_PID_FILE                    "/var/run/redis-cluster-proxy.pid"
 #define DEFAULT_PORT                        7777
@@ -36,14 +37,22 @@
 #define DEFAULT_CONNECTIONS_POOL_INTERVAL   50
 #define DEFAULT_CONNECTIONS_POOL_SPAWNRATE  2
 
+#define MAX_ENTRY_POINTS_WARN_MSG "You cannot use more than %d entry points, "\
+                                  "skipping entry point '%s'"
+
+typedef struct redisClusterEntryPoint {
+    char *host;
+    int port;
+    char *socket;
+    char *address;
+} redisClusterEntryPoint;
+
 typedef struct {
     int port;
     char *unixsocket;
     mode_t unixsocketperm;
-    char *cluster_address;
-    char *entry_node_host;
-    int entry_node_port;
-    char *entry_node_socket; /* UNIX Socket */
+    int entry_points_count;
+    redisClusterEntryPoint entry_points[MAX_ENTRY_POINTS];
     int tcpkeepalive;
     int maxclients;
     int num_threads;
@@ -75,5 +84,6 @@ void initConfig(void);
 int parseOptions(int argc, char **argv);
 int parseOptionsFromFile(const char *filename);
 void checkConfig(void);
+int parseAddress(char *address, redisClusterEntryPoint *entry_point);
 
 #endif /* __REDIS_CLUSTER_PROXY_CONFIG_H__ */
