@@ -3188,7 +3188,7 @@ static int listen(void) {
                     proxy.fds[fd_idx] = anetTcp6Server(proxy.neterr,
                         config.port, bindaddr, proxy.tcp_backlog);
                 } else {
-                    /* IPv6 address */
+                    /* IPv4 address */
                     proxy.fds[fd_idx] = anetTcpServer(proxy.neterr,
                         config.port, bindaddr, proxy.tcp_backlog);
                 }
@@ -3196,7 +3196,8 @@ static int listen(void) {
                     anetNonBlock(NULL, proxy.fds[fd_idx++]);
                     proxyLogInfo("Listening on %s:%d", bindaddr, config.port);
                 } else if (errno == EAFNOSUPPORT)
-                    proxyLogWarn("Not listening to IPv6: unsupported");
+                    proxyLogWarn("Not listening to %s: unsupported",
+                                strchr(bindaddr, ':') ? "IPv6" : "IPv4");
                 if (proxy.fds[fd_idx] == ANET_ERR) {
                     proxyLogErr("Failed to listen on %s:%d", bindaddr,
                         config.port);
@@ -3214,7 +3215,7 @@ static int listen(void) {
         if (proxy.unixsocket_fd != ANET_ERR) {
             anetNonBlock(NULL, proxy.unixsocket_fd);
             proxy.fds[fd_idx++] = proxy.unixsocket_fd;
-            proxyLogInfo("Listening on socket '%s'", config.unixsocket);
+            proxyLogInfo("Listening on Unix socket '%s'", config.unixsocket);
         } else {
             proxyLogErr("Error opening Unix socket: '%s'", proxy.neterr);
         }
@@ -4943,8 +4944,9 @@ int main(int argc, char **argv) {
                 proxy.fds[i] == proxy.unixsocket_fd ? acceptUnixHandler :
                               acceptTcpHandler, NULL, 0))
         {
-            proxyLogErr("FATAL: Failed to create TCP accept handlers, "
-                        "aborting...");
+            proxyLogErr("FATAL: Failed to create %s accept handlers, "
+                        "aborting...", proxy.fds[i] == proxy.unixsocket_fd ?
+                        "Unix socket" : "TCP");
             exit_status = 1;
             goto cleanup;
         }
