@@ -2927,13 +2927,10 @@ static void writeToClusterHandler(aeEventLoop *el, int fd, void *privdata,
      * tried to authenticate with different credentials from the ones
      * used by the proxy and, in this case, skip the automatic authentication
      * since the client will send its AUTH query by itself. */
-    char *auth = config.auth, *auth_user = config.auth_user;
+    char *auth = config.auth;
     client *c = NULL;
     if (node && (c = node->cluster->owner) && (c->auth_user || c->auth_passw)) {
-        if (clientRequiresAuth(c)) {
-            auth_user = NULL;
-            auth = NULL;
-        }
+        if (clientRequiresAuth(c)) auth = NULL;
     }
     if (auth && !connection->authenticated && !connection->authenticating) {
         char *autherr = NULL;
