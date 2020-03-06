@@ -45,6 +45,11 @@
 
 extern const char *redisProxyLogLevels[5];
 
+#ifdef __GNUC__
+void proxyLog(int level, const char* format, ...)
+    __attribute__((format(printf, 2, 3)));
+#else
 void proxyLog(int level, const char* format, ...);
+#endif
 
 #endif /* __REDIS_CLUSTER_PROXY_LOGGER_H__ */

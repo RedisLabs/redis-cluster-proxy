@@ -2196,7 +2196,7 @@ static int populateConnectionsPool(proxyThread *thread, int rate) {
         }
         listAddNodeTail(pool, connections);
     }
-    proxyLogDebug("Connections pool for thread %d has %d connections",
+    proxyLogDebug("Connections pool for thread %d has %lu connections",
         thread->thread_id, listLength(pool));
     return (int) listLength(pool);
 }
@@ -2546,7 +2546,7 @@ static client *createClient(int fd, char *ip) {
     c->clients_lnode = NULL;
     c->unlinked_clients_lnode = NULL;
     proxyLogDebug("Created client %d:%" PRId64 " with address %p",
-        c->thread_id, c->id, c);
+        c->thread_id, c->id, (void *)c);
     if (config.disable_multiplexing == CFG_DISABLE_MULTIPLEXING_ALWAYS) {
         if (!disableMultiplexingForClient(c)) {
             unlinkClient(c);
@@ -2581,7 +2581,7 @@ static int disableMultiplexingForClient(client *c) {
             pool_connections = cln->value;
             listDelNode(thread->connections_pool, cln);
             proxyLogDebug("Got connections from thread's connections pool, "
-                          "%d remaining", listLength(thread->connections_pool));
+                          "%lu remaining", listLength(thread->connections_pool));
             /* When the size of the thread's connections pool is below the
              * configured minimum, create a time event to re-populate it. */
             int min_size = config.connections_pool.min_size;
@@ -2732,7 +2732,7 @@ static void unlinkClient(client *c) {
     if (c->cluster != NULL) {
         if (recyclePrivateClusterConnection(c)) {
             proxyLogDebug("Recycled private connection from client %d:%" PRId64
-                ", pool's size: %d",
+                ", pool's size: %lu",
                 c->thread_id, c->id,
                 listLength(getThread(c)->connections_pool));
         } else closeClientPrivateConnection(c);
@@ -3057,12 +3057,12 @@ static int writeToCluster(aeEventLoop *el, int fd, clientRequest *req) {
         }
         if (config.dump_queues) dumpQueue(node, thread_id, QUEUE_TYPE_PENDING);
         if (!node->cluster->owner) {
-            proxyLogDebug("Still have %d request(s) to send to node %s:%d "
+            proxyLogDebug("Still have %lu request(s) to send to node %s:%d "
                           "on thread %d",
                           listLength(node->connection->requests_to_send),
                           node->ip, node->port, node->cluster->thread_id);
         } else if (node->cluster->owner == c) {
-            proxyLogDebug("Still have %d request(s) to send to node %s:%d "
+            proxyLogDebug("Still have %lu request(s) to send to node %s:%d "
                           "on private connection owned by %d:%" PRId64,
                           listLength(node->connection->requests_to_send),
                           node->ip, node->port, c->thread_id, c->id);
@@ -3435,7 +3435,7 @@ static int parseRequest(clientRequest *req, sds *err) {
                          * is invalid. */
                         proxyLogDebug("Failed to parse " REQID_PRINTF_FMT
                             ", expected '\\r' at the end of the argument of "
-                            "declared length %d at offset %d",
+                            "declared length %lld at offset %d",
                             REQID_PRINTF_ARG(req),
                             arglen, req->query_offset);
                         if (err) {
@@ -4008,7 +4008,7 @@ static clientRequest *createRequest(client *c) {
     req->requests_to_send_lnode = NULL;
     req->max_child_reply_id = 0;
     proxyLogDebug("Created Request " REQID_PRINTF_FMT  " with address %p",
-                  REQID_PRINTF_ARG(req), req);
+                  REQID_PRINTF_ARG(req), (void *)req);
     return req;
 alloc_failure:
     proxyLogErr("ERROR: Failed to allocate request!");
@@ -4157,7 +4157,7 @@ static clientRequest *handleNextRequestsToCluster(clusterNode *node,
 static void checkForMultiplexingRequestsToBeConsumed(clientRequest *req) {
     if (req->client->cluster != NULL && !req->owned_by_client) {
         if (--req->client->pending_multiplex_requests <= 0) {
-            proxyLogDebug("Client %d:" PRId64 " has no more pending requests "
+            proxyLogDebug("Client %d:%" PRIu64 " has no more pending requests "
                           "on the multiplexing context. Sending requests "
                           "to the private cluster",
                           req->client->thread_id, req->client->id);
@@ -4169,7 +4169,7 @@ static void checkForMultiplexingRequestsToBeConsumed(clientRequest *req) {
                 handleNextRequestsToCluster(node, NULL);
             }
         } else {
-            proxyLogDebug("Client %d:" PRId64 " still has %d pending requests "
+            proxyLogDebug("Client %d:%" PRIu64 " still has %d pending requests "
                           "on the multiplexing context.",
                           req->client->thread_id, req->client->id,
                           req->client->pending_multiplex_requests);
@@ -4374,7 +4374,7 @@ void readQuery(aeEventLoop *el, int fd, void *privdata, int mask){
     }
     sdsIncrLen(req->buffer, nread);
     proxyLogDebug("Read %d bytes into req. " REQID_PRINTF_FMT ", buffer is "
-                  "%d bytes", nread, REQID_PRINTF_ARG(req),
+                  "%zu bytes", nread, REQID_PRINTF_ARG(req),
                   sdslen(req->buffer));
     /*TODO: support max query buffer length */
     int parsing_status = PARSE_STATUS_OK;
@@ -4418,7 +4418,7 @@ static void acceptHandler(int fd, char *ip, int port) {
     proxyThread *thread = proxy.threads[c->thread_id];
     assert(thread != NULL);
     if (!awakeThreadForNewClient(thread, c)) {
-        proxyLogDebug("Failed to awake thread %d for client %d:%" PRId64,
+        proxyLogDebug("Failed to awake thread %d for client %" PRId64,
                       thread->thread_id, c->id);
         char *err = "-ERR failed to awake thread\r\n";
         write(fd, err, strlen(err));
@@ -4487,7 +4487,7 @@ static int addChildRequestReply(clientRequest *req, char *replybuf, int len) {
     uint64_t numrequests = listLength(parent->child_requests) + 1;
     int completed = (raxSize(parent->child_replies) == numrequests);
     if (completed) {
-        proxyLogDebug("All %d child requests of " REQID_PRINTF_FMT
+        proxyLogDebug("All %" PRId64 "child requests of " REQID_PRINTF_FMT
                       " received replies",
                       numrequests, REQID_PRINTF_ARG(req));
         redisCommandDef *cmd = parent->command;
