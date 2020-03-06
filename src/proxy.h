@@ -102,7 +102,7 @@ typedef struct clientRequest {
 
 typedef struct {
     aeEventLoop *main_loop;
-    int fds[BINDADDR_MAX];
+    int fds[BINDADDR_MAX + 1];
     int fd_count;
     int unixsocket_fd;
     int tcp_backlog;
