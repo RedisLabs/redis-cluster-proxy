@@ -125,7 +125,7 @@ Every thread has its own connections pool that contains *ready-to-use* private c
 This allows clients requiring private connections (ie. after commands such as `MULTI` or blocking commands) to immediately use a connection that is probably already connected to the cluster, instead of reconnecting to the cluster from scratch (a situation that could slow-down the sequence execution of the queries from the point-of-view of the client itself).
 Every connection pool has a predefined size, and it's not allowed to create more connections than those allowed by its size.
 The size of the connection pool can be configured via the `--connections-pool-size` option (by default it's 10).
-When the pool runs out of connections, every new client requiring a private connection will create a new private connection from scratch and it will have to connect to the cluster and wait for the connection to be established. In this case, the connection model will "lazy", meaning that the sockets of the new connection will connect to a particular node of the cluster only when the query will require a connection to that node.
+When the pool runs out of connections, every new client requiring a private connection will create a new private connection from scratch and it will have to connect to the cluster and wait for the connection to be established. In this case, the connection model will be "lazy", meaning that the sockets of the new connection will connect to a particular node of the cluster only when the query will require a connection to that node.
 Every thread will re-populate its own pool after the number of connections will drop below the specified minimum, that by default is the same of the size of the pool itself, and that can be configured via the `--connections-pool-min-size` option. The population rate and interval can be defined by the `--connections-pool-spawn-every` (interval in milliseconds) and `--connections-pool-spawn-rate` (number of new connection at every interval).
 
 So:
@@ -151,7 +151,7 @@ Examples:
 
 `redis-cluster-proxy --auth-user MYUSER --auth MYPASSWORD 127.0.0.1:7000`
 
-The proxy will use these credentials to authenticate to the cluster and fetch the cluster's internal configuration, but it will also autmatically authenticate all clients with the provided credentials.
+The proxy will use these credentials to authenticate to the cluster and fetch the cluster's internal configuration, but it will also automatically authenticate all clients with the provided credentials.
 So, **all clients** that will connect to the proxy will be **automatically authenticated** with the user that is specified by `--auth-user` or with the `default` user if no user has been specified, **without the need** to call the `AUTH` command by themselves.
 Anyway, if any client wants to be authenticated with a different user, it always can call the Redis `AUTH` command (documented [here](https://redis.io/commands/auth)): in this case, the client will use a private connection instead of the shared, multiplexed connection, and it will authenticate with another user.
 
