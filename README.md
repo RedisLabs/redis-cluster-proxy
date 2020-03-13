@@ -75,6 +75,13 @@ For example:
 
 `./redis-cluster-proxy /path/to/entry-point.socket`
 
+It is also possible to specify more entry-points as multiple addresses. The proxy will use the first reachable entry-point in order to connect to the cluster and fetch the configuration of the cluster itself.
+This can be useful since a single entry-point could be down, so you can use multiple addresses to make the proxy more reliable.
+
+Example:
+
+`./redis-cluster-proxy 127.0.0.1:7000 127.0.0.1:7001 127.0.0.1:7002`
+
 If you need a basic help, just run it with the canonical `-h` or `--help` option.
 
 `./redis-cluster-proxy -h`
