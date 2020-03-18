@@ -151,6 +151,7 @@ if RedisProxyTestCase::interrupted?
 end
 
 puts "All tests executed in #{'%.1f' % duration}s".cyan
+exitcode = 0
 if RedisProxyTestCase::exceptions.length == 0
     if failures_count.zero?
         puts ("All #{succeeded_count} test(s) were performed without "+
@@ -169,6 +170,7 @@ if RedisProxyTestCase::exceptions.length == 0
     else
         puts "#{succeeded_count} test(s) succeeded without errors".green
         puts "#{failures_count} test(s) failed!".red
+        exitcode = 1
     end
     if skipped_count > 0
         puts "#{skipped_count} test(s) skipped!".yellow
@@ -181,4 +183,6 @@ else
         msg = "See: '#{logfile}'"
         STDERR.puts RedisProxyTestLogger::colorized(msg, :magenta)
     end
+    exitcode = 1
 end
+exit exitcode
