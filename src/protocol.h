@@ -21,7 +21,7 @@
 #include <stdint.h>
 #include "proxy.h"
 
-#define ERROR_CLUSTER_RECONFIG \
+#define ERROR_CLUSTER_DOWN \
     "-CLUSTERDOWN Failed to fetch cluster configuration"
 #define ERROR_COMMAND_UNSUPPORTED_CROSSSLOT \
     "Cross-slot queries are not supported for this command"

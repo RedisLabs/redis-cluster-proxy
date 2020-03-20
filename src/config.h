@@ -36,6 +36,7 @@
 #define DEFAULT_CONNECTIONS_POOL_MINSIZE    10
 #define DEFAULT_CONNECTIONS_POOL_INTERVAL   50
 #define DEFAULT_CONNECTIONS_POOL_SPAWNRATE  2
+#define RETRY_CLUSTER_CONFIG_EVERY          1000
 
 #define MAX_ENTRY_POINTS_WARN_MSG "You cannot use more than %d entry points, "\
                                   "skipping entry point '%s'"

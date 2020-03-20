@@ -116,6 +116,7 @@ typedef struct {
     size_t system_memory_size;
     pthread_t main_thread;
     _Atomic int exit_asap;
+    int updated_flimit;
 } redisClusterProxy;
 
 typedef struct client {

@@ -41,6 +41,7 @@
 
 #define QUERY_OFFSETS_MIN_SIZE              10
 #define MAX_THREADS                         500
+#define MIN_THREAD_NODE_FDS                 6
 #define EL_INSTALL_HANDLER_FAIL             9999
 #define REQ_STATUS_UNKNOWN                  -1
 #define PARSE_STATUS_INCOMPLETE             -1
@@ -110,6 +111,7 @@ static struct utsname proxy_os;
 redisCommandDef *authCommandDef = NULL;
 redisCommandDef *scanCommandDef = NULL;
 int ae_api_kqueue = 0;
+pthread_mutex_t flimits_mutex;
 
 #ifdef __GNUC__
 __thread int thread_id;
@@ -1891,6 +1893,7 @@ static void checkTcpBacklogSettings(void) {
 static void initProxy(void) {
     int i;
     proxy.exit_asap = 0;
+    proxy.updated_flimit = 0;
     proxy.neterr[0] = '\0';
     proxy.numclients = 0;
     proxy.system_memory_size = zmalloc_get_memory_size();
@@ -1913,6 +1916,7 @@ static void initProxy(void) {
         fprintf(stderr, "FATAL: failed to allocate memory for threads.\n");
         exit(1);
     }
+    pthread_mutex_init(&flimits_mutex, NULL);
     proxyLogHdr("Starting %d threads...", config.num_threads);
     for (i = 0; i < config.num_threads; i++) {
         proxyLogDebug("Creating thread %d...", i);
@@ -2100,6 +2104,7 @@ static void readThreadPipe(aeEventLoop *el, int fd, void *privdata, int mask) {
 }
 
 static void printClusterConfiguration(redisCluster *cluster) {
+    if (cluster->broken) return;
     redisClusterEntryPoint *ep = cluster->entry_point;
     if (ep != NULL && ep->address != NULL)
         proxyLogHdr("Cluster Address: %s", ep->address);
@@ -2277,6 +2282,40 @@ finished:
     return AE_NOMORE;
 }
 
+static void setThreadFileLimit(proxyThread *thread, int update_event_loop) {
+    int nodecount = thread->cluster->masters_count +
+                    thread->cluster->replicas_count;
+    int poolsize = config.connections_pool.size;
+    if (nodecount < 3 || thread->cluster->broken)
+        nodecount = MIN_THREAD_NODE_FDS;
+    if (poolsize <= 0) poolsize = 1;
+    int size = (nodecount * config.num_threads * poolsize);
+    pthread_mutex_lock(&flimits_mutex);
+    if (!proxy.updated_flimit) {
+        proxy.min_reserved_fds += size;
+        adjustOpenFilesLimit();
+        proxy.updated_flimit = 1;
+    }
+    pthread_mutex_unlock(&flimits_mutex);
+    if (update_event_loop && thread->loop != NULL)
+        aeResizeSetSize(thread->loop, thread->loop->setsize + size);
+}
+
+static int retryClusterConfiguration(aeEventLoop *el, long long id, void *data)
+{
+    UNUSED(el);
+    UNUSED(id);
+    proxyLogDebug("Retrying to fetch cluster configuration...");
+    redisCluster *cluster = data;
+    if (!cluster || !cluster->broken) return AE_NOMORE;
+    cluster->broken = !fetchClusterConfiguration(cluster,
+        config.entry_points, config.entry_points_count);
+    if (cluster->broken) return RETRY_CLUSTER_CONFIG_EVERY;
+    proxyThread *thread = proxy.threads[cluster->thread_id];
+    if (thread != NULL) setThreadFileLimit(thread, 1);
+    return AE_NOMORE;
+}
+
 static proxyThread *createProxyThread(int index) {
     int is_first = (index == 0);
     proxyThread *thread = zcalloc(sizeof(*thread));
@@ -2303,17 +2342,12 @@ static proxyThread *createProxyThread(int index) {
                                    config.entry_points_count))
     {
         proxyLogErr("ERROR: Failed to fetch cluster configuration!");
-        freeProxyThread(thread);
-        return NULL;
+        thread->cluster->broken = 1;
     }
     if (is_first) {
         printClusterConfiguration(thread->cluster);
-        int nodecount = thread->cluster->masters_count +
-                        thread->cluster->replicas_count;
-        int poolsize = config.connections_pool.size;
-        if (poolsize <= 0) poolsize = 1;
-        proxy.min_reserved_fds += (nodecount * config.num_threads * poolsize);
-        adjustOpenFilesLimit();
+        setThreadFileLimit(thread, 0);
+        if (thread->cluster->broken) proxy.updated_flimit = 0;
     }
     thread->clients = listCreate();
     if (thread->clients == NULL) goto fail;
@@ -2340,6 +2374,10 @@ static proxyThread *createProxyThread(int index) {
     }
     thread->msgbuffer = sdsempty();
     if (config.connections_pool.size > 0) populateConnectionsPool(thread, 0);
+    if (thread->cluster->broken) {
+        aeCreateTimeEvent(thread->loop, (long long) RETRY_CLUSTER_CONFIG_EVERY,
+            retryClusterConfiguration, thread->cluster, NULL);
+    }
     return thread;
 fail:
     if (thread) freeProxyThread(thread);
@@ -4243,7 +4281,7 @@ int processRequest(clientRequest *req, int *parsing_status,
     redisCluster *cluster = getCluster(c);
     assert(cluster != NULL);
     if (cluster->broken) {
-        errmsg = sdsnew(ERROR_CLUSTER_RECONFIG);
+        errmsg = sdsnew(ERROR_CLUSTER_DOWN);
         goto invalid_request;
     } else if (cluster->is_updating) {
         clusterAddRequestToReprocess(cluster, req);
@@ -4642,7 +4680,7 @@ consume_buffer:
                                 thread_id);
                     if (req) {
                         addReplyError(req->client,
-                                      ERROR_CLUSTER_RECONFIG,
+                                      ERROR_CLUSTER_DOWN,
                                       req->id);
                     }
                     do_break = 1;

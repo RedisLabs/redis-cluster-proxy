@@ -669,7 +669,7 @@ int fetchClusterConfiguration(redisCluster *cluster,
         }
     }
     if (entry_point == NULL || ctx == NULL) {
-        fprintf(stderr, "FATAL: failed to connect to Redis Cluster\n");
+        proxyLogWarn("Failed to connect to Redis Cluster");
         return 0;
     }
     if (cluster->entry_point != NULL) {
@@ -690,7 +690,9 @@ int fetchClusterConfiguration(redisCluster *cluster,
     success = (friends != NULL);
     if (!success) goto cleanup;
     success = clusterNodeLoadInfo(cluster, firstNode, friends, ctx);
+    if (!success) goto cleanup;
     clusterAddNode(cluster, firstNode);
+    success = (listLength(friends) + listLength(cluster->nodes) >= 3);
     if (!success) goto cleanup;
     listIter li;
     listNode *ln;
