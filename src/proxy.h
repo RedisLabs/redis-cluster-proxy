@@ -58,6 +58,7 @@ typedef struct proxyThread {
     list *connections_pool;
     int is_spawning_connections;
     uint64_t next_client_id;
+    _Atomic uint64_t process_clients;
     sds msgbuffer;
 } proxyThread;
 

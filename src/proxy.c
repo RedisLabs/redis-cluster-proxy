@@ -640,6 +640,13 @@ sds genInfoString(sds section, redisCluster *cluster) {
                      proxy.numclients,
                      config.maxclients
         );
+        int i;
+        for (i = 0; i < config.num_threads; i++) {
+            info = sdscatprintf(info,
+                "thread_%d_clinets:%" PRId64 "\r\n",
+                i, proxy.threads[i]->process_clients
+            );
+        }
     }
     if (default_section || all_sections ||
         !strcasecmp("cluster", section))
@@ -2289,6 +2296,7 @@ static proxyThread *createProxyThread(int index) {
     }
     thread->thread_id = index;
     thread->next_client_id = 0;
+    thread->process_clients = 0;
     thread->connections_pool = listCreate();
     thread->is_spawning_connections = 0;
     thread->cluster = createCluster(index);
@@ -2480,6 +2488,18 @@ static void freeProxyThread(proxyThread *thread) {
     zfree(thread);
 }
 
+int selectThreadWithLessClients(void) {
+    int i, thread_id = 0;
+    for (i = 1; i < config.num_threads; i++) {
+        if (proxy.threads[i]->process_clients <
+            proxy.threads[thread_id]->process_clients)
+        {
+            thread_id = i;
+        }
+    }
+    return thread_id;
+}
+
 static client *createClient(int fd, char *ip) {
     client *c = zcalloc(sizeof(*c));
     if (c == NULL) {
@@ -2511,9 +2531,10 @@ static client *createClient(int fd, char *ip) {
     anetEnableTcpNoDelay(NULL, fd);
     if (config.tcpkeepalive)
         anetKeepAlive(NULL, fd, config.tcpkeepalive);
-    /* TODO: select thread with less clients */
-    uint64_t numclients = proxy.numclients++;
-    c->thread_id = (numclients % config.num_threads);
+    /* Select thread with less clients */
+    c->thread_id = selectThreadWithLessClients();
+    proxy.numclients++;
+    proxy.threads[c->thread_id]->process_clients++;
     c->id = proxy.threads[c->thread_id]->next_client_id++;
     if (proxy.threads[c->thread_id]->next_client_id == UINT64_MAX)
         proxy.threads[c->thread_id]->next_client_id = 0;
@@ -2712,6 +2733,7 @@ static void unlinkClient(client *c) {
         close(c->fd);
         c->fd = -1;
         proxy.numclients--;
+        getThread(c)->process_clients--;
     }
     if (c->cluster != NULL) {
         if (recyclePrivateClusterConnection(c)) {
