@@ -2758,7 +2758,10 @@ static void freeAllClientRequests(client *c) {
     listRewind(c->requests, &li);
     while ((ln = listNext(&li))) {
         clientRequest *req = ln->value;
-        if (req == NULL) continue;
+        if (req == NULL) {
+            listDelNode(c->requests, ln);
+            continue;
+        }
         if (req->client != c) continue;
         if (el && unlinked && req->has_write_handler && req->written > 0) {
             /* If the request is still being written to a shared (multiplex)
@@ -3880,6 +3883,11 @@ void freeRequest(clientRequest *req) {
             listRewind(req->child_requests, &li);
             while ((ln = listNext(&li))) {
                 clientRequest *r = ln->value;
+                listNode *requests_lnode = r->requests_lnode;
+                if (requests_lnode) {
+                    r->requests_lnode = NULL;
+                    requests_lnode->value = NULL;
+                }
                 freeRequest(r);
             }
         }
@@ -4327,7 +4335,8 @@ int processRequest(clientRequest *req, int *parsing_status,
         while ((ln = listNext(&li))) {
             clientRequest *r = ln->value;
             if (!enqueueRequestToSend(r)) goto invalid_request;
-            if (r->node != last_node) {
+            clientRequest *next_req = getFirstRequestToSend(r->node, NULL);
+            if (r->node != last_node || next_req == r) {
                 last_node = r->node;
                 clientRequest *failed_req = NULL;
                 handleNextRequestsToCluster(r->node, &failed_req);
