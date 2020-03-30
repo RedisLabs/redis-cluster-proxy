@@ -1232,6 +1232,9 @@ int mergeReplies(void *_reply, void *_req, char *buf, int len) {
 final:
     raxStop(&iter);
     if (replyrepr != NULL) sdsfree(replyrepr);
+    proxyLogDebug("Writing reply for request " REQID_PRINTF_FMT
+                  " to client buffer...",
+                  REQID_PRINTF_ARG(req));
     if (err != NULL) {
         addReplyError(req->client, err, req->id);
         proxyLogDebug("%s", err);
@@ -4027,7 +4030,7 @@ static clientRequest *createRequest(client *c) {
     req->child_replies = NULL;
     req->requests_pending_lnode = NULL;
     req->requests_to_send_lnode = NULL;
-    req->max_child_reply_id = 0;
+    req->max_child_reply_id = req->id;
     proxyLogDebug("Created Request " REQID_PRINTF_FMT  " with address %p",
                   REQID_PRINTF_ARG(req), (void *)req);
     return req;
@@ -4509,7 +4512,7 @@ static int addChildRequestReply(clientRequest *req, char *replybuf, int len) {
     uint64_t numrequests = listLength(parent->child_requests) + 1;
     int completed = (raxSize(parent->child_replies) == numrequests);
     if (completed) {
-        proxyLogDebug("All %" PRId64 "child requests of " REQID_PRINTF_FMT
+        proxyLogDebug("All %" PRId64 " child requests of " REQID_PRINTF_FMT
                       " received replies",
                       numrequests, REQID_PRINTF_ARG(req));
         redisCommandDef *cmd = parent->command;
