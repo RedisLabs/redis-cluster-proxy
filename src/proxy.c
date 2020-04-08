@@ -962,6 +962,11 @@ int proxyCommand(void *r) {
         sdsfree(option);
         if (value != NULL) sdsfree(value);
     } else if (strcasecmp("multiplexing", subcmd) == 0) {
+        if (req->argc < 3) {
+            addReplyErrorUnknownSubcommand(req->client, "PROXY MULTIPLEXING",
+                "PROXY HELP", req->id);
+            goto final;
+        }
         assert(req->offsets_size >= 3);
         offset = req->offsets[2];
         len = req->lengths[2];
