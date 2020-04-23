@@ -54,7 +54,7 @@ typedef struct {
     int entry_points_count;
     redisClusterEntryPoint entry_points[MAX_ENTRY_POINTS];
     int tcpkeepalive;
-    int maxclients;
+    int max_clients;
     int num_threads;
     int tcp_backlog;
     int daemonize;

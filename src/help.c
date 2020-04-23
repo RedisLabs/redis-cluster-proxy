@@ -78,7 +78,7 @@ const char *mainHelpString =
 "  -c <file>            Configuration file\n"
 "  -p, --port <port>    Port (default: %d). Use 0 in order to disable \n"
 "                       TCP connections at all\n"
-"  --maxclients <n>    Max clients (default: %d)\n"
+"  --max-clients <n>    Max clients (default: %d)\n"
 "  --threads <n>        Thread number (default: %d, max: %d)\n"
 "  --tcpkeepalive       TCP Keep Alive (default: %d)\n"
 "  --tcp-backlog        TCP Backlog (default: %d)\n"
