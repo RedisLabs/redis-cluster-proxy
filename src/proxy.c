@@ -1631,7 +1631,7 @@ int evalGetKeys(void *r, int *first_key, int *last_key, int *key_step,
     sds numkeys_s = sdsnewlen(req->buffer + req->offsets[2], req->lengths[2]);
     numkeys = atoi(numkeys_s);
     *first_key = 3;
-    *last_key = 3 + numkeys;
+    *last_key = numkeys == 0 ? 3 : (2 + numkeys);
     *key_step = 1;
     sdsfree(numkeys_s);
     return numkeys;
