@@ -1741,6 +1741,20 @@ int parseOptions(int argc, char **argv) {
                 exit(1);
             }
             config.bindaddr[config.bindaddr_count++] = zstrdup(argv[++i]);
+        } else if (!strcmp(arg,"--custom-command") && !lastarg) {
+            int number = 0;
+            sds *fields = sdssplitargs(argv[++i], &number);
+            if (fields == NULL || number < 5) {
+                fprintf(stderr, "Custom-command '%s' format error\n", argv[i]);
+                exit(1);
+            }
+            sdstolower(fields[0]);
+            redisCommandDef *cmd = createProxyCustomCommand(fields[0],
+                atoi(fields[1]), atoi(fields[2]),
+                atoi(fields[3]), atoi(fields[4]));
+            raxInsert(config.custom_commands, (unsigned char*)cmd->name,
+                strlen(cmd->name), cmd, NULL);
+            sdsfreesplitres(fields, number);
         } else if (!strcmp("-c", arg) && !lastarg) {
             char *cfgfile = argv[++i];
             if (!parseOptionsFromFile(cfgfile)) exit(1);
@@ -1921,6 +1935,20 @@ static void initProxy(void) {
         if (strcasecmp("auth", cmd->name) == 0) authCommandDef = cmd;
         else if (strcasecmp("scan", cmd->name) == 0) scanCommandDef = cmd;
     }
+    /* Populate custom commands. */
+    raxIterator iter;
+    raxStart(&iter, config.custom_commands);
+    if (!raxSeek(&iter, "^", NULL, 0)) {
+        raxStop(&iter);
+        exit(1);
+    }
+    while (raxNext(&iter)) {
+       redisCommandDef *cmd = (redisCommandDef *)iter.data;
+       raxInsert(proxy.commands, (unsigned char*)cmd->name,
+                  strlen(cmd->name), cmd, NULL);
+    }
+    raxStop(&iter);
+
     proxy.main_loop = aeCreateEventLoop(proxy.min_reserved_fds);
     proxy.threads = zmalloc(config.num_threads *
                             sizeof(proxyThread *));

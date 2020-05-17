@@ -17,6 +17,7 @@
 
 
 #include "commands.h"
+#include "zmalloc.h"
 
 /* Command Handlers */
 int proxyCommand(void *req);
@@ -274,3 +275,26 @@ struct redisCommandDef redisCommandTable[203] = {
     /* Custom Commands */
     {"proxy", -2, 0, 0, 0, 0, 0, NULL, proxyCommand, NULL}
 };
+
+/* Create a new custom proxy command, that is used for module-commands,
+ * rename-commands and new commands of redis.
+ *
+ * Cross-slot queries are unsupported currently becasue they are different
+ * for various commands to hanle their replies. */
+redisCommandDef *createProxyCustomCommand(char *name, int arity,
+                      int first_key, int last_key, int key_step)
+{
+    redisCommandDef *cmd = zcalloc(sizeof(redisCommandDef));
+    cmd->name = zstrdup(name);
+    cmd->arity = arity;
+    cmd->first_key = first_key;
+    cmd->last_key = last_key;
+    cmd->key_step = key_step;
+    cmd->proxy_flags = CMDFLAG_MULTISLOT_UNSUPPORTED;
+    cmd->unsupported = 0;
+    cmd->get_keys = NULL;
+    cmd->handle = NULL;
+    cmd->handleReply = NULL;
+
+    return cmd;
+}

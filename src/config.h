@@ -18,6 +18,7 @@
 #ifndef __REDIS_CLUSTER_PROXY_CONFIG_H__
 #define __REDIS_CLUSTER_PROXY_CONFIG_H__
 
+#include "rax.h"
 #include "redis_config.h"
 
 #define CFG_DISABLE_MULTIPLEXING_AUTO       1
@@ -65,6 +66,7 @@ typedef struct {
     int dump_queues;
     char *auth;
     char *auth_user;
+    rax  *custom_commands;
     int disable_multiplexing;
     int cross_slot_enabled;
     int bindaddr_count;
