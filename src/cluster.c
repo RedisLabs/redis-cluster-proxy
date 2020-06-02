@@ -280,6 +280,7 @@ int resetCluster(redisCluster *cluster) {
     freeClusterNodes(cluster);
     cluster->slots_map = raxNew();
     cluster->nodes_by_name = raxNew();
+    cluster->master_names = NULL;
     cluster->nodes = listCreate();
     if (!cluster->slots_map) return 0;
     if (!cluster->nodes) return 0;
@@ -888,6 +889,13 @@ int updateCluster(redisCluster *cluster) {
     }
     cluster->is_updating = 0;
     cluster->update_required = 0;
+    /* Call once to refresh the master_names list */
+    if (clusterGetMasterNames(cluster) == NULL) {
+        proxyLogErr("Failed to update master names after fetching cluster configuration! (thread: %d)",
+                    cluster->thread_id);
+        status = CLUSTER_RECONFIG_ERR;
+        goto final;
+    }
     proxyLogDebug("Reprocessing cluster requests (thread: %d)",
                   cluster->thread_id);
     while (raxNext(&iter)) {
