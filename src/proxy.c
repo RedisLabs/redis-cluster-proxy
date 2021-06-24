@@ -3018,7 +3018,7 @@ static int writeToCluster(aeEventLoop *el, int fd, clientRequest *req) {
         } else {
             proxyLogWarn("Error writing request " REQID_PRINTF_FMT
                 "to cluster: %s", REQID_PRINTF_ARG(req), strerror(errno));
-            if (errno == EPIPE) {
+            if ((errno == EPIPE) || (errno == ECONNREFUSED)) {
                 clusterNodeDisconnect(req->node);
             } else {
                 addReplyError(req->client, ERROR_CLUSTER_WRITE_FAIL, req->id);
