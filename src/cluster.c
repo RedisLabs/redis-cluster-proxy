@@ -702,9 +702,9 @@ int fetchClusterConfiguration(redisCluster *cluster,
         if (!success) {
             listDelNode(friends, ln);
             freeClusterNode(friend);
-            goto cleanup;
+        } else {
+            clusterAddNode(cluster, friend);
         }
-        clusterAddNode(cluster, friend);
     }
 cleanup:
     if (friends) listRelease(friends);
