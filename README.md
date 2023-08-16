@@ -1,3 +1,9 @@
+# Current status
+
+**This project is currently not actively maingained.**
+It is alpha code that was indented to be evaluated by the community in order to get suggestions and contributions.
+We discourage its usage in any production environment.
+
 # Redis Cluster Proxy
 
 Redis Cluster Proxy is a proxy for [Redis](https://redis.io/) Clusters.
@@ -304,7 +310,3 @@ The `PROXY` command will allow you to get specific info or perform actions that 
 
 For a list of all known commands (both supported and unsupported) and their 
 features, see [COMMANDS.md](COMMANDS.md)
-
-# Current status
-
-This project is currently alpha code that is indented to be evaluated by the community in order to get suggestions and contributions. We discourage its usage in any production environment.
