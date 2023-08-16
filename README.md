@@ -1,6 +1,6 @@
 # Current status
 
-**This project is currently not actively maingained.**
+**This project is currently not actively maintained.**
 It is alpha code that was indented to be evaluated by the community in order to get suggestions and contributions.
 We discourage its usage in any production environment.
 
