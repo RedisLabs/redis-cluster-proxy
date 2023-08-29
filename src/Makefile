@@ -1,5 +1,6 @@
 # Copyright (C) 2019  Giuseppe Fabio Nicotra <artix2 at gmail dot com>
 
+CC=`which gcc`
 release_hdr := $(shell sh -c './mkreleasehdr.sh')
 uname_S := $(shell sh -c 'uname -s 2>/dev/null || echo not')
 uname_M := $(shell sh -c 'uname -m 2>/dev/null || echo not')
