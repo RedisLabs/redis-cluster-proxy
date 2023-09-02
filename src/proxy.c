@@ -249,9 +249,9 @@ static sds proxySubCommandConfig(clientRequest *r, sds option, sds value,
         is_int = 1;
         opt = &(config.num_threads);
         read_only = 1;
-    } else if (strcmp("maxclients", option) == 0) {
+    } else if (strcmp("max-clients", option) == 0) {
         is_int = 1;
-        opt = &(config.maxclients);
+        opt = &(config.max_clients);
         read_only = 1;
     } else if (strcmp("connections-pool-size", option) == 0) {
         is_int = 1;
@@ -638,7 +638,7 @@ sds genInfoString(sds section, redisCluster *cluster) {
                      "connected_clients:%" PRId64 "\r\n"
                      "max_clients:%d\r\n",
                      proxy.numclients,
-                     config.maxclients
+                     config.max_clients
         );
         int i;
         for (i = 0; i < config.num_threads; i++) {
@@ -1705,8 +1705,8 @@ int parseOptions(int argc, char **argv) {
             config.pidfile = zstrdup(argv[++i]);
         else if (!strcmp("--logfile", arg) && !lastarg)
             config.logfile = zstrdup(argv[++i]);
-        else if (!strcmp("--maxclients", arg) && !lastarg)
-            config.maxclients = atoi(argv[++i]);
+        else if (!strcmp("--max-clients", arg) && !lastarg)
+            config.max_clients = atoi(argv[++i]);
         else if (!strcmp("--tcpkeepalive", arg) && !lastarg)
             config.tcpkeepalive = atoi(argv[++i]);
         else if (!strcmp("--tcp-backlog", arg) && !lastarg)
@@ -1807,16 +1807,16 @@ invalid:
  *
  * If it will not be possible to set the limit accordingly to the configured
  * max number of clients, the function will do the reverse setting
- * comfig.maxclients to the value that we can actually handle. */
+ * comfig.max_clients to the value that we can actually handle. */
 void adjustOpenFilesLimit(void) {
-    rlim_t maxfiles = config.maxclients + proxy.min_reserved_fds;
+    rlim_t maxfiles = config.max_clients + proxy.min_reserved_fds;
     struct rlimit limit;
 
     if (getrlimit(RLIMIT_NOFILE,&limit) == -1) {
         proxyLogWarn("Unable to obtain the current NOFILE limit (%s), "
                      "assuming 1024 and setting the max clients configuration "
                      "accordingly.", strerror(errno));
-        config.maxclients = 1024 - proxy.min_reserved_fds;
+        config.max_clients = 1024 - proxy.min_reserved_fds;
     } else {
         rlim_t oldlimit = limit.rlim_cur;
 
@@ -1848,10 +1848,10 @@ void adjustOpenFilesLimit(void) {
             if (bestlimit < oldlimit) bestlimit = oldlimit;
 
             if (bestlimit < maxfiles) {
-                unsigned int old_maxclients = config.maxclients;
-                config.maxclients = bestlimit - proxy.min_reserved_fds;
-                /* maxclients is unsigned so may overflow: in order
-                 * to check if maxclients is now logically less than 1
+                unsigned int old_max_clients = config.max_clients;
+                config.max_clients = bestlimit - proxy.min_reserved_fds;
+                /* max-clients is unsigned so may overflow: in order
+                 * to check if max-clients is now logically less than 1
                  * we test indirectly via bestlimit. */
                 if (bestlimit <= (rlim_t) proxy.min_reserved_fds) {
                     proxyLogWarn("Your current 'ulimit -n' "
@@ -1862,18 +1862,18 @@ void adjustOpenFilesLimit(void) {
                         (unsigned long long) maxfiles);
                     exit(1);
                 }
-                proxyLogWarn("You requested maxclients of %d "
+                proxyLogWarn("You requested max-clients of %d "
                     "requiring at least %llu max file descriptors.",
-                    old_maxclients,
+                    old_max_clients,
                     (unsigned long long) maxfiles);
                 proxyLogWarn("Server can't set maximum open files "
                     "to %llu because of OS error: %s.",
                     (unsigned long long) maxfiles, strerror(setrlimit_error));
                 proxyLogWarn("Current maximum open files is %llu. "
-                    "maxclients has been reduced to %d to compensate for "
+                    "max-clients has been reduced to %d to compensate for "
                     "low ulimit. "
-                    "If you need higher maxclients increase 'ulimit -n'.",
-                    (unsigned long long) bestlimit, config.maxclients);
+                    "If you need higher max-clients increase 'ulimit -n'.",
+                    (unsigned long long) bestlimit, config.max_clients);
             } else {
                 proxyLogInfo("Increased maximum number of open files "
                     "to %llu (it was originally set to %llu).",
@@ -2338,7 +2338,7 @@ static proxyThread *createProxyThread(int index) {
     thread->pending_messages = listCreate();
     if (thread->pending_messages == NULL) goto fail;
     listSetFreeMethod(thread->pending_messages, zfree);
-    int loopsize = proxy.min_reserved_fds + config.maxclients;
+    int loopsize = proxy.min_reserved_fds + config.max_clients;
     thread->loop = aeCreateEventLoop(loopsize);
     if (thread->loop == NULL) {
         proxyLogErr("Failed to allocate event loop for thread %d", index);
@@ -4422,7 +4422,7 @@ void readQuery(aeEventLoop *el, int fd, void *privdata, int mask){
 }
 
 static void acceptHandler(int fd, char *ip, int port) {
-    if (proxy.numclients >= (uint64_t) config.maxclients) {
+    if (proxy.numclients >= (uint64_t) config.max_clients) {
         char *err = "-ERR max number of clients reached\r\n";
         static int errlen = 0;
         if (errlen == 0) errlen = strlen(err);

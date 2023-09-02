@@ -32,7 +32,7 @@ void initConfig(void) {
     config.unixsocket = NULL;
     config.unixsocketperm = DEFAULT_UNIXSOCKETPERM;
     config.tcpkeepalive = DEFAULT_TCP_KEEPALIVE;
-    config.maxclients = DEFAULT_MAX_CLIENTS;
+    config.max_clients = DEFAULT_MAX_CLIENTS;
     config.num_threads = DEFAULT_THREADS;
     config.tcp_backlog = DEFAULT_TCP_BACKLOG;
     config.daemonize = 0;
