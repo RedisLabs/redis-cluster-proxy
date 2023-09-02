@@ -61,6 +61,8 @@ typedef struct redisCommandDef {
     redisClusterProxyReplyHandler   *handleReply;
 } redisCommandDef;
 
+redisCommandDef *createProxyCustomCommand(char *name, int arity,
+                      int first_key, int last_key, int key_step);
 
 extern struct redisCommandDef redisCommandTable[203];
 

@@ -43,6 +43,7 @@ void initConfig(void) {
     config.dump_queues = 0;
     config.auth = NULL;
     config.auth_user = NULL;
+    config.custom_commands = raxNew();
     config.cross_slot_enabled = 0;
     config.bindaddr_count = 0;
     config.pidfile = NULL;
