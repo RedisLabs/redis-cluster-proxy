@@ -170,10 +170,6 @@ ifneq ($(strip $(PREV_FINAL_LDFLAGS)), $(strip $(FINAL_LDFLAGS)))
 endif
 
 
-# Prerequisites target
-.make-prerequisites:
-	@touch $@
-
 # redis-cluster-proxy
 $(REDIS_CLUSTER_PROXY_NAME): $(REDIS_CLUSTER_PROXY_OBJ)
 	$(REDIS_CLUSTER_PROXY_LD) -o $@ $^ ../deps/hiredis/libhiredis.a $(FINAL_LIBS)
