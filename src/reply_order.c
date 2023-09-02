@@ -49,7 +49,7 @@ int appendUnorderedRepliesToBuffer(client *c) {
         uint64_t req_id = ntohu64(*((uint64_t *)iter.key));
         if (req_id == c->min_reply_id) {
             sds reply = (sds) iter.data;
-            c->obuf = sdscat(c->obuf, reply);
+            c->obuf = sdscatsds(c->obuf, reply);
             c->min_reply_id++;
             count++;
             if (raxRemove(c->unordered_replies, iter.key, iter.key_len, NULL)){
